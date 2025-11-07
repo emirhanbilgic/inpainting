@@ -1,0 +1,219 @@
+#!/usr/bin/env python
+
+import argparse
+import os
+import random
+from io import BytesIO
+from typing import List, Tuple
+
+import requests
+from PIL import Image
+
+import torch
+import torch.nn.functional as F
+from torchvision.transforms import InterpolationMode
+import torchvision.transforms.functional as TF
+import open_clip
+from einops import rearrange
+import matplotlib.pyplot as plt
+
+from legrad import LeWrapper
+
+
+CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
+CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
+
+
+def pil_to_tensor_no_numpy(img: Image.Image) -> torch.Tensor:
+    img = img.convert("RGB")
+    w, h = img.size
+    byte_data = img.tobytes()
+    t = torch.tensor(list(byte_data), dtype=torch.uint8)
+    t = t.view(h, w, 3).permute(2, 0, 1)
+    return t
+
+
+def safe_preprocess(img: Image.Image, image_size: int = 448) -> torch.Tensor:
+    t = pil_to_tensor_no_numpy(img)
+    t = TF.resize(t, [image_size, image_size], interpolation=InterpolationMode.BICUBIC, antialias=True)
+    t = TF.center_crop(t, [image_size, image_size])
+    t = t.float() / 255.0
+    mean = torch.tensor(CLIP_MEAN).view(3, 1, 1)
+    std = torch.tensor(CLIP_STD).view(3, 1, 1)
+    t = (t - mean) / std
+    return t
+
+
+def list_images(folder: str, limit: int, seed: int) -> List[str]:
+    entries = []
+    for name in sorted(os.listdir(folder)):
+        path = os.path.join(folder, name)
+        if os.path.isfile(path):
+            ext = name.lower().rsplit(".", 1)[-1]
+            if ext in {"jpg", "jpeg", "png", "bmp", "webp"}:
+                entries.append(path)
+    random.Random(seed).shuffle(entries)
+    return entries[:limit]
+
+
+@torch.no_grad()
+def _grid_wh_from_tokens(num_tokens: int) -> Tuple[int, int]:
+    w = int(num_tokens ** 0.5)
+    h = w
+    return w, h
+
+
+def compute_per_layer_activation_clip(model: LeWrapper, image: torch.Tensor, text_embedding: torch.Tensor) -> torch.Tensor:
+    """
+    Returns per-layer scalar activations: shape [num_layers]
+    Implementation mirrors compute_legrad_clip but records mean activation per layer before summation.
+    """
+    assert text_embedding.ndim == 2  # [num_prompts, dim]
+    num_prompts = text_embedding.shape[0]
+
+    # Encode image to populate hooks and layer features
+    _ = model.encode_image(image)
+
+    blocks_list = list(dict(model.visual.transformer.resblocks.named_children()).values())
+    image_features_list = []
+    for layer in range(model.starting_depth, len(model.visual.transformer.resblocks)):
+        intermediate_feat = model.visual.transformer.resblocks[layer].feat_post_mlp  # [num_patch, batch, dim]
+        intermediate_feat = model.visual.ln_post(intermediate_feat.mean(dim=0)) @ model.visual.proj
+        intermediate_feat = F.normalize(intermediate_feat, dim=-1)
+        image_features_list.append(intermediate_feat)
+
+    num_tokens = blocks_list[-1].feat_post_mlp.shape[0] - 1
+    w, h = _grid_wh_from_tokens(num_tokens)
+
+    per_layer_vals = []
+    for layer, (blk, img_feat) in enumerate(zip(blocks_list[model.starting_depth:], image_features_list)):
+        model.visual.zero_grad()
+        sim = text_embedding @ img_feat.transpose(-1, -2)
+        one_hot = torch.arange(0, num_prompts, device=text_embedding.device)
+        one_hot = F.one_hot(one_hot, num_classes=num_prompts).float()
+        one_hot = torch.sum(one_hot * sim)
+
+        attn_map = blocks_list[model.starting_depth + layer].attn.attention_maps  # [(b*h), N, N]
+        grad = torch.autograd.grad(one_hot, [attn_map], retain_graph=True, create_graph=True)[0]
+        grad = rearrange(grad, '(b h) n m -> b h n m', b=num_prompts)
+        grad = torch.clamp(grad, min=0.)
+
+        image_relevance = grad.mean(dim=1).mean(dim=1)[:, 1:]  # [b, N-1]
+        expl_map = rearrange(image_relevance, 'b (w h) -> b w h', w=w, h=h)  # no upsample needed for scalar
+        # Scalar activation per layer: mean over spatial and prompts
+        per_layer_vals.append(expl_map.mean().detach())
+
+    per_layer = torch.stack(per_layer_vals)  # [num_layers]
+    return per_layer
+
+
+def plot_layer_activations(layers: List[int], vals_a: List[float], vals_b: List[float], label_a: str, label_b: str, title: str, out_path: str):
+    plt.figure(figsize=(10, 4))
+    plt.plot(layers, vals_a, label=label_a, marker='o')
+    plt.plot(layers, vals_b, label=label_b, marker='o')
+    plt.xlabel('Layer index')
+    plt.ylabel('Mean LeGrad activation')
+    plt.title(title)
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(out_path)
+    plt.close()
+
+
+def save_csv(layers: List[int], vals_a: List[float], vals_b: List[float], header_a: str, header_b: str, out_csv: str):
+    with open(out_csv, 'w') as f:
+        f.write('layer,{},{}\n'.format(header_a, header_b))
+        for i, (va, vb) in enumerate(zip(vals_a, vals_b)):
+            f.write(f"{layers[i]},{va:.6f},{vb:.6f}\n")
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Analyze per-layer LeGrad activations for Cat/Dog dataset.')
+    parser.add_argument('--dataset_root', type=str, default='/kaggle/input/dog-and-cat-classification-dataset/PetImages', help='Root with Cat/ and Dog/')
+    parser.add_argument('--num_per_class', type=int, default=25, help='Images per class to sample')
+    parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--image_size', type=int, default=448)
+    parser.add_argument('--model_name', type=str, default='ViT-B-16')
+    parser.add_argument('--pretrained', type=str, default='laion2b_s34b_b88k')
+    parser.add_argument('--output_dir', type=str, default='outputs')
+    args = parser.parse_args()
+
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model, _, _ = open_clip.create_model_and_transforms(model_name=args.model_name, pretrained=args.pretrained, device=device)
+    tokenizer = open_clip.get_tokenizer(model_name=args.model_name)
+    model.eval()
+
+    # Wrap with LeGrad, include all layers (layer_index=0)
+    model = LeWrapper(model, layer_index=0)
+
+    # Prepare text embeddings for two prompts
+    prompts = ['a photo of a cat.', 'a photo of a dog.']
+    tok = tokenizer(prompts).to(device)
+    text_emb_all = model.encode_text(tok, normalize=True)  # [2, dim]
+
+    cat_dir = os.path.join(args.dataset_root, 'Cat')
+    dog_dir = os.path.join(args.dataset_root, 'Dog')
+    cat_paths = list_images(cat_dir, limit=args.num_per_class, seed=args.seed)
+    dog_paths = list_images(dog_dir, limit=args.num_per_class, seed=args.seed)
+
+    # Utilities to accumulate per-layer activations
+    def process_batch(image_paths: List[str], prompt_idx_a: int, prompt_idx_b: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        acc_a, acc_b = None, None
+        for pth in image_paths:
+            try:
+                img = Image.open(pth).convert('RGB')
+            except Exception:
+                continue
+            img_t = safe_preprocess(img, image_size=args.image_size).unsqueeze(0).to(device)
+            per_layer_a = compute_per_layer_activation_clip(model, img_t, text_emb_all[prompt_idx_a:prompt_idx_a+1])
+            per_layer_b = compute_per_layer_activation_clip(model, img_t, text_emb_all[prompt_idx_b:prompt_idx_b+1])
+            acc_a = per_layer_a if acc_a is None else acc_a + per_layer_a
+            acc_b = per_layer_b if acc_b is None else acc_b + per_layer_b
+        count = max(1, len(image_paths))
+        return acc_a / count, acc_b / count
+
+    # Cat images: matched(cat) vs mismatched(dog)
+    cat_match, cat_mismatch = process_batch(cat_paths, prompt_idx_a=0, prompt_idx_b=1)
+    # Dog images: matched(dog) vs mismatched(cat)
+    dog_match, dog_mismatch = process_batch(dog_paths, prompt_idx_a=1, prompt_idx_b=0)
+
+    num_layers = int(cat_match.numel())
+    layers = list(range(num_layers))
+
+    # Convert to python lists
+    cat_match_l = [float(v) for v in cat_match]
+    cat_mismatch_l = [float(v) for v in cat_mismatch]
+    dog_match_l = [float(v) for v in dog_match]
+    dog_mismatch_l = [float(v) for v in dog_mismatch]
+
+    # Plots
+    plot_layer_activations(layers, cat_match_l, cat_mismatch_l,
+                           label_a='cat prompt on cat images (match)',
+                           label_b='dog prompt on cat images (mismatch)',
+                           title='Per-layer LeGrad activation on Cat images',
+                           out_path=os.path.join(args.output_dir, 'layers_cat_images_cat_vs_dog_prompt.png'))
+
+    plot_layer_activations(layers, dog_match_l, dog_mismatch_l,
+                           label_a='dog prompt on dog images (match)',
+                           label_b='cat prompt on dog images (mismatch)',
+                           title='Per-layer LeGrad activation on Dog images',
+                           out_path=os.path.join(args.output_dir, 'layers_dog_images_dog_vs_cat_prompt.png'))
+
+    # CSVs
+    save_csv(layers, cat_match_l, cat_mismatch_l,
+             header_a='cat_prompt_on_cat', header_b='dog_prompt_on_cat',
+             out_csv=os.path.join(args.output_dir, 'layers_cat_images.csv'))
+    save_csv(layers, dog_match_l, dog_mismatch_l,
+             header_a='dog_prompt_on_dog', header_b='cat_prompt_on_dog',
+             out_csv=os.path.join(args.output_dir, 'layers_dog_images.csv'))
+
+    print('Saved plots and CSVs in:', args.output_dir)
+
+
+if __name__ == '__main__':
+    main()
+
+
