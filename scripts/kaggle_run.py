@@ -4,6 +4,7 @@ import argparse
 import os
 import re
 import sys
+from io import BytesIO
 from typing import List
 
 import requests
@@ -11,9 +12,15 @@ from PIL import Image
 
 import torch
 import torch.nn.functional as F
+from torchvision.transforms import InterpolationMode
+import torchvision.transforms.functional as TF
 import open_clip
 
-from legrad import LeWrapper, LePreprocess
+from legrad import LeWrapper
+
+
+CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
+CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
 
 
 def sanitize_filename(name: str) -> str:
@@ -25,9 +32,9 @@ def sanitize_filename(name: str) -> str:
 
 def load_image(image_url: str = None, image_path: str = None) -> Image.Image:
     if image_url:
-        resp = requests.get(image_url, stream=True)
+        resp = requests.get(image_url, timeout=30)
         resp.raise_for_status()
-        return Image.open(resp.raw).convert("RGB")
+        return Image.open(BytesIO(resp.content)).convert("RGB")
     if image_path:
         return Image.open(image_path).convert("RGB")
     raise ValueError("Provide either --image_url or --image_path")
@@ -39,6 +46,58 @@ def parse_prompts(prompt: str, prompts: List[str]) -> List[str]:
     if prompt:
         return [p.strip() for p in prompt.split(",") if p.strip()]
     raise ValueError("Provide --prompt or --prompts")
+
+
+def pil_to_tensor_no_numpy(img: Image.Image) -> torch.Tensor:
+    img = img.convert("RGB")
+    w, h = img.size
+    byte_data = img.tobytes()
+    t = torch.tensor(list(byte_data), dtype=torch.uint8)
+    t = t.view(h, w, 3).permute(2, 0, 1)  # C,H,W
+    return t
+
+
+def safe_preprocess(img: Image.Image, image_size: int = 448) -> torch.Tensor:
+    t = pil_to_tensor_no_numpy(img)  # uint8, CxHxW
+    # Resize + center crop using tensor ops
+    t = TF.resize(t, [image_size, image_size], interpolation=InterpolationMode.BICUBIC, antialias=True)
+    t = TF.center_crop(t, [image_size, image_size])
+    # Normalize like CLIP
+    t = t.float() / 255.0
+    mean = torch.tensor(CLIP_MEAN).view(3, 1, 1)
+    std = torch.tensor(CLIP_STD).view(3, 1, 1)
+    t = (t - mean) / std
+    return t
+
+
+def tensor_rgb_to_pil_bytes(t: torch.ByteTensor) -> bytes:
+    # t: uint8, [3,H,W]
+    if t.dtype != torch.uint8:
+        t = t.to(torch.uint8)
+    t = t.clamp(0, 255)
+    t_hw3 = t.permute(1, 2, 0).contiguous().view(-1)  # [H*W*3]
+    return bytes(t_hw3.tolist())
+
+
+def save_overlay_pil_no_numpy(base_img: Image.Image, heat_01: torch.Tensor, out_path: str, alpha: float = 0.6):
+    # base_img: PIL RGB
+    # heat_01: torch.float [H, W] in [0,1]
+    H, W = heat_01.shape
+    # Resize original to heatmap size (via PIL to avoid numpy)
+    base_resized = base_img.resize((W, H), Image.BICUBIC).convert("RGB")
+    base_t = pil_to_tensor_no_numpy(base_resized).to(torch.float32)  # [3,H,W]
+
+    # Create red mask from heat
+    red = (heat_01 * 255.0).clamp(0, 255).to(torch.uint8)
+    red3 = torch.stack([red, torch.zeros_like(red), torch.zeros_like(red)], dim=0)  # [3,H,W]
+
+    # Blend: (1-alpha)*base + alpha*red
+    blended = ((1.0 - alpha) * base_t + alpha * red3.to(torch.float32)).clamp(0, 255).to(torch.uint8)
+
+    raw = tensor_rgb_to_pil_bytes(blended)
+    out_img = Image.frombytes("RGB", (W, H), raw)
+    out_img.save(out_path)
+    return out_path
 
 
 def main():
@@ -57,19 +116,18 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Load model + preprocess
-    model, _, preprocess = open_clip.create_model_and_transforms(
+    # Load model (skip OpenCLIP PIL->tensor to avoid numpy path)
+    model, _, _ = open_clip.create_model_and_transforms(
         model_name=args.model_name, pretrained=args.pretrained, device=device
     )
     tokenizer = open_clip.get_tokenizer(model_name=args.model_name)
     model.eval()
 
     model = LeWrapper(model)
-    preprocess = LePreprocess(preprocess=preprocess, image_size=args.image_size)
 
     # Inputs
     pil_image = load_image(image_url=args.image_url, image_path=args.image_path)
-    image_t = preprocess(pil_image).unsqueeze(0).to(device)
+    image_t = safe_preprocess(pil_image, image_size=args.image_size).unsqueeze(0).to(device)
 
     prompts = parse_prompts(args.prompt, args.prompts)
     tokenized = tokenizer([f"a photo of a {p}." for p in prompts]).to(device)
@@ -81,31 +139,17 @@ def main():
 
     with torch.no_grad():
         # Iterate prompts and save heatmaps
-        # Clamp and scale to [0,255]
-        logits_np = logits.squeeze(0).cpu()  # [num_prompts, H, W]
+        maps = logits.squeeze(0).cpu()  # [num_prompts, H, W]
         for idx, p in enumerate(prompts):
-            heat = logits_np[idx]
-            heat_01 = (heat - heat.min()) / (heat.max() - heat.min() + 1e-6)
-            heat_255 = (heat_01 * 255.0).byte().numpy()
-
-            # Colorize via cv2 if available, otherwise save grayscale
-            try:
-                import cv2
-                color = cv2.applyColorMap(heat_255, cv2.COLORMAP_JET)
-                # Resize original for overlay
-                img_bgr = cv2.cvtColor(
-                    (pil_image.resize((heat_255.shape[1], heat_255.shape[0]))).__array__(),
-                    cv2.COLOR_RGB2BGR,
-                )
-                overlay = (0.4 * img_bgr + 0.6 * color).astype("uint8")
-                out = cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB)
-                out_image = Image.fromarray(out)
-            except Exception:
-                out_image = Image.fromarray(heat_255)
+            heat = maps[idx]
+            # Normalize heat to [0,1]
+            hmin = float(heat.min())
+            hmax = float(heat.max())
+            heat_01 = (heat - hmin) / (hmax - hmin + 1e-6)
 
             fname = f"legrad_{sanitize_filename(p)}.png"
             out_path = os.path.join(args.output_dir, fname)
-            out_image.save(out_path)
+            save_overlay_pil_no_numpy(pil_image, heat_01, out_path, alpha=0.6)
             print(f"Saved: {out_path}")
 
 
