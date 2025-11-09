@@ -9,6 +9,7 @@ import re
 
 import requests
 from PIL import Image
+from math import ceil
 
 import torch
 import torch.nn.functional as F
@@ -156,6 +157,85 @@ def compute_per_layer_head_activation_clip(model: LeWrapper, image: torch.Tensor
     return per_layer_head
 
 
+def tensor_rgb_to_pil_bytes(t: torch.ByteTensor) -> bytes:
+    if t.dtype != torch.uint8:
+        t = t.to(torch.uint8)
+    t = t.clamp(0, 255)
+    t_hw3 = t.permute(1, 2, 0).contiguous().view(-1)
+    return bytes(t_hw3.tolist())
+
+
+def overlay_heat_to_pil(base_img: Image.Image, heat_01: torch.Tensor, alpha: float = 0.6) -> Image.Image:
+    """
+    base_img: PIL RGB, any size
+    heat_01: torch.float [H, W] in [0,1]
+    Returns a PIL image with red overlay according to heat_01.
+    """
+    H, W = heat_01.shape
+    base_resized = base_img.resize((W, H), Image.BICUBIC).convert("RGB")
+    base_t = pil_to_tensor_no_numpy(base_resized).to(torch.float32)  # [3,H,W]
+
+    red = (heat_01 * 255.0).clamp(0, 255).to(torch.uint8)
+    red3 = torch.stack([red, torch.zeros_like(red), torch.zeros_like(red)], dim=0)  # [3,H,W]
+
+    blended = ((1.0 - alpha) * base_t + alpha * red3.to(torch.float32)).clamp(0, 255).to(torch.uint8)
+    raw = tensor_rgb_to_pil_bytes(blended)
+    out_img = Image.frombytes("RGB", (W, H), raw)
+    return out_img
+
+
+def compute_per_layer_maps_clip(model: LeWrapper, image: torch.Tensor, text_embedding: torch.Tensor, patch_size: int) -> List[torch.Tensor]:
+    """
+    Return a list of per-layer heatmaps in [0,1], each [H, W] resized to the model input resolution.
+    """
+    assert text_embedding.ndim == 2 and text_embedding.shape[0] == 1
+    _ = model.encode_image(image)
+
+    blocks_list = list(dict(model.visual.transformer.resblocks.named_children()).values())
+    image_features_list = []
+    for layer in range(model.starting_depth, len(model.visual.transformer.resblocks)):
+        intermediate_feat = model.visual.transformer.resblocks[layer].feat_post_mlp  # [num_patch, batch, dim]
+        intermediate_feat = model.visual.ln_post(intermediate_feat.mean(dim=0)) @ model.visual.proj
+        intermediate_feat = F.normalize(intermediate_feat, dim=-1)
+        image_features_list.append(intermediate_feat)
+
+    num_tokens = blocks_list[-1].feat_post_mlp.shape[0] - 1
+    w = h = int(num_tokens ** 0.5)
+
+    per_layer_maps = []
+    for layer, (blk, img_feat) in enumerate(zip(blocks_list[model.starting_depth:], image_features_list)):
+        model.visual.zero_grad()
+        sim = text_embedding @ img_feat.transpose(-1, -2)  # [1, N]
+        one_hot = torch.sum(sim)
+
+        attn_map = blocks_list[model.starting_depth + layer].attn.attention_maps  # [(b*h), N, N]
+        grad = torch.autograd.grad(one_hot, [attn_map], retain_graph=True, create_graph=True)[0]
+        grad = rearrange(grad, '(b h) n m -> b h n m', b=1)  # [1,h,n,m]
+        grad = torch.clamp(grad, min=0.)
+
+        image_relevance = grad.mean(dim=1).mean(dim=1)[:, 1:]  # [1, N-1]
+        expl_map = rearrange(image_relevance, 'b (ww hh) -> b ww hh', ww=w, hh=h)  # [1,w,h]
+        expl_map = F.interpolate(expl_map.unsqueeze(1), scale_factor=patch_size, mode='bilinear').squeeze(1).squeeze(0)  # [H,W]
+        # Min-max per layer
+        mmin = float(expl_map.min())
+        mmax = float(expl_map.max())
+        expl_map = (expl_map - mmin) / (mmax - mmin + 1e-6)
+        per_layer_maps.append(expl_map.detach().cpu())
+    return per_layer_maps
+
+
+def make_image_grid(images: List[Image.Image], cols: int) -> Image.Image:
+    assert len(images) > 0
+    w, h = images[0].size
+    rows = ceil(len(images) / cols)
+    grid = Image.new('RGB', (cols * w, rows * h))
+    for idx, im in enumerate(images):
+        r = idx // cols
+        c = idx % cols
+        grid.paste(im, (c * w, r * h))
+    return grid
+
+
 def plot_layer_activations(layers: List[int], vals_a: List[float], vals_b: List[float], label_a: str, label_b: str, title: str, out_path: str):
     plt.figure(figsize=(10, 4))
     plt.plot(layers, vals_a, label=label_a, marker='o')
@@ -216,6 +296,12 @@ def main():
     parser.add_argument('--output_dir', type=str, default='outputs')
     parser.add_argument('--prompt_a', type=str, default='a photo of a bird.', help='First prompt (scenario A)')
     parser.add_argument('--prompt_b', type=str, default='a photo of a human.', help='Second prompt (scenario B)')
+    parser.add_argument('--prompts', type=str, nargs='*',
+                        default=['a photo of a dog.', 'a photo of a cat.', 'a photo of a bird.', 'a photo of a human.'],
+                        help='List of prompts to evaluate (e.g., 4 prompts: dog, cat, bird, human)')
+    parser.add_argument('--save_layer_grids', type=int, default=0, help='If >0, save per-image per-layer overlay grids for this many images per class')
+    parser.add_argument('--grid_cols', type=int, default=0, help='If 0, auto to (num_layers+1) for single-row. Otherwise, fixed columns.')
+    parser.add_argument('--overlay_alpha', type=float, default=0.6, help='Overlay alpha for heatmaps')
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -228,95 +314,150 @@ def main():
     # Wrap with LeGrad, include all layers (layer_index=0)
     model = LeWrapper(model, layer_index=0)
 
-    # Prepare text embeddings for two prompts
-    prompts = [args.prompt_a, args.prompt_b]
+    # Prepare text embeddings for prompts
+    prompts = args.prompts if (args.prompts and len(args.prompts) > 0) else [args.prompt_a, args.prompt_b]
     tok = tokenizer(prompts).to(device)
-    text_emb_all = model.encode_text(tok, normalize=True)  # [2, dim]
+    text_emb_all = model.encode_text(tok, normalize=True)  # [P, dim]
 
     cat_dir = os.path.join(args.dataset_root, 'Cat')
     dog_dir = os.path.join(args.dataset_root, 'Dog')
     cat_paths = list_images(cat_dir, limit=args.num_per_class, seed=args.seed)
     dog_paths = list_images(dog_dir, limit=args.num_per_class, seed=args.seed)
 
-    # Utilities to accumulate per-layer activations
-    def process_batch(image_paths: List[str], prompt_idx_a: int, prompt_idx_b: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        acc_a, acc_b = None, None
-        acc_heads_a, acc_heads_b = None, None
+    # Utilities to accumulate per-layer activations for multiple prompts
+    def process_batch_multi(image_paths: List[str], prompt_indices: List[int]):
+        acc_layers = {pi: None for pi in prompt_indices}
+        acc_heads = {pi: None for pi in prompt_indices}
         for pth in image_paths:
             try:
                 img = Image.open(pth).convert('RGB')
             except Exception:
                 continue
             img_t = safe_preprocess(img, image_size=args.image_size).unsqueeze(0).to(device)
-            per_layer_a = compute_per_layer_activation_clip(model, img_t, text_emb_all[prompt_idx_a:prompt_idx_a+1])
-            per_layer_b = compute_per_layer_activation_clip(model, img_t, text_emb_all[prompt_idx_b:prompt_idx_b+1])
-            per_heads_a = compute_per_layer_head_activation_clip(model, img_t, text_emb_all[prompt_idx_a:prompt_idx_a+1])  # [L,H]
-            per_heads_b = compute_per_layer_head_activation_clip(model, img_t, text_emb_all[prompt_idx_b:prompt_idx_b+1])  # [L,H]
-            acc_a = per_layer_a if acc_a is None else acc_a + per_layer_a
-            acc_b = per_layer_b if acc_b is None else acc_b + per_layer_b
-            acc_heads_a = per_heads_a if acc_heads_a is None else acc_heads_a + per_heads_a
-            acc_heads_b = per_heads_b if acc_heads_b is None else acc_heads_b + per_heads_b
+            for pi in prompt_indices:
+                per_layer = compute_per_layer_activation_clip(model, img_t, text_emb_all[pi:pi+1])
+                per_heads = compute_per_layer_head_activation_clip(model, img_t, text_emb_all[pi:pi+1])  # [L,H]
+                acc_layers[pi] = per_layer if acc_layers[pi] is None else acc_layers[pi] + per_layer
+                acc_heads[pi] = per_heads if acc_heads[pi] is None else acc_heads[pi] + per_heads
         count = max(1, len(image_paths))
-        return acc_a / count, acc_b / count, acc_heads_a / count, acc_heads_b / count
+        acc_layers = {pi: acc_layers[pi] / count for pi in prompt_indices}
+        acc_heads = {pi: acc_heads[pi] / count for pi in prompt_indices}
+        return acc_layers, acc_heads
 
-    # Cat images: matched(cat) vs mismatched(dog)
-    cat_match, cat_mismatch, cat_heads_match, cat_heads_mismatch = process_batch(cat_paths, prompt_idx_a=0, prompt_idx_b=1)
-    # Dog images: matched(dog) vs mismatched(cat)
-    dog_match, dog_mismatch, dog_heads_match, dog_heads_mismatch = process_batch(dog_paths, prompt_idx_a=1, prompt_idx_b=0)
+    prompt_indices = list(range(len(prompts)))
+    # Cat images: process all prompts
+    cat_layers_dict, cat_heads_dict = process_batch_multi(cat_paths, prompt_indices)
+    # Dog images: process all prompts
+    dog_layers_dict, dog_heads_dict = process_batch_multi(dog_paths, prompt_indices)
 
-    num_layers = int(cat_match.numel())
+    # Determine match prompt per class via keyword heuristic
+    def find_match_index(key: str) -> int:
+        key = key.lower()
+        for i, p in enumerate(prompts):
+            if key in p.lower():
+                return i
+        return -1
+
+    cat_match_idx = find_match_index('cat')
+    dog_match_idx = find_match_index('dog')
+
+    # Use any prompt to infer number of layers
+    any_pi = prompt_indices[0]
+    num_layers = int(cat_layers_dict[any_pi].numel())
     layers = list(range(num_layers))
 
-    san_pa = sanitize(args.prompt_a)
-    san_pb = sanitize(args.prompt_b)
+    # Single-line plot helper
+    def plot_single_layer(layers_list: List[int], values: List[float], label: str, title: str, out_path: str):
+        plt.figure(figsize=(10, 4))
+        plt.plot(layers_list, values, label=label, marker='o')
+        plt.xlabel('Layer index')
+        plt.ylabel('Mean LeGrad activation')
+        plt.title(title)
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(out_path)
+        plt.close()
 
-    # Convert to python lists
-    cat_match_l = [float(v) for v in cat_match]
-    cat_mismatch_l = [float(v) for v in cat_mismatch]
-    dog_match_l = [float(v) for v in dog_match]
-    dog_mismatch_l = [float(v) for v in dog_mismatch]
+    # Save per-prompt outputs for Cat
+    for pi in prompt_indices:
+        pslug = sanitize(prompts[pi])
+        vals = [float(v) for v in cat_layers_dict[pi]]
+        plot_single_layer(layers, vals, label=f'{prompts[pi]} on cat images',
+                          title='Per-layer LeGrad activation on Cat images',
+                          out_path=os.path.join(args.output_dir, f'layers_cat_images_{pslug}.png'))
+        save_csv(layers, vals, vals, header_a=f'{pslug}_on_cat', header_b=f'{pslug}_on_cat',
+                 out_csv=os.path.join(args.output_dir, f'layers_cat_images_{pslug}.csv'))
+        plot_layer_head_heatmap(cat_heads_dict[pi], f'Heads: {prompts[pi]} on cat images',
+                                os.path.join(args.output_dir, f'heads_cat_images_{pslug}.png'))
+        save_head_csv(cat_heads_dict[pi], os.path.join(args.output_dir, f'heads_cat_images_{pslug}.csv'))
+    # Differences vs cat-match
+    if cat_match_idx >= 0:
+        mslug = sanitize(prompts[cat_match_idx])
+        for pi in prompt_indices:
+            if pi == cat_match_idx:
+                continue
+            pslug = sanitize(prompts[pi])
+            plot_layer_head_heatmap(cat_heads_dict[pi] - cat_heads_dict[cat_match_idx],
+                                    f'Heads: ({prompts[pi]} - {prompts[cat_match_idx]}) on cat images',
+                                    os.path.join(args.output_dir, f'heads_cat_images_diff_{pslug}_minus_{mslug}.png'))
+            save_head_csv(cat_heads_dict[pi] - cat_heads_dict[cat_match_idx],
+                          os.path.join(args.output_dir, f'heads_cat_images_diff_{pslug}_minus_{mslug}.csv'))
 
-    # Plots
-    plot_layer_activations(layers, cat_match_l, cat_mismatch_l,
-                           label_a=f'{args.prompt_a} on cat images',
-                           label_b=f'{args.prompt_b} on cat images',
-                           title='Per-layer LeGrad activation on Cat images',
-                           out_path=os.path.join(args.output_dir, f'layers_cat_images_{san_pa}_vs_{san_pb}.png'))
+    # Save per-prompt outputs for Dog
+    for pi in prompt_indices:
+        pslug = sanitize(prompts[pi])
+        vals = [float(v) for v in dog_layers_dict[pi]]
+        plot_single_layer(layers, vals, label=f'{prompts[pi]} on dog images',
+                          title='Per-layer LeGrad activation on Dog images',
+                          out_path=os.path.join(args.output_dir, f'layers_dog_images_{pslug}.png'))
+        save_csv(layers, vals, vals, header_a=f'{pslug}_on_dog', header_b=f'{pslug}_on_dog',
+                 out_csv=os.path.join(args.output_dir, f'layers_dog_images_{pslug}.csv'))
+        plot_layer_head_heatmap(dog_heads_dict[pi], f'Heads: {prompts[pi]} on dog images',
+                                os.path.join(args.output_dir, f'heads_dog_images_{pslug}.png'))
+        save_head_csv(dog_heads_dict[pi], os.path.join(args.output_dir, f'heads_dog_images_{pslug}.csv'))
+    # Differences vs dog-match
+    if dog_match_idx >= 0:
+        mslug = sanitize(prompts[dog_match_idx])
+        for pi in prompt_indices:
+            if pi == dog_match_idx:
+                continue
+            pslug = sanitize(prompts[pi])
+            plot_layer_head_heatmap(dog_heads_dict[pi] - dog_heads_dict[dog_match_idx],
+                                    f'Heads: ({prompts[pi]} - {prompts[dog_match_idx]}) on dog images',
+                                    os.path.join(args.output_dir, f'heads_dog_images_diff_{pslug}_minus_{mslug}.png'))
+            save_head_csv(dog_heads_dict[pi] - dog_heads_dict[dog_match_idx],
+                          os.path.join(args.output_dir, f'heads_dog_images_diff_{pslug}_minus_{mslug}.csv'))
 
-    plot_layer_activations(layers, dog_match_l, dog_mismatch_l,
-                           label_a=f'{args.prompt_a} on dog images',
-                           label_b=f'{args.prompt_b} on dog images',
-                           title='Per-layer LeGrad activation on Dog images',
-                           out_path=os.path.join(args.output_dir, f'layers_dog_images_{san_pa}_vs_{san_pb}.png'))
-
-    # CSVs
-    save_csv(layers, cat_match_l, cat_mismatch_l,
-             header_a=f'{san_pa}_on_cat', header_b=f'{san_pb}_on_cat',
-             out_csv=os.path.join(args.output_dir, f'layers_cat_images_{san_pa}_vs_{san_pb}.csv'))
-    save_csv(layers, dog_match_l, dog_mismatch_l,
-             header_a=f'{san_pa}_on_dog', header_b=f'{san_pb}_on_dog',
-             out_csv=os.path.join(args.output_dir, f'layers_dog_images_{san_pa}_vs_{san_pb}.csv'))
-
-    # Per-head heatmaps and CSVs
-    plot_layer_head_heatmap(cat_heads_match, f'Heads: {args.prompt_a} on cat images',
-                            os.path.join(args.output_dir, f'heads_cat_images_{san_pa}.png'))
-    plot_layer_head_heatmap(cat_heads_mismatch, f'Heads: {args.prompt_b} on cat images',
-                            os.path.join(args.output_dir, f'heads_cat_images_{san_pb}.png'))
-    plot_layer_head_heatmap(cat_heads_mismatch - cat_heads_match, f'Heads: ({args.prompt_b} - {args.prompt_a}) on cat images',
-                            os.path.join(args.output_dir, f'heads_cat_images_diff_{san_pb}_minus_{san_pa}.png'))
-    save_head_csv(cat_heads_match, os.path.join(args.output_dir, f'heads_cat_images_{san_pa}.csv'))
-    save_head_csv(cat_heads_mismatch, os.path.join(args.output_dir, f'heads_cat_images_{san_pb}.csv'))
-    save_head_csv(cat_heads_mismatch - cat_heads_match, os.path.join(args.output_dir, f'heads_cat_images_diff_{san_pb}_minus_{san_pa}.csv'))
-
-    plot_layer_head_heatmap(dog_heads_match, f'Heads: {args.prompt_a} on dog images',
-                            os.path.join(args.output_dir, f'heads_dog_images_{san_pa}.png'))
-    plot_layer_head_heatmap(dog_heads_mismatch, f'Heads: {args.prompt_b} on dog images',
-                            os.path.join(args.output_dir, f'heads_dog_images_{san_pb}.png'))
-    plot_layer_head_heatmap(dog_heads_mismatch - dog_heads_match, f'Heads: ({args.prompt_b} - {args.prompt_a}) on dog images',
-                            os.path.join(args.output_dir, f'heads_dog_images_diff_{san_pb}_minus_{san_pa}.png'))
-    save_head_csv(dog_heads_match, os.path.join(args.output_dir, f'heads_dog_images_{san_pa}.csv'))
-    save_head_csv(dog_heads_mismatch, os.path.join(args.output_dir, f'heads_dog_images_{san_pb}.csv'))
-    save_head_csv(dog_heads_mismatch - dog_heads_match, os.path.join(args.output_dir, f'heads_dog_images_diff_{san_pb}_minus_{san_pa}.csv'))
+    # Optional: save per-layer grids for a subset of images
+    if args.save_layer_grids > 0:
+        grids_dir = os.path.join(args.output_dir, 'layer_grids')
+        os.makedirs(grids_dir, exist_ok=True)
+        # Helper to save for a list of paths
+        def save_grids_for_paths(paths: List[str], class_tag: str):
+            for pth in paths[:args.save_layer_grids]:
+                try:
+                    base_img = Image.open(pth).convert('RGB')
+                except Exception:
+                    continue
+                # Preprocess to get image size and fill features (we'll use base_img resized in overlay)
+                img_tensor = safe_preprocess(base_img, image_size=args.image_size).unsqueeze(0).to(device)
+                # For all prompts
+                for idx_prompt, prompt in enumerate(prompts):
+                    te = text_emb_all[idx_prompt:idx_prompt+1]
+                    per_layer_maps = compute_per_layer_maps_clip(model, img_tensor , te, patch_size=model.patch_size)
+                    # Build grid: original + per-layer overlays
+                    overlays = [base_img.resize((per_layer_maps[0].shape[1], per_layer_maps[0].shape[0]), Image.BICUBIC)]
+                    overlays[0] = overlays[0]  # original
+                    for hm in per_layer_maps:
+                        overlays.append(overlay_heat_to_pil(overlays[0], hm, alpha=args.overlay_alpha))
+                    cols = args.grid_cols if args.grid_cols > 0 else len(overlays)
+                    grid = make_image_grid(overlays, cols=cols)
+                    base_name = os.path.splitext(os.path.basename(pth))[0]
+                    out_name = f"{class_tag}_{base_name}_{sanitize(prompt)}_layers_grid.png"
+                    grid.save(os.path.join(grids_dir, out_name))
+        save_grids_for_paths(cat_paths, 'cat')
+        save_grids_for_paths(dog_paths, 'dog')
 
     print('Saved plots and CSVs in:', args.output_dir)
 
