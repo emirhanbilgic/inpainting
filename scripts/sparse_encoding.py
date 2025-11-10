@@ -244,6 +244,54 @@ def wordnet_neighbors(keyword: str, limit_per_relation: int = 8) -> List[str]:
                         out.append(name); seen.add(name)
     return out[: max(1, limit_per_relation * 3)]
 
+def wordnet_neighbors_configured(
+    keyword: str,
+    use_synonyms: bool,
+    use_hypernyms: bool,
+    use_hyponyms: bool,
+    use_siblings: bool,
+    limit_per_relation: int = 8
+) -> List[str]:
+    """
+    Configurable WordNet neighbors. Enable/disable relations via flags.
+    """
+    try:
+        import nltk  # type: ignore
+        from nltk.corpus import wordnet as wn  # type: ignore
+    except Exception:
+        return []
+    out = []
+    seen = set()
+    key_low = keyword.lower()
+    synsets = wn.synsets(keyword, pos=wn.NOUN)
+    for s in synsets[:limit_per_relation]:
+        if use_synonyms:
+            for l in s.lemmas()[:limit_per_relation]:
+                name = l.name().replace('_', ' ').lower()
+                if name != key_low and name not in seen:
+                    out.append(name); seen.add(name)
+        if use_hypernyms:
+            for h in s.hypernyms()[:limit_per_relation]:
+                for l in h.lemmas()[:limit_per_relation]:
+                    name = l.name().replace('_', ' ').lower()
+                    if name != key_low and name not in seen:
+                        out.append(name); seen.add(name)
+        if use_hyponyms:
+            for h in s.hyponyms()[:limit_per_relation]:
+                for l in h.lemmas()[:limit_per_relation]:
+                    name = l.name().replace('_', ' ').lower()
+                    if name != key_low and name not in seen:
+                        out.append(name); seen.add(name)
+        if use_siblings:
+            for h in s.hypernyms()[:limit_per_relation]:
+                for sib in h.hyponyms()[:limit_per_relation]:
+                    for l in sib.lemmas()[:limit_per_relation]:
+                        name = l.name().replace('_', ' ').lower()
+                        if name != key_low and name not in seen:
+                            out.append(name); seen.add(name)
+    # Cap list size reasonably
+    return out[: max(1, limit_per_relation * 3)]
+
 
 def compute_map_for_embedding(model: LeWrapper, image: torch.Tensor, text_emb_1x: torch.Tensor) -> torch.Tensor:
     """
@@ -279,6 +327,10 @@ def main():
                         help='When --wordlist_source=url, URL to JSON mapping from keyword to neighbor list.')
     parser.add_argument('--topk', type=int, default=100, help='k for hard masking.')
     parser.add_argument('--residual_atoms', type=int, default=8, help='Max atoms for OMP residual.')
+    parser.add_argument('--wn_use_synonyms', type=int, default=0, help='WordNet: include synonyms (0/1).')
+    parser.add_argument('--wn_use_hypernyms', type=int, default=0, help='WordNet: include hypernyms (0/1).')
+    parser.add_argument('--wn_use_hyponyms', type=int, default=0, help='WordNet: include hyponyms (0/1).')
+    parser.add_argument('--wn_use_siblings', type=int, default=1, help='WordNet: include co-hyponyms/siblings (0/1).')
     parser.add_argument('--output_dir', type=str, default='outputs/sparse_encoding')
     parser.add_argument('--overlay_alpha', type=float, default=0.6)
     args = parser.parse_args()
@@ -332,7 +384,14 @@ def main():
     else:
         # WordNet dynamic neighbors
         def external_neighbors_getter(key: str) -> List[str]:
-            return wordnet_neighbors(key)
+            return wordnet_neighbors_configured(
+                key,
+                use_synonyms=bool(args.wn_use_synonyms),
+                use_hypernyms=bool(args.wn_use_hypernyms),
+                use_hyponyms=bool(args.wn_use_hyponyms),
+                use_siblings=bool(args.wn_use_siblings),
+                limit_per_relation=8
+            )
 
     # Collect images
     paths = []
