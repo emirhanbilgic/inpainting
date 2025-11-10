@@ -1,0 +1,40 @@
+{
+  "dog": [
+    "canine",
+    "puppy",
+    "hound",
+    "wolf",
+    "fox",
+    "bulldog",
+    "shepherd",
+    "terrier"
+  ],
+  "cat": [
+    "feline",
+    "kitten",
+    "tomcat",
+    "tiger",
+    "lion",
+    "leopard",
+    "cheetah"
+  ],
+  "bird": [
+    "avian",
+    "sparrow",
+    "pigeon",
+    "eagle",
+    "hawk",
+    "parrot",
+    "owl"
+  ],
+  "human": [
+    "person",
+    "man",
+    "woman",
+    "people",
+    "child",
+    "adult"
+  ]
+}
+
+
