@@ -4,6 +4,7 @@ import os
 import re
 import json
 from typing import List, Tuple
+import requests
 
 from PIL import Image
 import torch
@@ -202,6 +203,47 @@ def build_wordlist_neighbors_embedding(tokenizer, model, words: List[str], devic
         emb = model.encode_text(tok, normalize=True)  # [K, d]
     return emb
 
+def wordnet_neighbors(keyword: str, limit_per_relation: int = 8) -> List[str]:
+    """
+    Collect WordNet neighbors: synonyms, hypernyms, hyponyms, and co-hyponyms (siblings).
+    Returns a deduplicated, lowercase list excluding the keyword.
+    """
+    try:
+        import nltk  # type: ignore
+        from nltk.corpus import wordnet as wn  # type: ignore
+    except Exception:
+        return []
+    out = []
+    seen = set()
+    key_low = keyword.lower()
+    synsets = wn.synsets(keyword, pos=wn.NOUN)
+    for s in synsets[:limit_per_relation]:
+        # synonyms
+        for l in s.lemmas()[:limit_per_relation]:
+            name = l.name().replace('_', ' ').lower()
+            if name != key_low and name not in seen:
+                out.append(name); seen.add(name)
+        # hypernyms
+        for h in s.hypernyms()[:limit_per_relation]:
+            for l in h.lemmas()[:limit_per_relation]:
+                name = l.name().replace('_', ' ').lower()
+                if name != key_low and name not in seen:
+                    out.append(name); seen.add(name)
+        # hyponyms
+        for h in s.hyponyms()[:limit_per_relation]:
+            for l in h.lemmas()[:limit_per_relation]:
+                name = l.name().replace('_', ' ').lower()
+                if name != key_low and name not in seen:
+                    out.append(name); seen.add(name)
+        # co-hyponyms (siblings)
+        for h in s.hypernyms()[:limit_per_relation]:
+            for sib in h.hyponyms()[:limit_per_relation]:
+                for l in sib.lemmas()[:limit_per_relation]:
+                    name = l.name().replace('_', ' ').lower()
+                    if name != key_low and name not in seen:
+                        out.append(name); seen.add(name)
+    return out[: max(1, limit_per_relation * 3)]
+
 
 def compute_map_for_embedding(model: LeWrapper, image: torch.Tensor, text_emb_1x: torch.Tensor) -> torch.Tensor:
     """
@@ -228,8 +270,13 @@ def main():
                         default=['original'],
                         choices=['original', 'word_list', 'hard', 'sparse_residual'],
                         help='Select one or more types; default tries original only.')
+    parser.add_argument('--wordlist_source', type=str, default='json',
+                        choices=['json', 'url', 'wordnet'],
+                        help='Source for neighbor words: local JSON, URL JSON, or WordNet.')
     parser.add_argument('--wordlist_path', type=str, default='resources/wordlist_neighbors.json',
-                        help='Path to JSON mapping from keyword to list of neighbor words for orthogonalization.')
+                        help='When --wordlist_source=json, path to JSON mapping from keyword to neighbor list.')
+    parser.add_argument('--wordlist_url', type=str, default='',
+                        help='When --wordlist_source=url, URL to JSON mapping from keyword to neighbor list.')
     parser.add_argument('--topk', type=int, default=100, help='k for hard masking.')
     parser.add_argument('--residual_atoms', type=int, default=8, help='Max atoms for OMP residual.')
     parser.add_argument('--output_dir', type=str, default='outputs/sparse_encoding')
@@ -252,19 +299,40 @@ def main():
     with torch.no_grad():
         text_emb_all = model.encode_text(tok, normalize=True)  # [P, d]
 
-    # Load external wordlist neighbors (JSON)
+    # Prepare external neighbor source getter
     wordlist_map = {}
-    if args.wordlist_path and os.path.isfile(args.wordlist_path):
-        try:
-            with open(args.wordlist_path, 'r') as f:
-                wordlist_map = json.load(f)
-            if not isinstance(wordlist_map, dict):
+    if args.wordlist_source == 'json':
+        if args.wordlist_path and os.path.isfile(args.wordlist_path):
+            try:
+                with open(args.wordlist_path, 'r') as f:
+                    wordlist_map = json.load(f)
+                if not isinstance(wordlist_map, dict):
+                    wordlist_map = {}
+            except Exception:
                 wordlist_map = {}
-        except Exception:
-            wordlist_map = {}
+        def external_neighbors_getter(key: str) -> List[str]:
+            if key and key in wordlist_map and isinstance(wordlist_map[key], list):
+                return [w for w in wordlist_map[key] if isinstance(w, str) and len(w.strip()) > 0]
+            return []
+    elif args.wordlist_source == 'url':
+        url_map = {}
+        if args.wordlist_url:
+            try:
+                resp = requests.get(args.wordlist_url, timeout=10)
+                if resp.ok:
+                    url_map = resp.json()
+                    if not isinstance(url_map, dict):
+                        url_map = {}
+            except Exception:
+                url_map = {}
+        def external_neighbors_getter(key: str) -> List[str]:
+            if key and key in url_map and isinstance(url_map[key], list):
+                return [w for w in url_map[key] if isinstance(w, str) and len(w.strip()) > 0]
+            return []
     else:
-        # If file is missing, proceed without external neighbors
-        wordlist_map = {}
+        # WordNet dynamic neighbors
+        def external_neighbors_getter(key: str) -> List[str]:
+            return wordnet_neighbors(key)
 
     # Collect images
     paths = []
@@ -309,9 +377,7 @@ def main():
                 # extract keyword as last alphabetic token
                 tokens = re.findall(r'[a-z]+', prompt.lower())
                 key = tokens[-1] if len(tokens) > 0 else ''
-                wl = []
-                if key and key in wordlist_map and isinstance(wordlist_map[key], list):
-                    wl = [w for w in wordlist_map[key] if isinstance(w, str) and len(w.strip()) > 0]
+                wl = external_neighbors_getter(key) if key else []
                 if len(wl) > 0:
                     ext_emb = build_wordlist_neighbors_embedding(tokenizer, model, wl, device)
                     if ext_emb is not None and ext_emb.numel() > 0:
@@ -329,16 +395,24 @@ def main():
                     emb_1x = topk_sparsify(original_1x, k=args.topk)
                 elif tname == 'sparse_residual':
                     # Build dictionary from other prompts + external neighbors (independent of 'word_list' selection)
-                    D = build_dictionary_from_prompts_and_wordlist(
-                        original_1x=original_1x,
-                        this_index=r,
-                        text_emb_all=text_emb_all,
-                        tokenizer=tokenizer,
-                        model=model,
-                        wordlist_map=wordlist_map,
-                        prompt_text=prompt,
-                        device=device
-                    )
+                    parts = []
+                    if r > 0:
+                        parts.append(text_emb_all[:r])
+                    if r + 1 < text_emb_all.shape[0]:
+                        parts.append(text_emb_all[r+1:])
+                    tokens = re.findall(r'[a-z]+', prompt.lower())
+                    key = tokens[-1] if len(tokens) > 0 else ''
+                    wl = external_neighbors_getter(key) if key else []
+                    if len(wl) > 0:
+                        ext_emb = build_wordlist_neighbors_embedding(tokenizer, model, wl, device)
+                        if ext_emb is not None and ext_emb.numel() > 0:
+                            parts.append(ext_emb)
+                    D = torch.cat(parts, dim=0) if len(parts) > 0 else original_1x.new_zeros((0, original_1x.shape[-1]))
+                    if D.numel() > 0:
+                        D = F.normalize(D, dim=-1)
+                        sim = (D @ original_1x.t()).squeeze(-1).abs()
+                        keep = sim < 0.999
+                        D = D[keep]
                     emb_1x = omp_sparse_residual(original_1x, D, max_atoms=args.residual_atoms)
                 else:
                     emb_1x = original_1x
