@@ -208,8 +208,9 @@ def main():
 		raise RuntimeError(f'No images found under {args.dataset_root}')
 
 	# Accumulate average maps across images
-	sum_std = None
-	sum_wtd = None
+	P = len(args.prompts)
+	sum_std_list = [None for _ in range(P)]
+	sum_wtd_list = [None for _ in range(P)]
 	base_image_for_overlay = None
 	count = 0
 	for pth in paths:
@@ -221,25 +222,27 @@ def main():
 			base_image_for_overlay = img.copy()
 		img_t = safe_preprocess(img, image_size=args.image_size).unsqueeze(0).to(device)
 
-		with torch.enable_grad():
-			std_map, wtd_map = compute_standard_and_weighted_maps_clip(model, img_t, text_emb,
-			                                                           focus_layer_index=10, focus_head_index=10)
-		sum_std = std_map if sum_std is None else (sum_std + std_map)
-		sum_wtd = wtd_map if sum_wtd is None else (sum_wtd + wtd_map)
+		# Compute per-prompt maps sequentially to limit memory
+		for i in range(P):
+			with torch.enable_grad():
+				std_map, wtd_map = compute_standard_and_weighted_maps_clip(
+					model, img_t, text_emb[i:i+1], focus_layer_index=10, focus_head_index=10
+				)  # each: [1,1,H,W]
+			sum_std_list[i] = std_map if sum_std_list[i] is None else (sum_std_list[i] + std_map)
+			sum_wtd_list[i] = wtd_map if sum_wtd_list[i] is None else (sum_wtd_list[i] + wtd_map)
 		count += 1
 
-	# Mean over images
-	mean_std = sum_std / max(1, count)     # [1, P, H, W]
-	mean_wtd = sum_wtd / max(1, count)     # [1, P, H, W]
+	# Mean over images, per prompt
+	mean_std_list = [t / max(1, count) for t in sum_std_list]     # list of [1,1,H,W]
+	mean_wtd_list = [t / max(1, count) for t in sum_wtd_list]     # list of [1,1,H,W]
 
 	# Build a single figure: rows = prompts, cols = 2 (standard vs weighted)
-	P = len(args.prompts)
 	fig, axes = plt.subplots(nrows=P, ncols=2, figsize=(8, 3 * P))
 	if P == 1:
 		axes = [axes]  # normalize to list of rows
 	for i in range(P):
-		std_i = mean_std[0, i]
-		wtd_i = mean_wtd[0, i]
+		std_i = mean_std_list[i][0, 0]
+		wtd_i = mean_wtd_list[i][0, 0]
 		overlay(axes[i][0], base_image_for_overlay, std_i, title=f'{args.prompts[i]} - LeGrad', alpha=0.6)
 		overlay(axes[i][1], base_image_for_overlay, wtd_i, title=f'{args.prompts[i]} - Weighted (50% L10-H10)', alpha=0.6)
 	plt.tight_layout()
