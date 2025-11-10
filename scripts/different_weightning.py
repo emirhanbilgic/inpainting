@@ -71,16 +71,20 @@ def compute_standard_and_weighted_maps_clip(
 	focus_layer_index: int = 10,
 	focus_head_index: int = 10,
 	focus_weight: float = 0.5,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+	focus_scope: str = 'layer_head',
+	) -> Tuple[torch.Tensor, torch.Tensor]:
 	"""
 	Returns:
 	- standard_map: [1, P, H, W] standard LeGrad (average over layers and heads)
-	- weighted_map: [1, P, H, W] custom weighting with `focus_weight` from (focus_layer_index, focus_head_index)
+	- weighted_map: [1, P, H, W] custom weighting; head or layer selected by outer caller
 	"""
 	assert text_embedding.ndim == 2
 	num_prompts = text_embedding.shape[0]
 	# Clamp weight to [0,1]
 	focus_weight = float(max(0.0, min(1.0, focus_weight)))
+	focus_scope = (focus_scope or 'layer_head').lower()
+	if focus_scope not in ('layer_head', 'layer'):
+		focus_scope = 'layer_head'
 
 	# Replicate image for prompts, populate hooks/features
 	if image is not None:
@@ -112,7 +116,8 @@ def compute_standard_and_weighted_maps_clip(
 	# Accumulators
 	sum_per_layer_mean = 0.0  # sum over layers of (mean over heads) -> shape [1, P, H, W]
 	sum_all_pairs = 0.0       # sum over all layer-head pairs         -> shape [1, P, H, W]
-	target_map = None         # map for focus (layer, head)           -> shape [1, P, H, W]
+	target_map_head = None    # map for focus head                     -> shape [1, P, H, W]
+	target_map_layer = None   # map for focus layer (mean over heads)  -> shape [1, P, H, W]
 
 	for layer, (blk, img_feat) in enumerate(zip(blocks_list[model.starting_depth:], image_features_list)):
 		model.visual.zero_grad()
@@ -138,23 +143,31 @@ def compute_standard_and_weighted_maps_clip(
 		layer_sum_heads = layer_mean_map * float(num_heads)  # [1, P, H, W]
 		sum_all_pairs = sum_all_pairs + layer_sum_heads
 
-		# If this is the focus layer, extract the focus head map
+		# If this is the focus layer, extract both maps (head and layer)
 		if layer == focus_layer_index:
 			head_focus = head_token_relevance[:, focus_head_index, :]  # [1, N-1]
 			head_focus_map = rearrange(head_focus, 'b (ww hh) -> 1 b ww hh', ww=w, hh=h)
 			head_focus_map = F.interpolate(head_focus_map, scale_factor=model.patch_size, mode='bilinear')  # [1, P, H, W]
-			target_map = head_focus_map
+			target_map_head = head_focus_map
+			target_map_layer = layer_mean_map
 
 	# Standard LeGrad: average over layers then min-max
 	standard_map = min_max_batch(sum_per_layer_mean)
 
-	# Weighted: 50% from focus (layer, head), 50% uniformly from the rest of pairs
-	if target_map is None:
+	# Weighted: caller chooses whether focus is a head or the whole layer
+	if target_map_head is None and target_map_layer is None:
 		# Fallback: if something went wrong, just duplicate standard
 		weighted_map = standard_map.clone()
 	else:
 		num_pairs = float(total_layers * num_heads)
-		rest_mean = (sum_all_pairs - target_map) / max(1.0, (num_pairs - 1.0))
+		# Choose target by focus_scope
+		if focus_scope == 'layer':
+			target_map = target_map_layer if target_map_layer is not None else target_map_head
+			target_pairs_removed = float(num_heads) if target_map_layer is not None else 1.0
+		else:  # 'layer_head'
+			target_map = target_map_head if target_map_head is not None else target_map_layer
+			target_pairs_removed = 1.0 if target_map_head is not None else float(num_heads)
+		rest_mean = (sum_all_pairs - target_map * target_pairs_removed) / max(1.0, (num_pairs - target_pairs_removed))
 		weighted = focus_weight * target_map + (1.0 - focus_weight) * rest_mean
 		weighted_map = min_max_batch(weighted)
 
@@ -184,7 +197,8 @@ def main():
 	parser.add_argument('--seed', type=int, default=42)
 	parser.add_argument('--num_examples', type=int, default=0, help='If >0, save per-image comparison figures for the first N images.')
 	parser.add_argument('--examples_dir', type=str, default='outputs/examples', help='Directory to save per-image comparisons.')
-	parser.add_argument('--focus_weight', type=float, default=0.5, help='Weight for L10-H10 contribution in [0,1].')
+	parser.add_argument('--focus_weight', type=float, default=0.5, help='Weight for focus contribution in [0,1].')
+	parser.add_argument('--focus_scope', type=str, default='layer_head', choices=['layer_head', 'layer'], help='Focus on a single head or the whole layer.')
 	args = parser.parse_args()
 
 	os.makedirs(os.path.dirname(args.output_path), exist_ok=True)
@@ -234,7 +248,7 @@ def main():
 		for i in range(P):
 			with torch.enable_grad():
 				std_map, wtd_map = compute_standard_and_weighted_maps_clip(
-					model, img_t, text_emb[i:i+1], focus_layer_index=10, focus_head_index=10, focus_weight=args.focus_weight
+					model, img_t, text_emb[i:i+1], focus_layer_index=10, focus_head_index=10, focus_weight=args.focus_weight, focus_scope=args.focus_scope
 				)  # each: [1,1,H,W]
 			sum_std_list[i] = std_map if sum_std_list[i] is None else (sum_std_list[i] + std_map)
 			sum_wtd_list[i] = wtd_map if sum_wtd_list[i] is None else (sum_wtd_list[i] + wtd_map)
@@ -252,7 +266,8 @@ def main():
 		std_i = mean_std_list[i][0, 0]
 		wtd_i = mean_wtd_list[i][0, 0]
 		overlay(axes[i][0], base_image_for_overlay, std_i, title=f'{args.prompts[i]} - LeGrad', alpha=0.6)
-		overlay(axes[i][1], base_image_for_overlay, wtd_i, title=f'{args.prompts[i]} - Weighted ({int(args.focus_weight*100)}% L10-H10)', alpha=0.6)
+		focus_label = 'L10' if args.focus_scope == 'layer' else 'L10-H10'
+		overlay(axes[i][1], base_image_for_overlay, wtd_i, title=f'{args.prompts[i]} - Weighted ({int(args.focus_weight*100)}% {focus_label})', alpha=0.6)
 	plt.tight_layout()
 	plt.savefig(args.output_path, dpi=150)
 	plt.close(fig)
@@ -273,7 +288,7 @@ def main():
 			for i in range(P):
 				with torch.enable_grad():
 					std_map, wtd_map = compute_standard_and_weighted_maps_clip(
-						model, img_t, text_emb[i:i+1], focus_layer_index=10, focus_head_index=10, focus_weight=args.focus_weight
+						model, img_t, text_emb[i:i+1], focus_layer_index=10, focus_head_index=10, focus_weight=args.focus_weight, focus_scope=args.focus_scope
 					)  # each [1,1,H,W]
 				per_prompt_std.append(std_map[0, 0])
 				per_prompt_wtd.append(wtd_map[0, 0])
@@ -282,7 +297,8 @@ def main():
 				axes2 = [axes2]
 			for i in range(P):
 				overlay(axes2[i][0], img, per_prompt_std[i], title=f'{args.prompts[i]} - LeGrad', alpha=0.6)
-				overlay(axes2[i][1], img, per_prompt_wtd[i], title=f'{args.prompts[i]} - Weighted ({int(args.focus_weight*100)}% L10-H10)', alpha=0.6)
+				focus_label = 'L10' if args.focus_scope == 'layer' else 'L10-H10'
+				overlay(axes2[i][1], img, per_prompt_wtd[i], title=f'{args.prompts[i]} - Weighted ({int(args.focus_weight*100)}% {focus_label})', alpha=0.6)
 			plt.tight_layout()
 			base = os.path.splitext(os.path.basename(pth))[0]
 			out_img = os.path.join(args.examples_dir, f'{base}_comparison.png')
