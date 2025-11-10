@@ -179,9 +179,13 @@ def main():
 	                    default=['a photo of a dog.', 'a photo of a cat.', 'a photo of a bird.', 'a photo of a human.'])
 	parser.add_argument('--output_path', type=str, default='outputs/different_weighting_comparison.png')
 	parser.add_argument('--seed', type=int, default=42)
+	parser.add_argument('--num_examples', type=int, default=0, help='If >0, save per-image comparison figures for the first N images.')
+	parser.add_argument('--examples_dir', type=str, default='outputs/examples', help='Directory to save per-image comparisons.')
 	args = parser.parse_args()
 
 	os.makedirs(os.path.dirname(args.output_path), exist_ok=True)
+	if args.num_examples > 0:
+		os.makedirs(args.examples_dir, exist_ok=True)
 
 	device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 	model, _, _ = open_clip.create_model_and_transforms(model_name=args.model_name, pretrained=args.pretrained, device=device)
@@ -250,6 +254,37 @@ def main():
 	plt.close(fig)
 
 	print(f'Saved comparison figure to: {args.output_path}')
+
+	# Optional: save per-image examples
+	if args.num_examples > 0:
+		ex_paths = paths[:min(args.num_examples, len(paths))]
+		for pth in ex_paths:
+			try:
+				img = Image.open(pth).convert('RGB')
+			except Exception:
+				continue
+			img_t = safe_preprocess(img, image_size=args.image_size).unsqueeze(0).to(device)
+			per_prompt_std = []
+			per_prompt_wtd = []
+			for i in range(P):
+				with torch.enable_grad():
+					std_map, wtd_map = compute_standard_and_weighted_maps_clip(
+						model, img_t, text_emb[i:i+1], focus_layer_index=10, focus_head_index=10
+					)  # each [1,1,H,W]
+				per_prompt_std.append(std_map[0, 0])
+				per_prompt_wtd.append(wtd_map[0, 0])
+			fig2, axes2 = plt.subplots(nrows=P, ncols=2, figsize=(8, 3 * P))
+			if P == 1:
+				axes2 = [axes2]
+			for i in range(P):
+				overlay(axes2[i][0], img, per_prompt_std[i], title=f'{args.prompts[i]} - LeGrad', alpha=0.6)
+				overlay(axes2[i][1], img, per_prompt_wtd[i], title=f'{args.prompts[i]} - Weighted (50% L10-H10)', alpha=0.6)
+			plt.tight_layout()
+			base = os.path.splitext(os.path.basename(pth))[0]
+			out_img = os.path.join(args.examples_dir, f'{base}_comparison.png')
+			plt.savefig(out_img, dpi=150)
+			plt.close(fig2)
+			print(f'Saved example: {out_img}')
 
 
 if __name__ == '__main__':
