@@ -2,22 +2,44 @@
   "dog": [
     "cat",
     "bird",
-    "human"
+    "human",
+    "elephant",
+    "giraffe",
+    "beer"
   ],
   "cat": [
     "dog",
     "bird",
-    "human"
+    "human",
+    "elephant",
+    "giraffe",
+    "beer",
+    "wine"
   ],
   "bird": [
     "dog",
     "cat",
-    "human"
+    "human",
+    "landscape",
+    "city",
+    "building",
+    "flower",
+    "grass"
   ],
   "human": [
     "dog",
     "cat",
-    "bird"
+    "bird",
+    "animal",
+    "nature",
+    "landscape",
+    "city",
+    "building",
+    "tree",
+    "flower",
+    "grass",
+    "water",
+    "sky"
   ]
 }
 

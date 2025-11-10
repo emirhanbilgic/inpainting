@@ -108,6 +108,86 @@ def topk_sparsify(vec: torch.Tensor, k: int) -> torch.Tensor:
     sparse = vec * mask
     return F.normalize(sparse, dim=-1)
 
+def build_dictionary_from_prompts_and_wordlist(
+    original_1x: torch.Tensor,
+    this_index: int,
+    text_emb_all: torch.Tensor,
+    tokenizer,
+    model,
+    wordlist_map: dict,
+    prompt_text: str,
+    device: torch.device
+) -> torch.Tensor:
+    """
+    Build dictionary D by concatenating other prompt embeddings and external wordlist
+    neighbors for the current prompt's extracted keyword.
+    Returns D: [K, d] (may be empty if nothing available).
+    """
+    parts = []
+    if this_index > 0:
+        parts.append(text_emb_all[:this_index])
+    if this_index + 1 < text_emb_all.shape[0]:
+        parts.append(text_emb_all[this_index+1:])
+    tokens = re.findall(r'[a-z]+', prompt_text.lower())
+    key = tokens[-1] if len(tokens) > 0 else ''
+    if key and key in wordlist_map and isinstance(wordlist_map[key], list):
+        wl = [w for w in wordlist_map[key] if isinstance(w, str) and len(w.strip()) > 0]
+        if len(wl) > 0:
+            ext_emb = build_wordlist_neighbors_embedding(tokenizer, model, wl, device)
+            if ext_emb is not None and ext_emb.numel() > 0:
+                parts.append(ext_emb)
+    if len(parts) == 0:
+        return original_1x.new_zeros((0, original_1x.shape[-1]))
+    D = torch.cat(parts, dim=0)
+    D = F.normalize(D, dim=-1)
+    # Remove any near-duplicate atoms to the target itself
+    sim = (D @ original_1x.t()).squeeze(-1).abs()
+    keep = sim < 0.999  # drop atoms identical to x
+    D = D[keep]
+    return D
+
+def omp_sparse_residual(x_1x: torch.Tensor, D: torch.Tensor, max_atoms: int = 8, tol: float = 1e-6) -> torch.Tensor:
+    """
+    Simple Orthogonal Matching Pursuit to compute sparse coding residual without training.
+    x_1x: [1, d], assumed L2-normalized
+    D: [K, d], atom rows, L2-normalized
+    Returns residual r (L2-normalized): [1, d]
+    """
+    if D is None or D.numel() == 0:
+        return F.normalize(x_1x, dim=-1)
+    x = x_1x.clone()  # [1, d]
+    K = D.shape[0]
+    max_atoms = int(max(1, min(max_atoms, K)))
+    selected = []
+    r = x.clone()  # residual starts as x
+    for _ in range(max_atoms):
+        # correlations with residual
+        c = (r @ D.t()).squeeze(0)  # [K]
+        c_abs = c.abs()
+        # mask already selected
+        if len(selected) > 0:
+            c_abs[selected] = -1.0
+        idx = int(torch.argmax(c_abs).item())
+        if c_abs[idx].item() <= tol:
+            break
+        selected.append(idx)
+        # Solve least squares on selected atoms: s = argmin ||x - s^T D_S||^2
+        D_S = D[selected, :]  # [t, d]
+        G = D_S @ D_S.t()     # [t, t]
+        b = (D_S @ x.t())     # [t, 1]
+        # Regularize G slightly for stability
+        I = torch.eye(G.shape[0], device=G.device, dtype=G.dtype)
+        s = torch.linalg.solve(G + 1e-6 * I, b)  # [t,1]
+        x_hat = (s.t() @ D_S).to(x.dtype)  # [1, d]
+        r = (x - x_hat)
+        # Early stop if residual very small
+        if float(torch.norm(r)) <= tol:
+            break
+    # Return normalized residual (fallback to x if degenerate)
+    if torch.norm(r) <= tol:
+        return F.normalize(x, dim=-1)
+    return F.normalize(r, dim=-1)
+
 
 def build_wordlist_neighbors_embedding(tokenizer, model, words: List[str], device: torch.device) -> torch.Tensor:
     """
@@ -146,11 +226,12 @@ def main():
     parser.add_argument('--prompts', type=str, nargs='*', default=['a photo of a dog.', 'a photo of a cat.'])
     parser.add_argument('--sparse_encoding_type', type=str, nargs='*',
                         default=['original'],
-                        choices=['original', 'word_list', 'hard'],
+                        choices=['original', 'word_list', 'hard', 'sparse_residual'],
                         help='Select one or more types; default tries original only.')
     parser.add_argument('--wordlist_path', type=str, default='resources/wordlist_neighbors.json',
                         help='Path to JSON mapping from keyword to list of neighbor words for orthogonalization.')
     parser.add_argument('--topk', type=int, default=64, help='k for hard masking.')
+    parser.add_argument('--residual_atoms', type=int, default=8, help='Max atoms for OMP residual.')
     parser.add_argument('--output_dir', type=str, default='outputs/sparse_encoding')
     parser.add_argument('--overlay_alpha', type=float, default=0.6)
     args = parser.parse_args()
@@ -246,6 +327,19 @@ def main():
                     emb_1x = orthogonalize_against_set(original_1x, neighbors_t)
                 elif tname == 'hard':
                     emb_1x = topk_sparsify(original_1x, k=args.topk)
+                elif tname == 'sparse_residual':
+                    # Build dictionary from other prompts + external neighbors (independent of 'word_list' selection)
+                    D = build_dictionary_from_prompts_and_wordlist(
+                        original_1x=original_1x,
+                        this_index=r,
+                        text_emb_all=text_emb_all,
+                        tokenizer=tokenizer,
+                        model=model,
+                        wordlist_map=wordlist_map,
+                        prompt_text=prompt,
+                        device=device
+                    )
+                    emb_1x = omp_sparse_residual(original_1x, D, max_atoms=args.residual_atoms)
                 else:
                     emb_1x = original_1x
 
