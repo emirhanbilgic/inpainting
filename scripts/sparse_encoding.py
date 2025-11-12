@@ -142,6 +142,71 @@ def build_wordlist_neighbors_embedding(tokenizer, model, words: List[str], devic
         emb = model.encode_text(tok, normalize=True)  # [K, d]
     return emb
 
+def filter_neighbors_by_clip_similarity(
+    original_1x: torch.Tensor,
+    neighbor_words: List[str],
+    neighbor_embs: torch.Tensor,
+    min_sim: float,
+    max_sim: float,
+    topk: int,
+    diverse: bool = False
+) -> Tuple[List[str], torch.Tensor, torch.Tensor]:
+    """
+    Filter neighbor strings using CLIP cosine similarity band to the original embedding.
+    Optionally select a diverse subset via greedy farthest-first.
+    Returns (filtered_words, filtered_embs, filtered_sims).
+    """
+    if neighbor_embs is None or neighbor_embs.numel() == 0 or len(neighbor_words) == 0:
+        return [], neighbor_embs.new_zeros((0, original_1x.shape[-1])), neighbor_embs.new_zeros((0,))
+    sims = (neighbor_embs @ original_1x.t()).squeeze(-1)  # [K]
+    keep_mask = torch.ones_like(sims, dtype=torch.bool)
+    if min_sim is not None:
+        keep_mask &= sims >= float(min_sim)
+    if max_sim is not None:
+        keep_mask &= sims <= float(max_sim)
+    idxs = torch.nonzero(keep_mask, as_tuple=False).squeeze(-1).tolist()
+    if len(idxs) == 0:
+        return [], neighbor_embs.new_zeros((0, original_1x.shape[-1])), neighbor_embs.new_zeros((0,))
+    words_kept = [neighbor_words[i] for i in idxs]
+    embs_kept = neighbor_embs[idxs]
+    sims_kept = sims[idxs]
+    if topk is not None and int(topk) > 0 and len(words_kept) > int(topk):
+        if diverse:
+            # Greedy farthest-first selection in embedding space
+            selected = []
+            candidates = list(range(len(words_kept)))
+            # seed with the item closest to the band center (to avoid extremes)
+            center = 0.5 * (float(min_sim if min_sim is not None else -1.0) + float(max_sim if max_sim is not None else 1.0))
+            seed = min(candidates, key=lambda i: abs(float(sims_kept[i]) - center))
+            selected.append(seed)
+            candidates.remove(seed)
+            while len(selected) < int(topk) and len(candidates) > 0:
+                # pick candidate with minimum average cosine similarity to selected (i.e., most diverse)
+                sel_mat = embs_kept[selected]  # [t, d]
+                best_cand = None
+                best_score = 1e9
+                for j in candidates:
+                    cj = embs_kept[j:j+1]  # [1, d]
+                    cs = (cj @ sel_mat.t()).abs().mean().item()
+                    if cs < best_score:
+                        best_score = cs
+                        best_cand = j
+                selected.append(best_cand)
+                candidates.remove(best_cand)
+            mask = torch.zeros(len(words_kept), dtype=torch.bool)
+            for i in selected:
+                mask[i] = True
+            embs_kept = embs_kept[mask]
+            sims_kept = sims_kept[mask]
+            words_kept = [w for m, w in zip(mask.tolist(), words_kept) if m]
+        else:
+            # keep topk by descending similarity within band
+            order = torch.argsort(sims_kept, descending=True)[: int(topk)]
+            embs_kept = embs_kept[order]
+            sims_kept = sims_kept[order]
+            words_kept = [words_kept[i] for i in order.tolist()]
+    return words_kept, embs_kept, sims_kept
+
 def wordnet_neighbors(keyword: str, limit_per_relation: int = 8) -> List[str]:
     """
     Collect WordNet neighbors: synonyms, hypernyms, hyponyms, and co-hyponyms (siblings).
@@ -273,14 +338,22 @@ def main():
     parser.add_argument('--overlay_alpha', type=float, default=0.6)
     parser.add_argument('--benchmark', type=int, default=0,
                         help='Enable benchmark grid over multiple WordNet configs and atom counts (0/1).')
-    parser.add_argument('--atom_grid', type=int, nargs='*', default=[8, 16],
+    parser.add_argument('--atom_grid', type=int, nargs='*', default=[8, 16, 24, 32],
                         help='Atom counts to test when --benchmark=1.')
-    parser.add_argument('--wn_configs', type=str, nargs='*', default=['siblings', 'siblings+hyponyms'],
+    parser.add_argument('--wn_configs', type=str, nargs='*', default=['siblings', 'siblings+hyponyms', 'siblings_clipband', 'siblings_clipband_diverse'],
                         help='WordNet configs to test when --benchmark=1. '
                              'Choices include: siblings, siblings+hyponyms, synonyms, hypernyms, hyponyms, '
-                             'siblings+synonyms.')
+                             'siblings+synonyms, siblings_clipband, siblings_clipband_diverse.')
     parser.add_argument('--max_images', type=int, default=0,
                         help='Cap total images processed. 0 means auto (per-class or 2*num_per_class for flat).')
+    parser.add_argument('--neighbor_min_sim', type=float, default=-1.0,
+                        help='Minimum CLIP cosine similarity band for neighbor filtering; <0 disables.')
+    parser.add_argument('--neighbor_max_sim', type=float, default=2.0,
+                        help='Maximum CLIP cosine similarity band for neighbor filtering; >1 disables.')
+    parser.add_argument('--neighbors_topk', type=int, default=0,
+                        help='Top-K neighbors to keep after CLIP-band filtering; 0 disables.')
+    parser.add_argument('--neighbors_diverse', type=int, default=0,
+                        help='If 1, use farthest-first selection for diversity when topk > 0.')
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -366,6 +439,19 @@ def main():
         use_hyponyms = ('hyponym' in n)
         use_siblings = ('sibling' in n) or (n == 'siblings') or (n == 'cohyponyms') or (n == 'co-hyponyms')
         return bool(use_synonyms), bool(use_hypernyms), bool(use_hyponyms), bool(use_siblings)
+    def parse_variant_filters(name: str):
+        n = (name or '').strip().lower()
+        if 'clipband' in n:
+            # Use a moderately specific band and topk for disentanglement without killing coverage
+            clip_filter = {
+                'min_sim': 0.2,
+                'max_sim': 0.6,
+                'topk': 16,
+                'diverse': True if 'diverse' in n else False
+            }
+        else:
+            clip_filter = None
+        return clip_filter
 
     # Process each image: build a grid per image with rows=prompts, cols=len(variants)
     types_selected = args.sparse_encoding_type or ['original']
@@ -376,6 +462,7 @@ def main():
             # Expand into multiple configs x atoms
             for cfg_name in args.wn_configs:
                 flags = parse_wn_config_name(cfg_name)
+                clip_filter = parse_variant_filters(cfg_name)
                 for k in (args.atom_grid or [args.residual_atoms]):
                     label = f'sparse_residual:{cfg_name}@{int(k)}'
                     variants.append((
@@ -389,6 +476,7 @@ def main():
                                 'use_hyponyms': flags[2],
                                 'use_siblings': flags[3],
                             },
+                            'clip_filter': clip_filter,
                             'atoms': int(k),
                         }
                     ))
@@ -405,6 +493,12 @@ def main():
                         'use_hyponyms': bool(args.wn_use_hyponyms),
                         'use_siblings': bool(args.wn_use_siblings),
                     },
+                    'clip_filter': {
+                        'min_sim': None if args.neighbor_min_sim < 0 else float(args.neighbor_min_sim),
+                        'max_sim': None if args.neighbor_max_sim > 1.0 else float(args.neighbor_max_sim),
+                        'topk': int(args.neighbors_topk) if args.neighbors_topk > 0 else 0,
+                        'diverse': bool(args.neighbors_diverse),
+                    } if (args.neighbor_min_sim >= 0 or args.neighbor_max_sim <= 1.0 or args.neighbors_topk > 0) else None,
                     'atoms': int(args.residual_atoms),
                 }
             ))
@@ -456,7 +550,35 @@ def main():
                             wl = external_neighbors_getter(key)
                     else:
                         wl = []
-                    # Print the created wordlist for visibility
+                    # Optional CLIP-band filtering and top-k selection for disentanglement
+                    clip_filter = vcfg.get('clip_filter', None)
+                    ext_emb = None
+                    if len(wl) > 0:
+                        # Prepare embeddings to filter by CLIP similarity if requested
+                        if clip_filter is not None:
+                            # Build emb for all neighbors, then filter
+                            all_emb = build_wordlist_neighbors_embedding(tokenizer, model, wl, device)
+                            if all_emb is not None and all_emb.numel() > 0:
+                                min_sim = clip_filter.get('min_sim', None)
+                                max_sim = clip_filter.get('max_sim', None)
+                                topk = clip_filter.get('topk', 0)
+                                diverse = bool(clip_filter.get('diverse', False))
+                                # Treat sentinel defaults as disabled
+                                if min_sim is not None and float(min_sim) < 0:
+                                    min_sim = None
+                                if max_sim is not None and float(max_sim) > 1.0:
+                                    max_sim = None
+                                wl, all_emb, _ = filter_neighbors_by_clip_similarity(
+                                    original_1x, wl, all_emb,
+                                    min_sim=min_sim, max_sim=max_sim,
+                                    topk=int(topk) if topk is not None else 0,
+                                    diverse=diverse
+                                )
+                                ext_emb = all_emb if all_emb is not None and all_emb.numel() > 0 else None
+                        # If not filtered, defer to building embeddings normally
+                        if ext_emb is None:
+                            ext_emb = build_wordlist_neighbors_embedding(tokenizer, model, wl, device)
+                    # Print the created (possibly filtered) wordlist for visibility
                     if key is not None:
                         try:
                             print(f'[neighbors] prompt="{prompt}" key="{key}" variant="{vlabel}" '
@@ -464,7 +586,6 @@ def main():
                         except Exception:
                             pass
                     if len(wl) > 0:
-                        ext_emb = build_wordlist_neighbors_embedding(tokenizer, model, wl, device)
                         if ext_emb is not None and ext_emb.numel() > 0:
                             parts.append(ext_emb)
                     D = torch.cat(parts, dim=0) if len(parts) > 0 else original_1x.new_zeros((0, original_1x.shape[-1]))
