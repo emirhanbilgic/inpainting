@@ -450,6 +450,13 @@ def main():
                             wl = external_neighbors_getter(key)
                     else:
                         wl = []
+                    # Print the created wordlist for visibility
+                    if key is not None:
+                        try:
+                            print(f'[neighbors] prompt="{prompt}" key="{key}" variant="{vlabel}" '
+                                  f'num={len(wl)}: {wl}')
+                        except Exception:
+                            pass
                     if len(wl) > 0:
                         ext_emb = build_wordlist_neighbors_embedding(tokenizer, model, wl, device)
                         if ext_emb is not None and ext_emb.numel() > 0:
@@ -474,6 +481,11 @@ def main():
                 overlay(axes[r][c] if cols > 1 else axes[r], base_img, heat, title=title, alpha=args.overlay_alpha)
 
         plt.tight_layout()
+        # Leave more gaps to avoid overlapping titles/labels
+        try:
+            plt.subplots_adjust(hspace=0.6, wspace=0.4)
+        except Exception:
+            pass
         base = os.path.splitext(os.path.basename(pth))[0]
         out_name = f'{sanitize(base)}_sparse_encoding.png'
         out_path = os.path.join(args.output_dir, out_name)
