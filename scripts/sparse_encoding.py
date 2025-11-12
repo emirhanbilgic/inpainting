@@ -85,67 +85,6 @@ def overlay(ax, base_img: Image.Image, heat_01: torch.Tensor, title: str, alpha:
 
 
 # -------- Sparse encoding utilities --------
-def orthogonalize_against_set(target: torch.Tensor, others: torch.Tensor) -> torch.Tensor:
-    """
-    target: [1, d], others: [K, d], all assumed on the same device.
-    Returns a normalized vector orthogonalized to 'others'.
-    """
-    if others is None or others.numel() == 0:
-        return F.normalize(target, dim=-1)
-    B = F.normalize(others, dim=-1)  # [K, d]
-    coeff = (target @ B.t())         # [1, K]
-    target_res = target - coeff @ B  # [1, d]
-    return F.normalize(target_res, dim=-1)
-
-
-def topk_sparsify(vec: torch.Tensor, k: int) -> torch.Tensor:
-    """
-    vec: [1, d] normalized; keep top-|value| k dims, renormalize.
-    """
-    d = vec.shape[-1]
-    k = max(1, min(int(k), d))
-    _, idx = torch.topk(vec.abs(), k, dim=-1)
-    mask = torch.zeros_like(vec).scatter_(-1, idx, 1.0)
-    sparse = vec * mask
-    return F.normalize(sparse, dim=-1)
-
-def build_dictionary_from_prompts_and_wordlist(
-    original_1x: torch.Tensor,
-    this_index: int,
-    text_emb_all: torch.Tensor,
-    tokenizer,
-    model,
-    wordlist_map: dict,
-    prompt_text: str,
-    device: torch.device
-) -> torch.Tensor:
-    """
-    Build dictionary D by concatenating other prompt embeddings and external wordlist
-    neighbors for the current prompt's extracted keyword.
-    Returns D: [K, d] (may be empty if nothing available).
-    """
-    parts = []
-    if this_index > 0:
-        parts.append(text_emb_all[:this_index])
-    if this_index + 1 < text_emb_all.shape[0]:
-        parts.append(text_emb_all[this_index+1:])
-    tokens = re.findall(r'[a-z]+', prompt_text.lower())
-    key = tokens[-1] if len(tokens) > 0 else ''
-    if key and key in wordlist_map and isinstance(wordlist_map[key], list):
-        wl = [w for w in wordlist_map[key] if isinstance(w, str) and len(w.strip()) > 0]
-        if len(wl) > 0:
-            ext_emb = build_wordlist_neighbors_embedding(tokenizer, model, wl, device)
-            if ext_emb is not None and ext_emb.numel() > 0:
-                parts.append(ext_emb)
-    if len(parts) == 0:
-        return original_1x.new_zeros((0, original_1x.shape[-1]))
-    D = torch.cat(parts, dim=0)
-    D = F.normalize(D, dim=-1)
-    # Remove any near-duplicate atoms to the target itself
-    sim = (D @ original_1x.t()).squeeze(-1).abs()
-    keep = sim < 0.999  # drop atoms identical to x
-    D = D[keep]
-    return D
 
 def omp_sparse_residual(x_1x: torch.Tensor, D: torch.Tensor, max_atoms: int = 8, tol: float = 1e-6) -> torch.Tensor:
     """
