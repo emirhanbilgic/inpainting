@@ -483,7 +483,7 @@ def main():
         plt.tight_layout()
         # Leave more gaps to avoid overlapping titles/labels
         try:
-            plt.subplots_adjust(hspace=0.6, wspace=0.4)
+            plt.subplots_adjust(hspace=0.4, wspace=0.7)
         except Exception:
             pass
         base = os.path.splitext(os.path.basename(pth))[0]
