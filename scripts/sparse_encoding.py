@@ -354,6 +354,10 @@ def main():
                         help='Top-K neighbors to keep after CLIP-band filtering; 0 disables.')
     parser.add_argument('--neighbors_diverse', type=int, default=0,
                         help='If 1, use farthest-first selection for diversity when topk > 0.')
+    parser.add_argument('--dict_self_sim_max', type=float, default=0.999,
+                        help='Maximum allowed absolute cosine similarity between the target prompt embedding '
+                             'and any atom in the dictionary D. Atoms with similarity >= this value are dropped. '
+                             'Set to a value >= 1.0 to effectively disable this filtering.')
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -601,8 +605,10 @@ def main():
                     if D.numel() > 0:
                         D = F.normalize(D, dim=-1)
                         sim = (D @ original_1x.t()).squeeze(-1).abs()
-                        keep = sim < 0.999
-                        D = D[keep]
+                        # Optionally drop atoms that are too close to the target prompt in cosine similarity
+                        if args.dict_self_sim_max is not None and float(args.dict_self_sim_max) < 1.0:
+                            keep = sim < float(args.dict_self_sim_max)
+                            D = D[keep]
                     max_atoms = int(vcfg.get('atoms', args.residual_atoms))
                     emb_1x = omp_sparse_residual(original_1x, D, max_atoms=max_atoms)
                 else:
