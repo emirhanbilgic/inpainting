@@ -214,8 +214,14 @@ def wordnet_neighbors(keyword: str, limit_per_relation: int = 8) -> List[str]:
     """
     try:
         import nltk  # type: ignore
+        try:
+            nltk.data.find('corpora/wordnet.zip')
+        except LookupError:
+            nltk.download('wordnet', quiet=True)
+            nltk.download('omw-1.4', quiet=True)
         from nltk.corpus import wordnet as wn  # type: ignore
-    except Exception:
+    except Exception as e:
+        print(f"[WordNet] Warning: Failed to load NLTK/WordNet: {e}")
         return []
     out = []
     seen = set()
@@ -261,8 +267,14 @@ def wordnet_neighbors_configured(
     """
     try:
         import nltk  # type: ignore
+        try:
+            nltk.data.find('corpora/wordnet.zip')
+        except LookupError:
+            nltk.download('wordnet', quiet=True)
+            nltk.download('omw-1.4', quiet=True)
         from nltk.corpus import wordnet as wn  # type: ignore
-    except Exception:
+    except Exception as e:
+        print(f"[WordNet] Warning: Failed to load NLTK/WordNet: {e}")
         return []
     out = []
     seen = set()
