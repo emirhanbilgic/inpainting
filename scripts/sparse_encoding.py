@@ -358,6 +358,8 @@ def main():
                         help='Maximum allowed absolute cosine similarity between the target prompt embedding '
                              'and any atom in the dictionary D. Atoms with similarity >= this value are dropped. '
                              'Set to a value >= 1.0 to effectively disable this filtering.')
+    parser.add_argument('--dict_include_prompts', type=int, default=1,
+                        help='Include other prompts (context) in the dictionary D (0/1). Default 1.')
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -538,10 +540,11 @@ def main():
                 elif mode == 'sparse_residual':
                     # Build dictionary from other prompts + neighbors
                     parts = []
-                    if r > 0:
-                        parts.append(text_emb_all[:r])
-                    if r + 1 < text_emb_all.shape[0]:
-                        parts.append(text_emb_all[r+1:])
+                    if args.dict_include_prompts:
+                        if r > 0:
+                            parts.append(text_emb_all[:r])
+                        if r + 1 < text_emb_all.shape[0]:
+                            parts.append(text_emb_all[r+1:])
                     tokens = re.findall(r'[a-z]+', prompt.lower())
                     key = tokens[-1] if len(tokens) > 0 else ''
                     # Determine neighbors based on benchmark config vs. global args/loader
