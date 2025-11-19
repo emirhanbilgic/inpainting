@@ -304,7 +304,7 @@ def precompute_sparse_text_embeddings(
                         n_emb = model.encode_text(n_tok)
                         n_emb = F.normalize(n_emb, dim=-1)
                         parts.append(n_emb)
-                        d_labels.extend(raw_neighbors)
+                        d_labels.extend(neighbor_prompts)
         
         D = torch.cat(parts, dim=0) if len(parts) > 0 else text_embs.new_zeros((0, d))
         
@@ -356,6 +356,7 @@ def evaluate_imagenet(
     dataloader: DataLoader,
     text_embs: torch.Tensor,
     sparse_text_embs: torch.Tensor,
+    atoms: int,
     device: torch.device,
 ) -> None:
     """
@@ -417,7 +418,7 @@ def evaluate_imagenet(
     print("=== Zero-shot ImageNet results ===")
     print(f"Total images: {total}")
     print(f"[Standard CLIP]  Top-1: {top1_std:.2f}%   Top-5: {top5_std:.2f}%")
-    print(f"[Sparse (atoms={args.atoms})] Top-1: {top1_sparse:.2f}%   Top-5: {top5_sparse:.2f}%")
+    print(f"[Sparse (atoms={atoms})] Top-1: {top1_sparse:.2f}%   Top-5: {top5_sparse:.2f}%")
 
 
 def parse_args() -> argparse.Namespace:
@@ -591,6 +592,7 @@ def main():
         dataloader=dataloader,
         text_embs=text_embs,
         sparse_text_embs=sparse_text_embs,
+        atoms=args.atoms,
         device=device,
     )
 
