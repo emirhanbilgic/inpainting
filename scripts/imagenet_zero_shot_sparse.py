@@ -538,6 +538,8 @@ def main():
     print(f"[device] Using device: {device}")
 
     # 1) Load ImageNet dataset as ImageFolder
+    # Support for flat structure (like ImageNet-R on Kaggle sometimes) or split structure
+    # If args.split is provided and exists as a subdir, use it. Otherwise treat root as the dataset.
     split_dir = os.path.join(args.imagenet_root, args.split)
     if not os.path.isdir(split_dir):
         raise RuntimeError(
