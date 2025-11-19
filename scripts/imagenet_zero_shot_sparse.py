@@ -20,7 +20,8 @@ which is the standard layout after unpacking ILSVRC2012.
 import argparse
 import json
 import os
-from typing import Dict, List, Tuple
+import re
+from typing import Dict, List, Tuple, Optional
 
 import requests
 from tqdm import tqdm
@@ -106,6 +107,71 @@ def build_prompts_for_imagenet_classes(
     return prompts
 
 
+def wordnet_neighbors_configured(
+    keyword: str,
+    use_synonyms: bool,
+    use_hypernyms: bool,
+    use_hyponyms: bool,
+    use_siblings: bool,
+    limit_per_relation: int = 8
+) -> List[str]:
+    """
+    Configurable WordNet neighbors. Enable/disable relations via flags.
+    """
+    try:
+        import nltk  # type: ignore
+        try:
+            nltk.data.find('corpora/wordnet.zip')
+        except LookupError:
+            nltk.download('wordnet', quiet=True)
+            nltk.download('omw-1.4', quiet=True)
+        from nltk.corpus import wordnet as wn  # type: ignore
+    except Exception as e:
+        print(f"[WordNet] Warning: Failed to load NLTK/WordNet: {e}")
+        return []
+    out = []
+    seen = set()
+    key_low = keyword.lower()
+    synsets = wn.synsets(keyword, pos=wn.NOUN)
+    for s in synsets[:limit_per_relation]:
+        if use_synonyms:
+            for l in s.lemmas()[:limit_per_relation]:
+                name = l.name().replace('_', ' ').lower()
+                if name != key_low and name not in seen:
+                    out.append(name); seen.add(name)
+        if use_hypernyms:
+            for h in s.hypernyms()[:limit_per_relation]:
+                for l in h.lemmas()[:limit_per_relation]:
+                    name = l.name().replace('_', ' ').lower()
+                    if name != key_low and name not in seen:
+                        out.append(name); seen.add(name)
+        if use_hyponyms:
+            for h in s.hyponyms()[:limit_per_relation]:
+                for l in h.lemmas()[:limit_per_relation]:
+                    name = l.name().replace('_', ' ').lower()
+                    if name != key_low and name not in seen:
+                        out.append(name); seen.add(name)
+        if use_siblings:
+            for h in s.hypernyms()[:limit_per_relation]:
+                for sib in h.hyponyms()[:limit_per_relation]:
+                    for l in sib.lemmas()[:limit_per_relation]:
+                        name = l.name().replace('_', ' ').lower()
+                        if name != key_low and name not in seen:
+                            out.append(name); seen.add(name)
+    # Cap list size reasonably
+    return out[: max(1, limit_per_relation * 3)]
+
+
+def inject_context(prompt: str, key: str, neighbor: str) -> str:
+    # Case insensitive replace of the LAST occurrence of key to preserve prompt structure
+    lprompt = prompt.lower()
+    lkey = key.lower()
+    idx = lprompt.rfind(lkey)
+    if idx == -1: 
+        return neighbor # fallback if key not found
+    return prompt[:idx] + neighbor + prompt[idx+len(key):]
+
+
 def omp_sparse_residual(x_1x: torch.Tensor, D: torch.Tensor, max_atoms: int = 8, tol: float = 1e-6) -> torch.Tensor:
     """
     Orthogonal Matching Pursuit residual.
@@ -171,50 +237,116 @@ def compute_text_embeddings(
 
 
 def precompute_sparse_text_embeddings(
+    model,
+    tokenizer,
+    class_prompts: List[str],
     text_embs: torch.Tensor,
+    wnids: List[str],
+    wnid_to_label: Dict[str, str],
     atoms: int,
-    max_cos_sim: float | None = 0.9,
+    max_cos_sim: float | None,
+    wn_config: Dict[str, bool],
+    dict_include_prompts: bool,
+    device: torch.device,
 ) -> torch.Tensor:
     """
-    For each class embedding, compute the sparse residual encoding using
-    dictionary of all OTHER class embeddings (no self-atom).
-
-    Args:
-        text_embs: [C, d] L2-normalized embeddings for C classes.
-        atoms: maximum atoms per OMP run.
-
-    Returns:
-        sparse_embs: [C, d] L2-normalized residual embeddings.
+    Compute sparse residual encodings using WordNet neighbors and optionally other class prompts.
     """
     C, d = text_embs.shape
-    device = text_embs.device
     sparse_embs = torch.empty_like(text_embs)
-    print(f"[sparse] Precomputing sparse encodings for {C} classes with {atoms} atoms ...")
+    print(f"[sparse] Precomputing sparse encodings for {C} classes with {atoms} atoms...")
+    print(f"[sparse] Config: WordNet={wn_config}, include_prompts={dict_include_prompts}, max_sim={max_cos_sim}")
+
+    # Determine if we need to fetch neighbors at all
+    use_wn = any(wn_config.values())
+
     for c in tqdm(range(C), desc="OMP (classes)"):
         x = text_embs[c : c + 1]  # [1, d]
-        if C == 1:
-            sparse_embs[c] = x
-            continue
-        # dictionary: all other classes
+        label = wnid_to_label.get(wnids[c], wnids[c])
+        
+        # Build dictionary components
         parts = []
-        if c > 0:
-            parts.append(text_embs[:c])
-        if c + 1 < C:
-            parts.append(text_embs[c + 1 :])
+        d_labels = []
+
+        # 1. Other class prompts (if requested)
+        if dict_include_prompts and C > 1:
+            if c > 0:
+                parts.append(text_embs[:c])
+                d_labels.extend([f"class_{i}" for i in range(c)])
+            if c + 1 < C:
+                parts.append(text_embs[c + 1 :])
+                d_labels.extend([f"class_{i}" for i in range(c + 1, C)])
+        
+        # 2. WordNet neighbors
+        neighbors = []
+        if use_wn:
+            # Get raw neighbor words
+            raw_neighbors = wordnet_neighbors_configured(
+                label,
+                use_synonyms=wn_config.get('synonyms', False),
+                use_hypernyms=wn_config.get('hypernyms', False),
+                use_hyponyms=wn_config.get('hyponyms', False),
+                use_siblings=wn_config.get('siblings', False),
+                limit_per_relation=8
+            )
+            if raw_neighbors:
+                # Context injection: replace class label in prompt with neighbor
+                prompt = class_prompts[c]
+                # ImageNet prompts are built as "a photo of a {label}."
+                # We try to substitute {label} with {neighbor}
+                neighbor_prompts = [inject_context(prompt, label, w) for w in raw_neighbors]
+                
+                if neighbor_prompts:
+                    # Encode neighbors
+                    with torch.no_grad():
+                        # Batch encode neighbors (small batch usually < 50)
+                        n_tok = tokenizer(neighbor_prompts).to(device)
+                        n_emb = model.encode_text(n_tok)
+                        n_emb = F.normalize(n_emb, dim=-1)
+                        parts.append(n_emb)
+                        d_labels.extend(raw_neighbors)
+        
         D = torch.cat(parts, dim=0) if len(parts) > 0 else text_embs.new_zeros((0, d))
+        
+        # Logging for first few classes
+        verbose = (c < 3)
+        if verbose:
+            print(f"\n[class {c}] label='{label}' prompt='{class_prompts[c]}'")
+            print(f"  Dictionary size raw: {D.shape[0]}")
+
         if D.numel() > 0:
             D = F.normalize(D, dim=-1)
-            # Optionally remove atoms that are almost identical to x (too high cosine similarity)
+            
+            # Calculate similarities
+            sim = (D @ x.t()).squeeze(-1).abs()  # [K]
+
+            if verbose and D.shape[0] < 100:
+                # If dictionary is small (e.g. only neighbors), log all
+                 sorted_idxs = torch.argsort(sim, descending=True)
+                 print("  Dictionary atoms (sim to target):")
+                 for idx in sorted_idxs[:10]:
+                     idx_val = idx.item()
+                     w_lbl = d_labels[idx_val] if idx_val < len(d_labels) else "unknown"
+                     print(f"    - '{w_lbl}': {sim[idx_val]:.4f}")
+
+            # Filter by max cosine similarity
             if max_cos_sim is not None and float(max_cos_sim) < 1.0:
-                sim = (D @ x.t()).squeeze(-1).abs()  # [K]
                 keep = sim < float(max_cos_sim)
+                if verbose:
+                    dropped = (~keep).sum().item()
+                    if dropped > 0:
+                        print(f"  Dropped {dropped} atoms with sim >= {max_cos_sim}")
                 D = D[keep]
-        # If the dictionary becomes empty after filtering, fall back to original embedding
+        
         if D.numel() == 0:
+            if verbose:
+                print("  Dictionary empty after filtering. Using original.")
             sparse_embs[c] = x
             continue
+            
         sparse = omp_sparse_residual(x, D, max_atoms=atoms)
         sparse_embs[c] = sparse.to(device)
+        
     return sparse_embs
 
 
@@ -356,6 +488,17 @@ def parse_args() -> argparse.Namespace:
              "Set >=1.0 or <=0 to disable.",
     )
     parser.add_argument(
+        "--dict_include_prompts",
+        type=int,
+        default=1,
+        help="Include other class prompts in the dictionary D (0/1). Default 1.",
+    )
+    parser.add_argument('--wn_use_synonyms', type=int, default=0, help='WordNet: include synonyms (0/1).')
+    parser.add_argument('--wn_use_hypernyms', type=int, default=0, help='WordNet: include hypernyms (0/1).')
+    parser.add_argument('--wn_use_hyponyms', type=int, default=0, help='WordNet: include hyponyms (0/1).')
+    parser.add_argument('--wn_use_siblings', type=int, default=1, help='WordNet: include co-hyponyms/siblings (0/1).')
+
+    parser.add_argument(
         "--device",
         type=str,
         default="cuda",
@@ -420,11 +563,27 @@ def main():
         device=device,
     )
 
-    # 4) Precompute sparse residual embeddings with dictionary of all other class prompts
+    # 4) Precompute sparse residual embeddings
+    # Pack WordNet config
+    wn_config = {
+        'synonyms': bool(args.wn_use_synonyms),
+        'hypernyms': bool(args.wn_use_hypernyms),
+        'hyponyms': bool(args.wn_use_hyponyms),
+        'siblings': bool(args.wn_use_siblings),
+    }
+    
     sparse_text_embs = precompute_sparse_text_embeddings(
+        model=model,
+        tokenizer=tokenizer,
+        class_prompts=prompts,
         text_embs=text_embs,
+        wnids=wnids,
+        wnid_to_label=wnid_to_label,
         atoms=args.atoms,
         max_cos_sim=args.max_dict_cos_sim if 0.0 < args.max_dict_cos_sim < 1.0 else None,
+        wn_config=wn_config,
+        dict_include_prompts=bool(args.dict_include_prompts),
+        device=device
     )
 
     # 5) Evaluate zero-shot accuracy
