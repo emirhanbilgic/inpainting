@@ -117,6 +117,8 @@ def wordnet_neighbors_configured(
 ) -> List[str]:
     """
     Configurable WordNet neighbors. Enable/disable relations via flags.
+    Attempts to find synsets for the full keyword. If none found and keyword has multiple words,
+    recursively tries smaller suffixes/permutations (e.g. "great white shark" -> "white shark" -> "shark").
     """
     try:
         import nltk  # type: ignore
@@ -129,37 +131,59 @@ def wordnet_neighbors_configured(
     except Exception as e:
         print(f"[WordNet] Warning: Failed to load NLTK/WordNet: {e}")
         return []
-    out = []
-    seen = set()
-    key_low = keyword.lower()
-    synsets = wn.synsets(keyword, pos=wn.NOUN)
-    for s in synsets[:limit_per_relation]:
-        if use_synonyms:
-            for l in s.lemmas()[:limit_per_relation]:
-                name = l.name().replace('_', ' ').lower()
-                if name != key_low and name not in seen:
-                    out.append(name); seen.add(name)
-        if use_hypernyms:
-            for h in s.hypernyms()[:limit_per_relation]:
-                for l in h.lemmas()[:limit_per_relation]:
+
+    def get_neighbors_for_term(term: str) -> List[str]:
+        out = []
+        seen = set()
+        key_low = term.lower()
+        # Only look for NOUNs
+        synsets = wn.synsets(term, pos=wn.NOUN)
+        
+        for s in synsets[:limit_per_relation]:
+            if use_synonyms:
+                for l in s.lemmas()[:limit_per_relation]:
                     name = l.name().replace('_', ' ').lower()
                     if name != key_low and name not in seen:
                         out.append(name); seen.add(name)
-        if use_hyponyms:
-            for h in s.hyponyms()[:limit_per_relation]:
-                for l in h.lemmas()[:limit_per_relation]:
-                    name = l.name().replace('_', ' ').lower()
-                    if name != key_low and name not in seen:
-                        out.append(name); seen.add(name)
-        if use_siblings:
-            for h in s.hypernyms()[:limit_per_relation]:
-                for sib in h.hyponyms()[:limit_per_relation]:
-                    for l in sib.lemmas()[:limit_per_relation]:
+            if use_hypernyms:
+                for h in s.hypernyms()[:limit_per_relation]:
+                    for l in h.lemmas()[:limit_per_relation]:
                         name = l.name().replace('_', ' ').lower()
                         if name != key_low and name not in seen:
                             out.append(name); seen.add(name)
-    # Cap list size reasonably
-    return out[: max(1, limit_per_relation * 3)]
+            if use_hyponyms:
+                for h in s.hyponyms()[:limit_per_relation]:
+                    for l in h.lemmas()[:limit_per_relation]:
+                        name = l.name().replace('_', ' ').lower()
+                        if name != key_low and name not in seen:
+                            out.append(name); seen.add(name)
+            if use_siblings:
+                for h in s.hypernyms()[:limit_per_relation]:
+                    for sib in h.hyponyms()[:limit_per_relation]:
+                        for l in sib.lemmas()[:limit_per_relation]:
+                            name = l.name().replace('_', ' ').lower()
+                            if name != key_low and name not in seen:
+                                out.append(name); seen.add(name)
+        return out
+
+    # 1. Try full keyword
+    results = get_neighbors_for_term(keyword)
+    if results:
+        return results[: max(1, limit_per_relation * 3)]
+
+    # 2. Fallback: iterate sub-phrases from right to left (suffixes)
+    # e.g. "great white shark" -> "white shark" -> "shark"
+    words = keyword.split()
+    if len(words) > 1:
+        # Try progressively shorter suffixes
+        for i in range(1, len(words)):
+            sub_term = " ".join(words[i:])
+            results = get_neighbors_for_term(sub_term)
+            if results:
+                # print(f"[WordNet] Fallback: '{keyword}' -> '{sub_term}' found {len(results)} neighbors.")
+                return results[: max(1, limit_per_relation * 3)]
+    
+    return []
 
 
 def inject_context(prompt: str, key: str, neighbor: str) -> str:
