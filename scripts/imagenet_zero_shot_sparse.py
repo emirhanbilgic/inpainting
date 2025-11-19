@@ -417,7 +417,7 @@ def evaluate_imagenet(
     print("=== Zero-shot ImageNet results ===")
     print(f"Total images: {total}")
     print(f"[Standard CLIP]  Top-1: {top1_std:.2f}%   Top-5: {top5_std:.2f}%")
-    print(f"[Sparse (atoms=8)] Top-1: {top1_sparse:.2f}%   Top-5: {top5_sparse:.2f}%")
+    print(f"[Sparse (atoms={args.atoms})] Top-1: {top1_sparse:.2f}%   Top-5: {top5_sparse:.2f}%")
 
 
 def parse_args() -> argparse.Namespace:
