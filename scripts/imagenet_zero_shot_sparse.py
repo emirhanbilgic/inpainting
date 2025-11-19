@@ -113,12 +113,13 @@ def wordnet_neighbors_configured(
     use_hypernyms: bool,
     use_hyponyms: bool,
     use_siblings: bool,
+    use_fallback: bool = True,
     limit_per_relation: int = 8
 ) -> List[str]:
     """
     Configurable WordNet neighbors. Enable/disable relations via flags.
     Attempts to find synsets for the full keyword. If none found and keyword has multiple words,
-    recursively tries smaller suffixes/permutations (e.g. "great white shark" -> "white shark" -> "shark").
+    recursively tries smaller suffixes/permutations (e.g. "great white shark" -> "white shark" -> "shark") if use_fallback=True.
     """
     try:
         import nltk  # type: ignore
@@ -170,6 +171,9 @@ def wordnet_neighbors_configured(
     results = get_neighbors_for_term(keyword)
     if results:
         return results[: max(1, limit_per_relation * 3)]
+
+    if not use_fallback:
+        return []
 
     # 2. Fallback: iterate sub-phrases from right to left (suffixes)
     # e.g. "great white shark" -> "white shark" -> "shark"
@@ -311,6 +315,7 @@ def precompute_sparse_text_embeddings(
                 use_hypernyms=wn_config.get('hypernyms', False),
                 use_hyponyms=wn_config.get('hyponyms', False),
                 use_siblings=wn_config.get('siblings', False),
+                use_fallback=wn_config.get('fallback_search', True),
                 limit_per_relation=8
             )
             if raw_neighbors:
@@ -521,6 +526,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--wn_use_hypernyms', type=int, default=0, help='WordNet: include hypernyms (0/1).')
     parser.add_argument('--wn_use_hyponyms', type=int, default=0, help='WordNet: include hyponyms (0/1).')
     parser.add_argument('--wn_use_siblings', type=int, default=1, help='WordNet: include co-hyponyms/siblings (0/1).')
+    parser.add_argument(
+        "--wn_fallback_search",
+        type=int,
+        default=1,
+        help="Enable fallback search for multi-word terms (e.g., 'great white shark' -> 'shark'). Default 1.",
+    )
 
     parser.add_argument(
         "--device",
@@ -596,6 +607,7 @@ def main():
         'hypernyms': bool(args.wn_use_hypernyms),
         'hyponyms': bool(args.wn_use_hyponyms),
         'siblings': bool(args.wn_use_siblings),
+        'fallback_search': bool(args.wn_fallback_search),
     }
     
     sparse_text_embs = precompute_sparse_text_embeddings(
