@@ -32,6 +32,7 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
 import open_clip
+from legrad import LePreprocess
 
 
 IMAGENET_CLASS_INDEX_URL = (
@@ -539,6 +540,12 @@ def parse_args() -> argparse.Namespace:
         default="cuda",
         help="Device to use (cuda or cpu).",
     )
+    parser.add_argument(
+        "--image_size",
+        type=int,
+        default=224,
+        help="Input resolution for LePreprocess (e.g., 224 or 448).",
+    )
     return parser.parse_args()
 
 
@@ -574,6 +581,8 @@ def main():
         pretrained=args.pretrained,
         device=device,
     )
+    # Wrap CLIP preprocess with LePreprocess so we can easily change resolution (e.g. 448)
+    preprocess = LePreprocess(preprocess=preprocess, image_size=args.image_size)
     tokenizer = open_clip.get_tokenizer(args.model_name)
     model.eval()
 

@@ -25,6 +25,7 @@ from torchvision import transforms
 from tqdm import tqdm
 
 import open_clip
+from legrad import LePreprocess
 
 
 # -----------------------------------------------------------------------------
@@ -463,6 +464,7 @@ def main():
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--atoms", type=int, default=8)
     parser.add_argument("--max_dict_cos_sim", type=float, default=0.9)
+    parser.add_argument("--image_size", type=int, default=224, help="Input resolution for LePreprocess (e.g., 224 or 448)")
     
     # Dictionary construction flags
     parser.add_argument("--dict_include_prompts", type=int, default=1, help="Include other class prompts in dictionary (0/1)")
@@ -487,6 +489,8 @@ def main():
         pretrained=args.pretrained,
         device=device,
     )
+    # Wrap preprocess so we can easily run at higher resolution (e.g. 448)
+    preprocess = LePreprocess(preprocess=preprocess, image_size=args.image_size)
     tokenizer = open_clip.get_tokenizer(args.model_name)
     model.eval()
 

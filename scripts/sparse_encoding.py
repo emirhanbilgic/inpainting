@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 from einops import rearrange
 import open_clip
 
-from legrad import LeWrapper
+from legrad import LeWrapper, LePreprocess
 
 
 CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
@@ -377,13 +377,15 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model, _, _ = open_clip.create_model_and_transforms(model_name=args.model_name,
-                                                        pretrained=args.pretrained,
-                                                        device=device)
+    model, _, preprocess = open_clip.create_model_and_transforms(model_name=args.model_name,
+                                                                 pretrained=args.pretrained,
+                                                                 device=device)
     tokenizer = open_clip.get_tokenizer(model_name=args.model_name)
     model.eval()
     # Wrap with LeGrad, include all layers
     model = LeWrapper(model, layer_index=0)
+    # Use LeGrad's high-res preprocessing (e.g. 448x448) like in the official repo
+    preprocess = LePreprocess(preprocess=preprocess, image_size=args.image_size)
 
     # Text embeddings for prompts
     tok = tokenizer(args.prompts).to(device)
@@ -547,7 +549,8 @@ def main():
         except Exception:
             continue
 
-        img_t = safe_preprocess(base_img, image_size=args.image_size).unsqueeze(0).to(device)
+        # Use LePreprocess rather than custom safe_preprocess for consistency with LeGrad
+        img_t = preprocess(base_img).unsqueeze(0).to(device)
 
         fig, axes = plt.subplots(nrows=len(args.prompts), ncols=cols, figsize=(3.5 * cols, 3.5 * len(args.prompts)))
         if len(args.prompts) == 1:

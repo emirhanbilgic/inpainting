@@ -25,7 +25,7 @@ try:
 except ImportError:
     wn = None  # type: ignore
 
-from legrad import LeWrapper
+from legrad import LeWrapper, LePreprocess
 import open_clip
 
 # Constants
@@ -117,7 +117,7 @@ def dynamic_preprocess(img: Image.Image, target_size: int = 448, patch_size: int
     
     return t
 
-def compute_iou_acc(heatmap, gt_mask, threshold=0.5):
+def compute_iou_acc(heatmap, gt_mask, threshold: float):
     pred_mask = (heatmap > threshold).astype(np.uint8)
     gt_mask = gt_mask.astype(np.uint8)
     
@@ -221,13 +221,46 @@ def main():
         default='resources/imagenet_class_index.json',
         help='Path to imagenet_class_index.json (downloaded automatically if missing).'
     )
-    # Sparse settings
-    parser.add_argument('--residual_atoms', type=int, default=8)
-    parser.add_argument('--wn_use_siblings', type=int, default=1)
+    # Sparse settings (mirroring sparse_encoding.py / imagenet_zero_shot_sparse.py)
+    parser.add_argument(
+        '--atoms',
+        type=int,
+        default=8,
+        help='Number of atoms for OMP sparse residual.'
+    )
+    parser.add_argument(
+        '--dict_include_prompts',
+        type=int,
+        default=1,
+        help='Include other class prompts in the dictionary D (0/1).'
+    )
+    parser.add_argument('--wn_use_synonyms', type=int, default=0, help='WordNet: include synonyms (0/1).')
+    parser.add_argument('--wn_use_hypernyms', type=int, default=0, help='WordNet: include hypernyms (0/1).')
+    parser.add_argument('--wn_use_hyponyms', type=int, default=0, help='WordNet: include hyponyms (0/1).')
+    parser.add_argument('--wn_use_siblings', type=int, default=1, help='WordNet: include co-hyponyms/siblings (0/1).')
+    parser.add_argument(
+        '--wn_fallback_search',
+        type=int,
+        default=1,
+        help='Enable fallback search for multi-word class names in WordNet (0/1).'
+    )
+    parser.add_argument(
+        '--max_dict_cos_sim',
+        type=float,
+        default=0.9,
+        help='Maximum allowed absolute cosine similarity between target prompt and any atom in D. '
+             'Atoms with |cos| >= this are dropped; set >=1.0 or <=0 to disable.'
+    )
+    parser.add_argument(
+        '--sparse_threshold',
+        type=float,
+        default=0.5,
+        help='Binarization threshold for sparse-encoding heatmaps (LeGrad stays fixed at 0.5).'
+    )
     
     args = parser.parse_args()
     
-    # Load Model (use CLIP's own preprocess, and default LeGrad config)
+    # Load Model (use CLIP's preprocess, then wrap with LePreprocess for higher-res input)
     print(f"Loading model {args.model_name}...")
     model, _, preprocess = open_clip.create_model_and_transforms(
         model_name=args.model_name,
@@ -238,6 +271,8 @@ def main():
     model.eval()
     # Use default layer_index as in original LeGrad (typically -2)
     model = LeWrapper(model)
+    # Match official LeGrad usage: wrap preprocess for e.g. 448x448 input
+    preprocess = LePreprocess(preprocess=preprocess, image_size=args.image_size)
     
     try:
         nltk.download('wordnet', quiet=True)
@@ -269,6 +304,33 @@ def main():
     limit = min(limit, num_images)
     print(f"Processing {limit} images with dynamic aspect-ratio preprocessing...")
 
+    # ------------------------------------------------------------------
+    # Precompute prompts and embeddings for all unique wnids in the seg set
+    # so we can optionally include other prompts in the sparse dictionary.
+    # ------------------------------------------------------------------
+    wnids_in_seg = []
+    for idx in range(num_images):
+        target_ref = targets_refs[idx, 0]
+        target_data = np.array(f[target_ref])
+        wnid = ''.join([chr(c) for c in target_data.flatten()])
+        wnids_in_seg.append(wnid)
+    unique_wnids = sorted(set(wnids_in_seg))
+
+    wnid_to_prompt = {}
+    for wnid in unique_wnids:
+        class_label = wnid_to_label.get(wnid)
+        if class_label is None:
+            class_label = get_synset_name(wnid)
+        wnid_to_prompt[wnid] = f"a photo of a {class_label}."
+
+    all_prompts = [wnid_to_prompt[w] for w in unique_wnids]
+    wnid_to_idx = {w: i for i, w in enumerate(unique_wnids)}
+
+    print(f"[prompts] Built {len(all_prompts)} unique class prompts for segmentation set.")
+    tok_all = tokenizer(all_prompts).to(args.device)
+    with torch.no_grad():
+        all_text_embs = model.encode_text(tok_all, normalize=True)  # [C, d]
+
     results = {
         'original': {'iou': [], 'acc': [], 'ap': []},
         'sparse': {'iou': [], 'acc': [], 'ap': []}
@@ -298,64 +360,104 @@ def main():
             
             H_orig, W_orig = gt_mask.shape
             
-            # Get Class Name
+            # Get Class Name & prompt / embedding from precomputed tables
             target_ref = targets_refs[idx, 0]
             target_data = np.array(f[target_ref])
             wnid = ''.join([chr(c) for c in target_data.flatten()])
+
             # Prefer official ImageNet label if available, otherwise fall back to WordNet
             class_label = wnid_to_label.get(wnid)
             if class_label is None:
                 class_label = get_synset_name(wnid)
             class_name = class_label
-            
-            prompt = f"a photo of a {class_name}."
-            
-            # Compute Embeddings
-            tok = tokenizer([prompt]).to(args.device)
-            with torch.no_grad():
-                original_1x = model.encode_text(tok, normalize=True)
+
+            prompt = wnid_to_prompt[wnid]
+
+            # Precomputed embedding for this class
+            cls_idx = wnid_to_idx[wnid]
+            original_1x = all_text_embs[cls_idx:cls_idx + 1]  # [1, d]
             
             # --- ORIGINAL ---
-            heatmap_orig = compute_map_for_embedding(model, img_t, original_1x) # [H_feat, W_feat]
-            
+            heatmap_orig = compute_map_for_embedding(model, img_t, original_1x)  # [H_feat, W_feat]
+
             # Resize to original size
             # Note: F.interpolate expects [B, C, H, W]
-            heatmap_orig_resized = F.interpolate(heatmap_orig.view(1, 1, H_feat, W_feat), 
-                                                 size=(H_orig, W_orig), 
-                                                 mode='bilinear', 
-                                                 align_corners=False).squeeze().numpy()
-            
-            # --- SPARSE ---
-            tokens = re.findall(r'[a-z]+', prompt.lower())
-            key = tokens[-1] if len(tokens) > 0 else ''
-            
-            wl = []
-            if key:
-                wl = wordnet_neighbors_configured(key, use_siblings=bool(args.wn_use_siblings))
-            
-            D = None
-            if len(wl) > 0:
-                ext_emb = build_wordlist_neighbors_embedding(tokenizer, model, wl, args.device)
-                if ext_emb is not None:
-                    D = F.normalize(ext_emb, dim=-1)
-            
-            sparse_1x = omp_sparse_residual(original_1x, D, max_atoms=args.residual_atoms)
-            
+            heatmap_orig_resized = F.interpolate(
+                heatmap_orig.view(1, 1, H_feat, W_feat),
+                size=(H_orig, W_orig),
+                mode='bilinear',
+                align_corners=False
+            ).squeeze().numpy()
+
+            # --- SPARSE: build dictionary from other prompts + WordNet neighbors ---
+            parts = []
+            d_labels = []
+
+            # 1) Other class prompts in the segmentation set (if enabled)
+            if bool(args.dict_include_prompts) and len(unique_wnids) > 1:
+                if cls_idx > 0:
+                    parts.append(all_text_embs[:cls_idx])
+                    d_labels.extend([f"class_{i}" for i in range(cls_idx)])
+                if cls_idx + 1 < len(unique_wnids):
+                    parts.append(all_text_embs[cls_idx + 1:])
+                    d_labels.extend([f"class_{i}" for i in range(cls_idx + 1, len(unique_wnids))])
+
+            # 2) WordNet neighbors of the class label
+            use_wn = any([
+                bool(args.wn_use_synonyms),
+                bool(args.wn_use_hypernyms),
+                bool(args.wn_use_hyponyms),
+                bool(args.wn_use_siblings),
+            ])
+            if use_wn:
+                raw_neighbors = wordnet_neighbors_configured(
+                    class_name,
+                    use_siblings=bool(args.wn_use_siblings),
+                    limit_per_relation=8
+                )
+                # Backwards-compatible simple version: siblings only, but flags exist for future extension
+                if raw_neighbors:
+                    neighbor_prompts = [prompt.replace(class_name, w) for w in raw_neighbors]
+                    n_tok = tokenizer(neighbor_prompts).to(args.device)
+                    with torch.no_grad():
+                        n_emb = model.encode_text(n_tok)
+                        n_emb = F.normalize(n_emb, dim=-1)
+                    parts.append(n_emb)
+                    d_labels.extend(neighbor_prompts)
+
+            if len(parts) > 0:
+                D = torch.cat(parts, dim=0)
+                D = F.normalize(D, dim=-1)
+                sim = (D @ original_1x.t()).squeeze(-1).abs()
+
+                # Filter by max cosine similarity if requested
+                if args.max_dict_cos_sim is not None and 0.0 < float(args.max_dict_cos_sim) < 1.0:
+                    keep = sim < float(args.max_dict_cos_sim)
+                    D = D[keep]
+            else:
+                D = original_1x.new_zeros((0, original_1x.shape[-1]))
+
+            sparse_1x = omp_sparse_residual(original_1x, D, max_atoms=args.atoms)
+
             heatmap_sparse = compute_map_for_embedding(model, img_t, sparse_1x)
-            heatmap_sparse_resized = F.interpolate(heatmap_sparse.view(1, 1, H_feat, W_feat), 
-                                                   size=(H_orig, W_orig), 
-                                                   mode='bilinear', 
-                                                   align_corners=False).squeeze().numpy()
-            
+            heatmap_sparse_resized = F.interpolate(
+                heatmap_sparse.view(1, 1, H_feat, W_feat),
+                size=(H_orig, W_orig),
+                mode='bilinear',
+                align_corners=False
+            ).squeeze().numpy()
+
             # --- METRICS ---
-            iou_o, acc_o = compute_iou_acc(heatmap_orig_resized, gt_mask)
+            # Original LeGrad: fixed threshold 0.5
+            iou_o, acc_o = compute_iou_acc(heatmap_orig_resized, gt_mask, threshold=0.5)
             ap_o = compute_map_score(heatmap_orig_resized, gt_mask)
             
             results['original']['iou'].append(iou_o)
             results['original']['acc'].append(acc_o)
             results['original']['ap'].append(ap_o)
-            
-            iou_s, acc_s = compute_iou_acc(heatmap_sparse_resized, gt_mask)
+
+            # Sparse encoding: user-controllable threshold
+            iou_s, acc_s = compute_iou_acc(heatmap_sparse_resized, gt_mask, threshold=args.sparse_threshold)
             ap_s = compute_map_score(heatmap_sparse_resized, gt_mask)
             
             results['sparse']['iou'].append(iou_s)
