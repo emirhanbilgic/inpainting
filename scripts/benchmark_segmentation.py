@@ -140,9 +140,19 @@ def compute_map_score(heatmap, gt_mask):
     return average_precision_score(y_true, y_scores)
 
 # --- Sparse Encoding Logic Copies ---
-def omp_sparse_residual(x_1x: torch.Tensor, D: torch.Tensor, max_atoms: int = 8, tol: float = 1e-6) -> torch.Tensor:
+def omp_sparse_residual(
+    x_1x: torch.Tensor,
+    D: torch.Tensor,
+    max_atoms: int = 8,
+    tol: float = 1e-6,
+    return_num_selected: bool = False,
+):
+    """
+    Orthogonal Matching Pursuit residual (optionally returns number of selected atoms).
+    """
     if D is None or D.numel() == 0:
-        return F.normalize(x_1x, dim=-1)
+        r_norm = F.normalize(x_1x, dim=-1)
+        return (r_norm, 0) if return_num_selected else r_norm
     x = x_1x.clone()
     K = D.shape[0]
     max_atoms = int(max(1, min(max_atoms, K)))
@@ -167,8 +177,10 @@ def omp_sparse_residual(x_1x: torch.Tensor, D: torch.Tensor, max_atoms: int = 8,
         if float(torch.norm(r)) <= tol:
             break
     if torch.norm(r) <= tol:
-        return F.normalize(x, dim=-1)
-    return F.normalize(r, dim=-1)
+        r_norm = F.normalize(x, dim=-1)
+    else:
+        r_norm = F.normalize(r, dim=-1)
+    return (r_norm, len(selected)) if return_num_selected else r_norm
 
 def build_wordlist_neighbors_embedding(tokenizer, model, words, device):
     if words is None or len(words) == 0:
@@ -178,25 +190,81 @@ def build_wordlist_neighbors_embedding(tokenizer, model, words, device):
         emb = model.encode_text(tok, normalize=True)
     return emb
 
-def wordnet_neighbors_configured(keyword, use_siblings=True, limit_per_relation=8):
+def wordnet_neighbors_configured(
+    keyword: str,
+    use_synonyms: bool,
+    use_hypernyms: bool,
+    use_hyponyms: bool,
+    use_siblings: bool,
+    use_fallback: bool = True,
+    limit_per_relation: int = 8
+):
+    """
+    Configurable WordNet neighbors with optional fallback for multi-word terms.
+    Mirrors the logic in imagenet_zero_shot_sparse.py.
+    """
     try:
-        import nltk
-        from nltk.corpus import wordnet as wn
-    except:
+        import nltk  # type: ignore
+        try:
+            nltk.data.find('corpora/wordnet.zip')
+        except LookupError:
+            nltk.download('wordnet', quiet=True)
+            nltk.download('omw-1.4', quiet=True)
+        from nltk.corpus import wordnet as wn  # type: ignore
+    except Exception as e:
+        print(f"[WordNet] Warning: Failed to load NLTK/WordNet: {e}")
         return []
-    out = []
-    seen = set()
-    key_low = keyword.lower()
-    synsets = wn.synsets(keyword, pos=wn.NOUN)
-    for s in synsets[:limit_per_relation]:
-        if use_siblings:
-            for h in s.hypernyms()[:limit_per_relation]:
-                for sib in h.hyponyms()[:limit_per_relation]:
-                    for l in sib.lemmas()[:limit_per_relation]:
+
+    def get_neighbors_for_term(term: str):
+        out = []
+        seen = set()
+        key_low = term.lower()
+        synsets = wn.synsets(term, pos=wn.NOUN)
+        for s in synsets[:limit_per_relation]:
+            if use_synonyms:
+                for l in s.lemmas()[:limit_per_relation]:
+                    name = l.name().replace('_', ' ').lower()
+                    if name != key_low and name not in seen:
+                        out.append(name); seen.add(name)
+            if use_hypernyms:
+                for h in s.hypernyms()[:limit_per_relation]:
+                    for l in h.lemmas()[:limit_per_relation]:
                         name = l.name().replace('_', ' ').lower()
                         if name != key_low and name not in seen:
                             out.append(name); seen.add(name)
-    return out[: max(1, limit_per_relation * 3)]
+            if use_hyponyms:
+                for h in s.hyponyms()[:limit_per_relation]:
+                    for l in h.lemmas()[:limit_per_relation]:
+                        name = l.name().replace('_', ' ').lower()
+                        if name != key_low and name not in seen:
+                            out.append(name); seen.add(name)
+            if use_siblings:
+                for h in s.hypernyms()[:limit_per_relation]:
+                    for sib in h.hyponyms()[:limit_per_relation]:
+                        for l in sib.lemmas()[:limit_per_relation]:
+                            name = l.name().replace('_', ' ').lower()
+                            if name != key_low and name not in seen:
+                                out.append(name); seen.add(name)
+        return out
+
+    # 1. Try full keyword
+    out = get_neighbors_for_term(keyword)
+    if out:
+        return out[: max(1, limit_per_relation * 3)]
+
+    if not use_fallback:
+        return []
+
+    # 2. Fallback: suffixes for multi-word terms (e.g. "tiger cub" -> "cub")
+    words = keyword.split()
+    if len(words) > 1:
+        for i in range(1, len(words)):
+            sub_term = " ".join(words[i:])
+            out = get_neighbors_for_term(sub_term)
+            if out:
+                return out[: max(1, limit_per_relation * 3)]
+
+    return []
 
 def compute_map_for_embedding(model, image, text_emb_1x):
     with torch.enable_grad():
@@ -331,6 +399,9 @@ def main():
     with torch.no_grad():
         all_text_embs = model.encode_text(tok_all, normalize=True)  # [C, d]
 
+    # Track which classes we've logged debug info for (limit to first 4)
+    debugged_classes = set()
+
     results = {
         'original': {'iou': [], 'acc': [], 'ap': []},
         'sparse': {'iou': [], 'acc': [], 'ap': []}
@@ -392,14 +463,20 @@ def main():
             # --- SPARSE: build dictionary from other prompts + WordNet neighbors ---
             parts = []
             d_labels = []
+            prompt_atoms = 0
+            neighbor_atoms = 0
 
             # 1) Other class prompts in the segmentation set (if enabled)
             if bool(args.dict_include_prompts) and len(unique_wnids) > 1:
                 if cls_idx > 0:
-                    parts.append(all_text_embs[:cls_idx])
+                    other = all_text_embs[:cls_idx]
+                    parts.append(other)
+                    prompt_atoms += other.shape[0]
                     d_labels.extend([f"class_{i}" for i in range(cls_idx)])
                 if cls_idx + 1 < len(unique_wnids):
-                    parts.append(all_text_embs[cls_idx + 1:])
+                    other = all_text_embs[cls_idx + 1:]
+                    parts.append(other)
+                    prompt_atoms += other.shape[0]
                     d_labels.extend([f"class_{i}" for i in range(cls_idx + 1, len(unique_wnids))])
 
             # 2) WordNet neighbors of the class label
@@ -412,10 +489,13 @@ def main():
             if use_wn:
                 raw_neighbors = wordnet_neighbors_configured(
                     class_name,
+                    use_synonyms=bool(args.wn_use_synonyms),
+                    use_hypernyms=bool(args.wn_use_hypernyms),
+                    use_hyponyms=bool(args.wn_use_hyponyms),
                     use_siblings=bool(args.wn_use_siblings),
-                    limit_per_relation=8
+                    use_fallback=bool(args.wn_fallback_search),
+                    limit_per_relation=8,
                 )
-                # Backwards-compatible simple version: siblings only, but flags exist for future extension
                 if raw_neighbors:
                     neighbor_prompts = [prompt.replace(class_name, w) for w in raw_neighbors]
                     n_tok = tokenizer(neighbor_prompts).to(args.device)
@@ -423,7 +503,10 @@ def main():
                         n_emb = model.encode_text(n_tok)
                         n_emb = F.normalize(n_emb, dim=-1)
                     parts.append(n_emb)
+                    neighbor_atoms += n_emb.shape[0]
                     d_labels.extend(neighbor_prompts)
+
+            dict_raw_size = prompt_atoms + neighbor_atoms
 
             if len(parts) > 0:
                 D = torch.cat(parts, dim=0)
@@ -431,13 +514,32 @@ def main():
                 sim = (D @ original_1x.t()).squeeze(-1).abs()
 
                 # Filter by max cosine similarity if requested
+                dropped = 0
                 if args.max_dict_cos_sim is not None and 0.0 < float(args.max_dict_cos_sim) < 1.0:
                     keep = sim < float(args.max_dict_cos_sim)
+                    dropped = int((~keep).sum().item())
                     D = D[keep]
             else:
                 D = original_1x.new_zeros((0, original_1x.shape[-1]))
+                dict_raw_size = 0
+                dropped = 0
 
-            sparse_1x = omp_sparse_residual(original_1x, D, max_atoms=args.atoms)
+            sparse_1x, num_selected = omp_sparse_residual(
+                original_1x, D, max_atoms=args.atoms, return_num_selected=True
+            )
+
+            # Debug logging for first few classes
+            if cls_idx not in debugged_classes and len(debugged_classes) < 4:
+                debugged_classes.add(cls_idx)
+                print(f"\n[sparse-debug] class_idx={cls_idx}, wnid={wnid}")
+                print(f"  prompt: '{prompt}'")
+                print(f"  dict_raw_size={dict_raw_size} (prompts={prompt_atoms}, neighbors={neighbor_atoms})")
+                if dict_raw_size > 0:
+                    print(f"  max_dict_cos_sim={args.max_dict_cos_sim}, dropped={dropped}")
+                    print(f"  dict_final_size={D.shape[0]}")
+                    print(f"  atoms_selected={num_selected}")
+                else:
+                    print("  Dictionary empty; sparse residual falls back to original embedding.")
 
             heatmap_sparse = compute_map_for_embedding(model, img_t, sparse_1x)
             heatmap_sparse_resized = F.interpolate(
