@@ -92,12 +92,13 @@ def omp_sparse_residual(x_1x: torch.Tensor, D: torch.Tensor, max_atoms: int = 8,
     x_1x: [1, d], assumed L2-normalized
     D: [K, d], atom rows, L2-normalized
     Returns residual r (L2-normalized): [1, d]
+    If max_atoms <= 0 or D is empty, this is a no-op and just returns the original x_1x.
     """
-    if D is None or D.numel() == 0:
+    if D is None or D.numel() == 0 or max_atoms is None or max_atoms <= 0:
         return F.normalize(x_1x, dim=-1)
     x = x_1x.clone()  # [1, d]
     K = D.shape[0]
-    max_atoms = int(max(1, min(max_atoms, K)))
+    max_atoms = int(min(max_atoms, K))
     selected = []
     r = x.clone()  # residual starts as x
     for _ in range(max_atoms):
@@ -121,7 +122,7 @@ def omp_sparse_residual(x_1x: torch.Tensor, D: torch.Tensor, max_atoms: int = 8,
         x_hat = (s.t() @ D_S).to(x.dtype)  # [1, d]
         r = (x - x_hat)
         # Early stop if residual very small
-        if float(torch.norm(r)) <= tol:
+        if float(torch.norm(r) <= tol):
             break
     # Return normalized residual (fallback to x if degenerate)
     if torch.norm(r) <= tol:
@@ -551,6 +552,14 @@ def main():
 
         # Use LePreprocess rather than custom safe_preprocess for consistency with LeGrad
         img_t = preprocess(base_img).unsqueeze(0).to(device)
+        
+        # NEW: Compute global image embedding for ranking
+        with torch.no_grad():
+            img_emb_global = model.encode_image(img_t)  # [1, d]
+            img_emb_global = F.normalize(img_emb_global, dim=-1)
+
+        rank_orig = []
+        rank_omp = []
 
         fig, axes = plt.subplots(nrows=len(args.prompts), ncols=cols, figsize=(3.5 * cols, 3.5 * len(args.prompts)))
         if len(args.prompts) == 1:
@@ -680,6 +689,15 @@ def main():
                 else:
                     emb_1x = original_1x
 
+                # NEW: Record similarity for ranking
+                with torch.no_grad():
+                    # emb_1x is [1, d]
+                    sim_val = (emb_1x @ img_emb_global.t()).item()
+                    if mode == 'original':
+                        rank_orig.append((prompt, sim_val))
+                    else:
+                        rank_omp.append((prompt, vlabel, sim_val))
+
                 heat = compute_map_for_embedding(model, img_t, emb_1x)  # [H, W]
                 maps_for_row.append((vlabel, heat))
 
@@ -687,6 +705,25 @@ def main():
             for c, (label, heat) in enumerate(maps_for_row):
                 title = f'{prompt} - {label}'
                 overlay(axes[r][c] if cols > 1 else axes[r], base_img, heat, title=title, alpha=args.overlay_alpha)
+
+        # Print Rankings
+        print(f"\n[Image: {os.path.basename(pth)}]")
+        
+        if len(rank_orig) > 0:
+            rank_orig.sort(key=lambda x: x[1], reverse=True)
+            print("Original Rankings:")
+            # Deduplicate by prompt if needed, but with loop structure, original appears once per prompt if only 1 original variant
+            seen_p = set()
+            for p, s in rank_orig:
+                if p not in seen_p:
+                    print(f"  {s:.4f} : {p}")
+                    seen_p.add(p)
+
+        if len(rank_omp) > 0:
+            rank_omp.sort(key=lambda x: x[2], reverse=True)
+            print("After OMP Rankings:")
+            for p, v, s in rank_omp:
+                print(f"  {s:.4f} : {p} ({v})")
 
         plt.tight_layout()
         # Leave more gaps to avoid overlapping titles/labels
@@ -704,5 +741,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-

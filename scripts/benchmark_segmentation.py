@@ -13,6 +13,7 @@ from sklearn.metrics import average_precision_score
 from tqdm import tqdm
 import torchvision.transforms.functional as TF
 from torchvision.transforms import InterpolationMode
+import matplotlib.pyplot as plt
 import requests
 
 # Add project root to path
@@ -149,13 +150,16 @@ def omp_sparse_residual(
 ):
     """
     Orthogonal Matching Pursuit residual (optionally returns number of selected atoms).
+    If max_atoms <= 0 or the dictionary is empty, this is a no-op and just returns x_1x.
     """
-    if D is None or D.numel() == 0:
+    # If user requests zero (or negative) atoms, or dictionary is empty, do nothing.
+    if D is None or D.numel() == 0 or max_atoms is None or max_atoms <= 0:
         r_norm = F.normalize(x_1x, dim=-1)
         return (r_norm, 0) if return_num_selected else r_norm
+
     x = x_1x.clone()
     K = D.shape[0]
-    max_atoms = int(max(1, min(max_atoms, K)))
+    max_atoms = int(min(max_atoms, K))
     selected = []
     r = x.clone()
     for _ in range(max_atoms):
@@ -325,6 +329,18 @@ def main():
         default=0.5,
         help='Binarization threshold for sparse-encoding heatmaps (LeGrad stays fixed at 0.5).'
     )
+    parser.add_argument(
+        '--vis_first_k',
+        type=int,
+        default=0,
+        help='If >0, save visualization grids (GT / LeGrad / Sparse) for the first K images.'
+    )
+    parser.add_argument(
+        '--vis_output_dir',
+        type=str,
+        default='outputs/segmentation_vis',
+        help='Directory to save visualization grids when --vis_first_k > 0.'
+    )
     
     args = parser.parse_args()
     
@@ -371,6 +387,10 @@ def main():
     limit = args.limit if args.limit > 0 else num_images
     limit = min(limit, num_images)
     print(f"Processing {limit} images with dynamic aspect-ratio preprocessing...")
+
+    # Create visualization directory if requested
+    if args.vis_first_k > 0:
+        os.makedirs(args.vis_output_dir, exist_ok=True)
 
     # ------------------------------------------------------------------
     # Precompute prompts and embeddings for all unique wnids in the seg set
@@ -565,6 +585,37 @@ def main():
             results['sparse']['iou'].append(iou_s)
             results['sparse']['acc'].append(acc_s)
             results['sparse']['ap'].append(ap_s)
+
+            # --- OPTIONAL VISUALIZATION GRID ---
+            if idx < args.vis_first_k:
+                # Resize original image to GT size
+                vis_img = base_img.resize((W_orig, H_orig))
+                # Binary masks
+                gt_bin = gt_mask.astype(np.uint8)
+                legrad_bin = (int(0.5 < 0.0) + (heatmap_orig_resized > 0.5)).astype(np.uint8)
+                sparse_bin = (heatmap_sparse_resized > args.sparse_threshold).astype(np.uint8)
+
+                fig, axes = plt.subplots(1, 4, figsize=(12, 3))
+                axes[0].imshow(vis_img)
+                axes[0].set_title('Image')
+                axes[0].axis('off')
+                axes[1].imshow(gt_bin, cmap='gray')
+                arches1 = axes[1]
+                arches1.set_title('GT')
+                arches1.axis('off')
+                axes[2].imshow(legrad_bin, cmap='gray')
+                axes[2].set_title('LeGrad (0.5)')
+                axes[2].axis('off')
+                axes[3].imshow(sparse_bin, cmap='gray')
+                axes[3].set_title(f'Sparse ({args.sparse_threshold:.2f})')
+                axes[3].axis('off')
+                plt.tight_layout()
+
+                out_name = f"seg_vis_{idx:04d}.png"
+                out_path = os.path.join(args.vis_output_dir, out_name)
+                plt.savefig(out_path, dpi=150)
+                plt.close(fig)
+                print(f"[vis] Saved {out_path}")
             
         except Exception as e:
             print(f"Error processing idx {idx}: {e}")

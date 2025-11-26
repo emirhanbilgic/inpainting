@@ -173,3 +173,4 @@ pyrightconfig.json
 legrad_torch.egg-info/
 .DS_Store
 scripts/data/gtsegs_ijcv.mat
+outputs/segmentation_vis/
