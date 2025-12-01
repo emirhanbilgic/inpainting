@@ -174,3 +174,11 @@ legrad_torch.egg-info/
 .DS_Store
 scripts/data/gtsegs_ijcv.mat
 outputs/segmentation_vis/
+outputs/omp_color_vis_t4.png
+.gitignore
+outputs/omp_color_vis.png
+outputs/omp_multiclass_vis.png
+outputs/omp_pca_vis.png
+outputs/omp_color_vis_t5.png
+outputs/omp_visualization.png
+scripts/visualize_omp_color.py
