@@ -29,6 +29,17 @@ def sanitize(name: str) -> str:
     return s or 'x'
 
 
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    s = str(v).strip().lower()
+    if s in ('y', 'yes', 't', 'true', '1'):
+        return True
+    if s in ('n', 'no', 'f', 'false', '0'):
+        return False
+    raise argparse.ArgumentTypeError('Boolean value expected for --use_residual.')
+
+
 def pil_to_tensor_no_numpy(img: Image.Image) -> torch.Tensor:
     img = img.convert("RGB")
     w, h = img.size
@@ -373,6 +384,8 @@ def main():
                              'Set to a value >= 1.0 to effectively disable this filtering.')
     parser.add_argument('--dict_include_prompts', type=int, default=1,
                         help='Include other prompts (context) in the dictionary D (0/1). Default 1.')
+    parser.add_argument('--use_residual', type=str2bool, default=True,
+                        help='If True, use residual r as text embedding. If False, use x - r (both L2-normalized).')
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -685,7 +698,15 @@ def main():
                             pass
 
                     max_atoms = int(vcfg.get('atoms', args.residual_atoms))
-                    emb_1x = omp_sparse_residual(original_1x, D, max_atoms=max_atoms)
+                    r_1x = omp_sparse_residual(original_1x, D, max_atoms=max_atoms)
+                    if bool(args.use_residual):
+                        emb_1x = r_1x
+                    else:
+                        x_minus_r = (original_1x - r_1x)
+                        if float(torch.norm(x_minus_r)) <= 1e-6:
+                            emb_1x = original_1x
+                        else:
+                            emb_1x = F.normalize(x_minus_r, dim=-1)
                 else:
                     emb_1x = original_1x
 
