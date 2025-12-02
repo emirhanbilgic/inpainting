@@ -226,8 +226,8 @@ class LeWrapper(nn.Module):
         Grad-CAM for CLIP ViT:
         - Uses the hidden states after the MLP of a chosen transformer block
           (feat_post_mlp) as target activations.
-        - Computes a text-image similarity score and backprops to those
-          activations to obtain Grad-CAM weights.
+        - For each prompt separately, computes a text–image similarity score and
+          backprops to those activations to obtain Grad-CAM weights (class-specific).
         - Returns heatmaps over patch tokens, upsampled to the input resolution.
 
         Args:
@@ -246,11 +246,10 @@ class LeWrapper(nn.Module):
         # L2-normalise both text and image embeddings for cosine-style similarity
         text_embedding = F.normalize(text_embedding, dim=-1)
 
-        # repeat image per prompt to match CLIP's batched encode_image
-        image = image.repeat(num_prompts, 1, 1, 1)
-        # Forward pass to populate hooks (feat_post_mlp) and get image embeddings
-        image_emb = self.encode_image(image)  # [P, d_img]
-        image_emb = F.normalize(image_emb, dim=-1)
+        # Forward pass with a single image to populate hooks (feat_post_mlp)
+        # and get its global image embedding
+        image_emb = self.encode_image(image)  # [1, d_img]
+        image_emb = F.normalize(image_emb, dim=-1)  # [1, d_img]
 
         # Select target transformer block
         blocks_list = list(dict(self.visual.transformer.resblocks.named_children()).values())
@@ -260,36 +259,39 @@ class LeWrapper(nn.Module):
             raise ValueError(f"Invalid target_layer index {target_layer} for Grad-CAM.")
 
         target_block = blocks_list[target_layer]
-        feats = target_block.feat_post_mlp  # [L, B, C] = [tokens, batch, dim]
-        # L = 1 + num_patches (CLS + patches)
+        feats = target_block.feat_post_mlp  # [L, B, C] = [tokens, batch, dim], here B should be 1
         if feats is None:
-            raise RuntimeError("feat_post_mlp is None – make sure LeWrapper hooks are active "
-                               "and that encode_image has been run before calling compute_gradcam_clip.")
-
-        # Compute similarity between each prompt and its corresponding image
-        # text_embedding: [P, d], image_emb: [P, d]
-        sim = torch.sum(text_embedding * image_emb, dim=-1, keepdim=True)  # [P, 1]
-        # Sum over prompts to get a scalar, like standard Grad-CAM for a class score
-        score = sim.sum()
-
-        # Backprop wrt target features
-        self.visual.zero_grad()
-        grads = torch.autograd.grad(score, feats, retain_graph=True, create_graph=False)[0]  # [L, B, C]
+            raise RuntimeError(
+                "feat_post_mlp is None – make sure LeWrapper hooks are active "
+                "and that compute_gradcam_clip is called after a forward pass."
+            )
 
         # Discard CLS token at index 0 and treat remaining tokens as spatial grid
-        feats_patches = feats[1:]          # [L_p, B, C]
-        grads_patches = grads[1:]          # [L_p, B, C]
+        feats_patches = feats[1:]  # [L_p, 1, C]
 
-        # Global-average-pool gradients over spatial tokens (L_p) to get per-channel weights
-        weights = grads_patches.mean(dim=0)    # [B, C]
+        cams = []
+        for r in range(num_prompts):
+            # Class-specific (prompt-specific) score
+            self.visual.zero_grad()
+            score_r = torch.sum(text_embedding[r : r + 1] * image_emb)  # scalar
 
-        # Weighted combination of activations across channels
-        # feats_patches: [L_p, B, C] -> [B, L_p, C]
-        feats_patches_b = feats_patches.permute(1, 0, 2)
-        cam = torch.einsum("blc,bc->bl", feats_patches_b, weights)  # [B, L_p]
+            grads = torch.autograd.grad(score_r, feats, retain_graph=True, create_graph=False)[0]  # [L, 1, C]
+            grads_patches = grads[1:]  # [L_p, 1, C]
 
-        # ReLU as in standard Grad-CAM
-        cam = F.relu(cam)
+            # Global-average-pool gradients over spatial tokens (L_p) to get per-channel weights
+            weights = grads_patches.mean(dim=0)  # [1, C]
+
+            # Weighted combination of activations across channels
+            # feats_patches: [L_p, 1, C] -> [1, L_p, C]
+            feats_patches_b = feats_patches.permute(1, 0, 2)  # [1, L_p, C]
+            cam_r = torch.einsum("blc,bc->bl", feats_patches_b, weights)  # [1, L_p]
+
+            # ReLU as in standard Grad-CAM
+            cam_r = F.relu(cam_r)
+            cams.append(cam_r)
+
+        # Stack cams for all prompts: list of [1, L_p] -> [P, L_p]
+        cam = torch.cat(cams, dim=0)  # [P, L_p]
 
         # Reshape tokens to spatial grid
         num_tokens = feats_patches.shape[0]
@@ -297,8 +299,8 @@ class LeWrapper(nn.Module):
             h, w = self.visual.last_grid_size
         else:
             h = w = int(math.sqrt(num_tokens))
-        cam = cam.view(num_prompts, h, w)              # [P, H_t, W_t]
-        cam = cam.unsqueeze(0)                         # [1, P, H_t, W_t]
+        cam = cam.view(num_prompts, h, w)  # [P, H_t, W_t]
+        cam = cam.unsqueeze(0)  # [1, P, H_t, W_t]
 
         # Upsample to the exact input image resolution
         H_img, W_img = image.shape[-2], image.shape[-1]
