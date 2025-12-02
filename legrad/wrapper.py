@@ -143,6 +143,30 @@ class LeWrapper(nn.Module):
         elif 'coca' in self.model_type:
             return self.compute_legrad_coca(text_embedding, image)
 
+    # -------------------------------------------------------------------------
+    # Grad-CAM style explainability for CLIP
+    # -------------------------------------------------------------------------
+    def compute_gradcam(self, text_embedding, image=None, target_layer=-1):
+        """
+        Compute Grad-CAM-style heatmaps for CLIP models.
+
+        This mirrors the LeGrad API and returns a tensor of shape [1, P, H, W]
+        (P = number of prompts), min-max normalised per prompt.
+
+        Args:
+            text_embedding: Tensor of shape [P, d], L2-normalised text embeddings.
+            image: Optional image tensor of shape [1, 3, H, W] or [B, 3, H, W].
+            target_layer: Index of the transformer block to use as the Grad-CAM
+                target. Follows Python indexing, so -1 is the last block.
+        """
+        if 'clip' in self.model_type:
+            return self.compute_gradcam_clip(text_embedding, image, target_layer=target_layer)
+        else:
+            raise NotImplementedError(
+                f"compute_gradcam is currently implemented only for CLIP VisionTransformer backbones, "
+                f"got model_type={self.model_type}"
+            )
+
     def compute_legrad_clip(self, text_embedding, image=None):
         num_prompts = text_embedding.shape[0]
         if image is not None:
@@ -189,6 +213,93 @@ class LeWrapper(nn.Module):
         # Min-Max Norm
         accum_expl_map = min_max(accum_expl_map)
         return accum_expl_map
+
+    def compute_gradcam_clip(self, text_embedding, image=None, target_layer=-1):
+        """
+        Grad-CAM for CLIP ViT:
+        - Uses the hidden states after the MLP of a chosen transformer block
+          (feat_post_mlp) as target activations.
+        - Computes a text-image similarity score and backprops to those
+          activations to obtain Grad-CAM weights.
+        - Returns heatmaps over patch tokens, upsampled to the input resolution.
+
+        Args:
+            text_embedding: [P, d] normalised text embeddings.
+            image: image tensor, [1, 3, H, W]; it will be repeated P times.
+            target_layer: which transformer block to use (int, Python-style
+                          index; -1 = last block).
+        Returns:
+            Tensor of shape [1, P, H, W] with values in [0, 1].
+        """
+        num_prompts = text_embedding.shape[0]
+
+        if image is not None:
+            # repeat image per prompt to match CLIP's batched encode_image
+            image = image.repeat(num_prompts, 1, 1, 1)
+            # Forward pass to populate hooks (feat_post_mlp) and get image embeddings
+            image_emb = self.encode_image(image)  # [P, d_img]
+        else:
+            # assume hooks are already populated by a previous forward
+            # but still need embeddings for similarity
+            image_emb = self.encode_image(None)
+
+        # Ensure normalised embeddings for cosine-style similarity
+        image_emb = F.normalize(image_emb, dim=-1)
+
+        # Select target transformer block
+        blocks_list = list(dict(self.visual.transformer.resblocks.named_children()).values())
+        if target_layer < 0:
+            target_layer = len(blocks_list) + target_layer
+        if target_layer < 0 or target_layer >= len(blocks_list):
+            raise ValueError(f"Invalid target_layer index {target_layer} for Grad-CAM.")
+
+        target_block = blocks_list[target_layer]
+        feats = target_block.feat_post_mlp  # [L, B, C] = [tokens, batch, dim]
+        # L = 1 + num_patches (CLS + patches)
+        if feats is None:
+            raise RuntimeError("feat_post_mlp is None – make sure LeWrapper hooks are active "
+                               "and that encode_image has been run before calling compute_gradcam_clip.")
+
+        # Compute similarity between each prompt and its corresponding image
+        # text_embedding: [P, d], image_emb: [P, d]
+        sim = torch.sum(text_embedding * image_emb, dim=-1, keepdim=True)  # [P, 1]
+        # Sum over prompts to get a scalar, like standard Grad-CAM for a class score
+        score = sim.sum()
+
+        # Backprop wrt target features
+        self.visual.zero_grad()
+        grads = torch.autograd.grad(score, feats, retain_graph=True, create_graph=False)[0]  # [L, B, C]
+
+        # Discard CLS token at index 0 and treat remaining tokens as spatial grid
+        feats_patches = feats[1:]          # [L_p, B, C]
+        grads_patches = grads[1:]          # [L_p, B, C]
+
+        # Global-average-pool gradients over spatial tokens (L_p) to get per-channel weights
+        weights = grads_patches.mean(dim=0)    # [B, C]
+
+        # Weighted combination of activations across channels
+        # feats_patches: [L_p, B, C] -> [B, L_p, C]
+        feats_patches_b = feats_patches.permute(1, 0, 2)
+        cam = torch.einsum("blc,bc->bl", feats_patches_b, weights)  # [B, L_p]
+
+        # ReLU as in standard Grad-CAM
+        cam = F.relu(cam)
+
+        # Reshape tokens to spatial grid
+        num_tokens = feats_patches.shape[0]
+        if hasattr(self.visual, 'last_grid_size'):
+            h, w = self.visual.last_grid_size
+        else:
+            h = w = int(math.sqrt(num_tokens))
+        cam = cam.view(num_prompts, h, w)              # [P, H_t, W_t]
+        cam = cam.unsqueeze(0)                         # [1, P, H_t, W_t]
+
+        # Upsample to image resolution (patch_size is set by LeWrapper)
+        cam = F.interpolate(cam, scale_factor=self.patch_size, mode='bilinear', align_corners=False)
+
+        # Min-max normalisation per prompt
+        cam = min_max(cam)
+        return cam
 
     def compute_legrad_coca(self, text_embedding, image=None):
         if image is not None:
