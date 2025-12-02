@@ -125,8 +125,9 @@ def main():
         legrad_maps = model.compute_legrad_clip(text_embedding=text_emb, image=img_tensor)  # [1, P, H, W]
 
         # ------- Grad-CAM heatmaps -------
+        # Use default internal layer selection/fallbacks
         gradcam_maps = model.compute_gradcam_clip(
-            text_embedding=text_emb, image=img_tensor, target_layer=-1
+            text_embedding=text_emb, image=img_tensor
         )  # [1, P, H, W]
 
         # Optional: print simple stats to verify Grad-CAM is non-trivial

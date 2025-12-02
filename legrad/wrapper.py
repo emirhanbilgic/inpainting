@@ -322,6 +322,29 @@ class LeWrapper(nn.Module):
         cam = cam.view(num_prompts, h, w)  # [P, H_t, W_t]
         cam = cam.unsqueeze(0)  # [1, P, H_t, W_t]
 
+        # If this layer yields a degenerate CAM (all zeros), fall back to aggregating layers
+        degenerate = (cam.detach().abs().max() == 0)
+        if degenerate:
+            accum = None
+            blocks_list = list(dict(self.visual.transformer.resblocks.named_children()).values())
+            for li in range(self.starting_depth, len(blocks_list)):
+                feats_l = blocks_list[li].feat_post_mlp  # [L, P, C]
+                if feats_l is None:
+                    continue
+                grads_l = torch.autograd.grad(score, feats_l, retain_graph=True, allow_unused=True)[0]
+                if grads_l is None:
+                    continue
+                feats_lp = feats_l[1:].permute(1, 0, 2)   # [P, L_p, C]
+                grads_lp = grads_l[1:].permute(1, 0, 2)   # [P, L_p, C]
+                weights_l = grads_lp.mean(dim=1)          # [P, C]
+                cam_l = torch.einsum("plc,pc->pl", feats_lp, weights_l)  # [P, L_p]
+                cam_l = F.relu(cam_l)
+                cam_l = cam_l.view(num_prompts, h, w)     # [P, H_t, W_t]
+                accum = cam_l if accum is None else (accum + cam_l)
+            if accum is None:
+                accum = torch.zeros_like(cam.view(num_prompts, h, w))
+            cam = accum.unsqueeze(0)  # [1, P, H_t, W_t]
+
         # Upsample to the exact input image resolution
         H_img, W_img = image.shape[-2], image.shape[-1]
         cam = F.interpolate(cam, size=(H_img, W_img), mode='bilinear', align_corners=False)
