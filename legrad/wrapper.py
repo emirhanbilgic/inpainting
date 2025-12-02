@@ -325,21 +325,63 @@ class LeWrapper(nn.Module):
         # If this layer yields a degenerate CAM (all zeros), fall back to aggregating layers
         degenerate = (cam.detach().abs().max() == 0)
         if degenerate:
-            accum = None
-            blocks_list = list(dict(self.visual.transformer.resblocks.named_children()).values())
+            # Re-run a forward pass with hooks on all blocks to capture activations+grads,
+            # then aggregate Grad-CAM across layers.
+            acts_by_layer = {}
+            grads_by_layer = {}
+            hook_handles = []
+
+            def make_fwd_hook(layer_idx):
+                def _fwd(module, inp, out):
+                    x = out[0] if isinstance(out, tuple) else out  # [L, P, C]
+                    # store patch tokens only, reshaped to [P, L_p, C]
+                    acts_by_layer[layer_idx] = x[1:].permute(1, 0, 2)
+                    # attach a grad hook to capture dS/dA for this layer's output tensor
+                    def _grad_hook(grad):
+                        grads_by_layer[layer_idx] = grad[1:].permute(1, 0, 2)
+                    x.register_hook(_grad_hook)
+                return _fwd
+
+            # Register hooks for all layers we care about
             for li in range(self.starting_depth, len(blocks_list)):
-                feats_l = blocks_list[li].feat_post_mlp  # [L, P, C]
-                if feats_l is None:
+                h = blocks_list[li].register_forward_hook(make_fwd_hook(li))
+                hook_handles.append(h)
+
+            try:
+                image_rep = image.repeat(num_prompts, 1, 1, 1)
+                image_emb2 = self.encode_image(image_rep)                # [P, d_img]
+                image_emb2 = F.normalize(image_emb2, dim=-1)
+                sims2 = torch.sum(text_embedding * image_emb2, dim=-1)   # [P]
+                score2 = sims2.sum()
+                self.zero_grad()
+                score2.backward(retain_graph=False)
+            finally:
+                for h in hook_handles:
+                    h.remove()
+
+            # Aggregate per-layer Grad-CAM
+            accum = None
+            # grid size from last forward
+            if hasattr(self.visual, 'last_grid_size'):
+                h_g, w_g = self.visual.last_grid_size
+            else:
+                # infer from any captured layer
+                sample_layer = next(iter(acts_by_layer)) if len(acts_by_layer) else None
+                if sample_layer is not None:
+                    Lp = acts_by_layer[sample_layer].shape[1]
+                    h_g = w_g = int(math.sqrt(Lp))
+                else:
+                    h_g, w_g = h, w
+
+            for li in range(self.starting_depth, len(blocks_list)):
+                A = acts_by_layer.get(li, None)   # [P, L_p, C]
+                G = grads_by_layer.get(li, None)  # [P, L_p, C]
+                if A is None or G is None:
                     continue
-                grads_l = torch.autograd.grad(score, feats_l, retain_graph=True, allow_unused=True)[0]
-                if grads_l is None:
-                    continue
-                feats_lp = feats_l[1:].permute(1, 0, 2)   # [P, L_p, C]
-                grads_lp = grads_l[1:].permute(1, 0, 2)   # [P, L_p, C]
-                weights_l = grads_lp.mean(dim=1)          # [P, C]
-                cam_l = torch.einsum("plc,pc->pl", feats_lp, weights_l)  # [P, L_p]
+                wts = G.mean(dim=1)               # [P, C]
+                cam_l = torch.einsum("plc,pc->pl", A, wts)  # [P, L_p]
                 cam_l = F.relu(cam_l)
-                cam_l = cam_l.view(num_prompts, h, w)     # [P, H_t, W_t]
+                cam_l = cam_l.view(num_prompts, h_g, w_g)
                 accum = cam_l if accum is None else (accum + cam_l)
             if accum is None:
                 accum = torch.zeros_like(cam.view(num_prompts, h, w))
