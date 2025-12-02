@@ -498,10 +498,18 @@ def vit_dynamic_size_forward(self, x: torch.Tensor):
 ################################################################################
 
 def min_max(logits):
+    """
+    Min-max normalisation per (batch, prompt) with a small epsilon to avoid
+    division-by-zero when the map is constant (which would otherwise yield NaNs).
+    """
     B, num_prompt = logits.shape[:2]
-    logits_min = logits.reshape(B, num_prompt, -1).min(dim=-1, keepdim=True)[0].unsqueeze(-1)
-    logits_max = logits.reshape(B, num_prompt, -1).max(dim=-1, keepdim=True)[0].unsqueeze(-1)
-    logits = (logits - logits_min) / (logits_max - logits_min)
+    flat = logits.reshape(B, num_prompt, -1)
+    logits_min = flat.min(dim=-1, keepdim=True)[0].unsqueeze(-1)  # [B, P, 1, 1]
+    logits_max = flat.max(dim=-1, keepdim=True)[0].unsqueeze(-1)  # [B, P, 1, 1]
+    denom = logits_max - logits_min
+    # Avoid zero division for uniform maps
+    denom = denom + (denom == 0).float() * 1e-6
+    logits = (logits - logits_min) / denom
     return logits
 
 def visualize(image, heatmaps, alpha=0.6, text_prompts: List=None, save_path: Optional=None):

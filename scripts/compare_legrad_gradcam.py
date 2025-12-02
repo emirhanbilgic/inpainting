@@ -129,6 +129,14 @@ def main():
             text_embedding=text_emb, image=img_tensor, target_layer=-1
         )  # [1, P, H, W]
 
+        # Optional: print simple stats to verify Grad-CAM is non-trivial
+        try:
+            g_min = float(gradcam_maps.min().item())
+            g_max = float(gradcam_maps.max().item())
+            print(f"[Grad-CAM] {os.path.basename(pth)} min={g_min:.4f}, max={g_max:.4f}")
+        except Exception:
+            pass
+
         # ------- Visual comparison -------
         legrad_np = legrad_maps.squeeze(0).detach().cpu().numpy()  # [P, H, W]
         gradcam_np = gradcam_maps.squeeze(0).detach().cpu().numpy()  # [P, H, W]
