@@ -3,6 +3,7 @@
 import argparse
 import os
 import re
+import sys
 from io import BytesIO
 from typing import List
 
@@ -13,6 +14,11 @@ import torch
 from torchvision.transforms import InterpolationMode
 import torchvision.transforms.functional as TF
 import open_clip
+
+# Ensure we import the local legrad package (from the repo) rather than a pip-installed one.
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
 from legrad import LeWrapper
 
@@ -147,9 +153,8 @@ def main():
             pil_image = load_image(image_path=image_path)
             image_t = safe_preprocess(pil_image, image_size=args.image_size).unsqueeze(0).to(device)
 
-            # Compute LeGrad and GradCAM heatmaps for this image
-            with torch.no_grad():
-                logits_legrad = model.compute_legrad(image=image_t, text_embedding=text_emb)  # [1, P, H, W]
+            # Compute LeGrad and GradCAM heatmaps for this image (needs gradients)
+            logits_legrad = model.compute_legrad(image=image_t, text_embedding=text_emb)  # [1, P, H, W]
             logits_gradcam = model.compute_gradcam_vit(
                 text_embedding=text_emb, image=image_t, target_layer=args.target_layer
             )
@@ -177,8 +182,7 @@ def main():
         pil_image = load_image(image_url=args.image_url, image_path=args.image_path)
         image_t = safe_preprocess(pil_image, image_size=args.image_size).unsqueeze(0).to(device)
 
-        with torch.no_grad():
-            logits_legrad = model.compute_legrad(image=image_t, text_embedding=text_emb)  # [1, P, H, W]
+        logits_legrad = model.compute_legrad(image=image_t, text_embedding=text_emb)  # [1, P, H, W]
         logits_gradcam = model.compute_gradcam_vit(
             text_embedding=text_emb, image=image_t, target_layer=args.target_layer
         )
