@@ -102,6 +102,8 @@ def main():
     parser = argparse.ArgumentParser(description="Compare GradCAM (ViT) with LeGrad on the same image and prompts.")
     parser.add_argument("--image_url", type=str, default=None, help="URL of the image to process")
     parser.add_argument("--image_path", type=str, default=None, help="Local image path to process")
+    parser.add_argument("--dataset_root", type=str, default=None,
+                        help="If set, process all images in this directory instead of a single image.")
     parser.add_argument("--prompt", type=str, default="cat", help="Single or comma-separated prompts")
     parser.add_argument("--prompts", type=str, nargs="*", default=None, help="Multiple prompts list")
     parser.add_argument("--model_name", type=str, default="ViT-B-16", help="OpenCLIP model name")
@@ -125,39 +127,79 @@ def main():
     # Equip with LeGrad / hooks
     model = LeWrapper(model)
 
-    # Inputs
-    pil_image = load_image(image_url=args.image_url, image_path=args.image_path)
-    image_t = safe_preprocess(pil_image, image_size=args.image_size).unsqueeze(0).to(device)
-
     prompts = parse_prompts(args.prompt, args.prompts)
+    # Treat prompts as class names; we wrap them in the CLIP style template.
     tokenized = tokenizer([f"a photo of a {p}." for p in prompts]).to(device)
     text_emb = model.encode_text(tokenized, normalize=True)
 
-    # Compute LeGrad and GradCAM heatmaps
-    with torch.no_grad():
-        logits_legrad = model.compute_legrad(image=image_t, text_embedding=text_emb)  # [1, P, H, W]
+    # Decide whether to process a single image or a whole directory
+    if args.dataset_root is not None:
+        # Process all images in the given directory
+        image_files = sorted(
+            f for f in os.listdir(args.dataset_root)
+            if f.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"))
+        )
+        if not image_files:
+            raise ValueError(f"No image files found in directory: {args.dataset_root}")
 
-    # GradCAM needs gradients, so we can't wrap this in no_grad
-    logits_gradcam = model.compute_gradcam_vit(text_embedding=text_emb, image=image_t, target_layer=args.target_layer)
+        for fname_img in image_files:
+            image_path = os.path.join(args.dataset_root, fname_img)
+            pil_image = load_image(image_path=image_path)
+            image_t = safe_preprocess(pil_image, image_size=args.image_size).unsqueeze(0).to(device)
 
-    # Save overlays for each prompt
-    legrad_maps = logits_legrad.squeeze(0).cpu()      # [P, H, W]
-    gradcam_maps = logits_gradcam.squeeze(0).cpu()    # [P, H, W]
+            # Compute LeGrad and GradCAM heatmaps for this image
+            with torch.no_grad():
+                logits_legrad = model.compute_legrad(image=image_t, text_embedding=text_emb)  # [1, P, H, W]
+            logits_gradcam = model.compute_gradcam_vit(
+                text_embedding=text_emb, image=image_t, target_layer=args.target_layer
+            )
 
-    for idx, p in enumerate(prompts):
-        heat_legrad = legrad_maps[idx]
-        heat_gradcam = gradcam_maps[idx]
+            legrad_maps = logits_legrad.squeeze(0).cpu()   # [P, H, W]
+            gradcam_maps = logits_gradcam.squeeze(0).cpu() # [P, H, W]
+            img_stem, _ = os.path.splitext(os.path.basename(image_path))
 
-        # Normalize each map to [0,1] independently
-        for method_name, heat in [("legrad", heat_legrad), ("gradcam", heat_gradcam)]:
-            hmin = float(heat.min())
-            hmax = float(heat.max())
-            heat_01 = (heat - hmin) / (hmax - hmin + 1e-6)
+            for idx, p in enumerate(prompts):
+                heat_legrad = legrad_maps[idx]
+                heat_gradcam = gradcam_maps[idx]
 
-            fname = f"{method_name}_{sanitize_filename(p)}.png"
-            out_path = os.path.join(args.output_dir, fname)
-            save_overlay_pil_no_numpy(pil_image, heat_01, out_path, alpha=0.6)
-            print(f"Saved: {out_path}")
+                # Normalize each map to [0,1] independently
+                for method_name, heat in [("legrad", heat_legrad), ("gradcam", heat_gradcam)]:
+                    hmin = float(heat.min())
+                    hmax = float(heat.max())
+                    heat_01 = (heat - hmin) / (hmax - hmin + 1e-6)
+
+                    out_name = f"{img_stem}_{method_name}_{sanitize_filename(p)}.png"
+                    out_path = os.path.join(args.output_dir, out_name)
+                    save_overlay_pil_no_numpy(pil_image, heat_01, out_path, alpha=0.6)
+                    print(f"Saved: {out_path}")
+    else:
+        # Single-image mode (URL or path)
+        pil_image = load_image(image_url=args.image_url, image_path=args.image_path)
+        image_t = safe_preprocess(pil_image, image_size=args.image_size).unsqueeze(0).to(device)
+
+        with torch.no_grad():
+            logits_legrad = model.compute_legrad(image=image_t, text_embedding=text_emb)  # [1, P, H, W]
+        logits_gradcam = model.compute_gradcam_vit(
+            text_embedding=text_emb, image=image_t, target_layer=args.target_layer
+        )
+
+        legrad_maps = logits_legrad.squeeze(0).cpu()   # [P, H, W]
+        gradcam_maps = logits_gradcam.squeeze(0).cpu() # [P, H, W]
+
+        for idx, p in enumerate(prompts):
+            heat_legrad = legrad_maps[idx]
+            heat_gradcam = gradcam_maps[idx]
+
+            # Normalize each map to [0,1] independently
+            for method_name, heat in [("legrad", heat_legrad), ("gradcam", heat_gradcam)]:
+                hmin = float(heat.min())
+                hmax = float(heat.max())
+                heat_01 = (heat - hmin) / (hmax - hmin + 1e-6)
+
+                fname = f"{method_name}_{sanitize_filename(p)}.png"
+                out_path = os.path.join(args.output_dir, fname)
+                save_overlay_pil_no_numpy(pil_image, heat_01, out_path, alpha=0.6)
+                print(f"Saved: {out_path}")
 
 
 if __name__ == "__main__":
