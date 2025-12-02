@@ -272,15 +272,14 @@ class LeWrapper(nn.Module):
             else:
                 x = out
             activations["value"] = x[1:].permute(1, 0, 2)  # [B, L_p, C]
-
-        def _backward_hook(module, grad_in, grad_out):
-            # grad_out[0]: [L, B, C]
-            g = grad_out[0]
-            gradients["value"] = g[1:].permute(1, 0, 2)  # [B, L_p, C]
+            # capture gradients w.r.t. the module output tensor
+            def _tensor_grad_hook(grad):
+                # grad has same shape as out: [L, B, C]
+                gradients["value"] = grad[1:].permute(1, 0, 2)  # [B, L_p, C]
+            x.register_hook(_tensor_grad_hook)
 
         # Register hooks
         h_fwd = target_block.register_forward_hook(_forward_hook)
-        h_bwd = target_block.register_full_backward_hook(_backward_hook)
 
         try:
             # Repeat image per prompt so that each sample corresponds to one prompt
@@ -315,7 +314,6 @@ class LeWrapper(nn.Module):
         finally:
             # Remove hooks to avoid leaking references
             h_fwd.remove()
-            h_bwd.remove()
 
         # Reshape tokens to spatial grid
         num_tokens = feats_patches.shape[1]
