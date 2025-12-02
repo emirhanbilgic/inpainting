@@ -1,4 +1,5 @@
 import os
+import sys
 import argparse
 import re
 
@@ -8,6 +9,11 @@ import torch
 import torch.nn.functional as F
 import open_clip
 import matplotlib.pyplot as plt
+
+# Ensure we import the local legrad package from the repo, not any installed version
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
 from legrad import LeWrapper, LePreprocess
 
@@ -115,8 +121,8 @@ def main():
         img_tensor = preprocess(raw_image).unsqueeze(0).to(device)  # [1, 3, H, W]
 
         # ------- LeGrad heatmaps -------
-        with torch.no_grad():
-            legrad_maps = model.compute_legrad_clip(text_embedding=text_emb, image=img_tensor)  # [1, P, H, W]
+        # NOTE: do NOT wrap in torch.no_grad(); LeGrad needs gradients internally.
+        legrad_maps = model.compute_legrad_clip(text_embedding=text_emb, image=img_tensor)  # [1, P, H, W]
 
         # ------- Grad-CAM heatmaps -------
         gradcam_maps = model.compute_gradcam_clip(
