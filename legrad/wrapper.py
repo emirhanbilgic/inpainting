@@ -172,6 +172,8 @@ class LeWrapper(nn.Module):
         if image is not None:
             image = image.repeat(num_prompts, 1, 1, 1)
             _ = self.encode_image(image)
+            # Save spatial size for later upsampling
+            H_img, W_img = image.shape[-2], image.shape[-1]
 
         blocks_list = list(dict(self.visual.transformer.resblocks.named_children()).values())
 
@@ -207,7 +209,12 @@ class LeWrapper(nn.Module):
 
             image_relevance = grad.mean(dim=1).mean(dim=1)[:, 1:]  # average attn over [CLS] + patch tokens
             expl_map = rearrange(image_relevance, 'b (w h) -> 1 b w h', w=w, h=h)
-            expl_map = F.interpolate(expl_map, scale_factor=self.patch_size, mode='bilinear')  # [B, 1, H, W]
+            # Upsample to either exact image size (preferred) or patch-aligned grid
+            if image is not None:
+                expl_map = F.interpolate(expl_map, size=(H_img, W_img), mode='bilinear',
+                                         align_corners=False)  # [B, 1, H, W]
+            else:
+                expl_map = F.interpolate(expl_map, scale_factor=self.patch_size, mode='bilinear')  # [B, 1, H, W]
             accum_expl_map += expl_map
 
         # Min-Max Norm
@@ -304,6 +311,7 @@ class LeWrapper(nn.Module):
     def compute_legrad_coca(self, text_embedding, image=None):
         if image is not None:
             _ = self.encode_image(image)
+            H_img, W_img = image.shape[-2], image.shape[-1]
 
         blocks_list = list(dict(self.visual.transformer.resblocks.named_children()).values())
 
@@ -338,7 +346,11 @@ class LeWrapper(nn.Module):
 
             image_relevance = grad.mean(dim=0)[0, 1:]  # average attn over heads + select first latent
             expl_map = rearrange(image_relevance, '(w h) -> 1 1 w h', w=w, h=h)
-            expl_map = F.interpolate(expl_map, scale_factor=self.patch_size, mode='bilinear')  # [B, 1, H, W]
+            if image is not None:
+                expl_map = F.interpolate(expl_map, size=(H_img, W_img), mode='bilinear',
+                                         align_corners=False)  # [B, 1, H, W]
+            else:
+                expl_map = F.interpolate(expl_map, scale_factor=self.patch_size, mode='bilinear')  # [B, 1, H, W]
             accum_expl_map += expl_map
 
         # Min-Max Norm
@@ -359,6 +371,7 @@ class LeWrapper(nn.Module):
         blocks_list = list(dict(self.visual.trunk.blocks.named_children()).values())
         if image is not None:
             _ = self.encode_image(image)  # [bs, num_patch, dim] bs=num_masks
+            H_img, W_img = image.shape[-2], image.shape[-1]
 
         image_features_list = []
         for blk in blocks_list[self.starting_depth:]:
@@ -406,7 +419,11 @@ class LeWrapper(nn.Module):
             accum_expl_map[heatmap_empty > correction_threshold] = 0
 
         Res = min_max(accum_expl_map)
-        Res = F.interpolate(Res, scale_factor=self.patch_size, mode='bilinear')  # [B, 1, H, W]
+        if image is not None:
+            Res = F.interpolate(Res, size=(H_img, W_img), mode='bilinear',
+                                align_corners=False)  # [B, 1, H, W]
+        else:
+            Res = F.interpolate(Res, scale_factor=self.patch_size, mode='bilinear')  # [B, 1, H, W]
 
         return Res
 
