@@ -266,16 +266,16 @@ class LeWrapper(nn.Module):
 
         def _forward_hook(module, inp, out):
             # out: [L, B, C]
-            # store patch tokens only, reshaped to [B, L_p, C]
+            # store all tokens (CLS + patches), reshaped to [B, L, C]
             if isinstance(out, tuple):
                 x = out[0]
             else:
                 x = out
-            activations["value"] = x[1:].permute(1, 0, 2)  # [B, L_p, C]
+            activations["value"] = x.permute(1, 0, 2)  # [B, L, C]
             # capture gradients w.r.t. the module output tensor
             def _tensor_grad_hook(grad):
                 # grad has same shape as out: [L, B, C]
-                gradients["value"] = grad[1:].permute(1, 0, 2)  # [B, L_p, C]
+                gradients["value"] = grad.permute(1, 0, 2)  # [B, L, C]
             x.register_hook(_tensor_grad_hook)
 
         # Register hooks
@@ -302,11 +302,14 @@ class LeWrapper(nn.Module):
             if "value" not in activations or "value" not in gradients:
                 raise RuntimeError("Grad-CAM hooks did not capture activations/gradients.")
 
-            feats_patches = activations["value"]   # [P, L_p, C]
-            grads_patches = gradients["value"]     # [P, L_p, C]
+            feats_all = activations["value"]       # [P, L, C]
+            grads_all = gradients["value"]         # [P, L, C]
 
-            # Global-average-pool gradients over spatial tokens (L_p) to get per-channel weights
-            weights = grads_patches.mean(dim=1)    # [P, C]
+            # Global-average-pool gradients over ALL tokens (CLS + spatial) to get per-channel weights
+            weights = grads_all.mean(dim=1)        # [P, C]
+
+            # For the heatmap, we use only the spatial tokens
+            feats_patches = feats_all[:, 1:, :]    # [P, L_p, C]
 
             # Weighted combination of activations across channels
             cam = torch.einsum("plc,pc->pl", feats_patches, weights)  # [P, L_p]
@@ -338,11 +341,11 @@ class LeWrapper(nn.Module):
             def make_fwd_hook(layer_idx):
                 def _fwd(module, inp, out):
                     x = out[0] if isinstance(out, tuple) else out  # [L, P, C]
-                    # store patch tokens only, reshaped to [P, L_p, C]
-                    acts_by_layer[layer_idx] = x[1:].permute(1, 0, 2)
+                    # store all tokens, reshaped to [P, L, C]
+                    acts_by_layer[layer_idx] = x.permute(1, 0, 2)
                     # attach a grad hook to capture dS/dA for this layer's output tensor
                     def _grad_hook(grad):
-                        grads_by_layer[layer_idx] = grad[1:].permute(1, 0, 2)
+                        grads_by_layer[layer_idx] = grad.permute(1, 0, 2)
                     x.register_hook(_grad_hook)
                 return _fwd
 
@@ -372,18 +375,20 @@ class LeWrapper(nn.Module):
                 # infer from any captured layer
                 sample_layer = next(iter(acts_by_layer)) if len(acts_by_layer) else None
                 if sample_layer is not None:
-                    Lp = acts_by_layer[sample_layer].shape[1]
-                    h_g = w_g = int(math.sqrt(Lp))
+                    L_all = acts_by_layer[sample_layer].shape[1]
+                    h_g = w_g = int(math.sqrt(L_all - 1))
                 else:
                     h_g, w_g = h, w
 
             for li in range(self.starting_depth, len(blocks_list)):
-                A = acts_by_layer.get(li, None)   # [P, L_p, C]
-                G = grads_by_layer.get(li, None)  # [P, L_p, C]
-                if A is None or G is None:
+                A_all = acts_by_layer.get(li, None)   # [P, L_all, C]
+                G_all = grads_by_layer.get(li, None)  # [P, L_all, C]
+                if A_all is None or G_all is None:
                     continue
-                wts = G.mean(dim=1)               # [P, C]
-                cam_l = torch.einsum("plc,pc->pl", A, wts)  # [P, L_p]
+                wts = G_all.mean(dim=1)               # [P, C]
+                A_patches = A_all[:, 1:, :]           # [P, L_p, C]
+
+                cam_l = torch.einsum("plc,pc->pl", A_patches, wts)  # [P, L_p]
                 cam_l = F.relu(cam_l)
                 cam_l = cam_l.view(num_prompts, h_g, w_g)
                 accum = cam_l if accum is None else (accum + cam_l)
