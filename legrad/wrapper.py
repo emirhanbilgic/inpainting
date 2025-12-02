@@ -284,6 +284,8 @@ class LeWrapper(nn.Module):
         try:
             # Repeat image per prompt so that each sample corresponds to one prompt
             image_rep = image.repeat(num_prompts, 1, 1, 1)  # [P, 3, H, W]
+            # Ensure gradients can flow to intermediate tensors
+            image_rep = image_rep.clone().detach().requires_grad_(True)
 
             # Forward pass to populate hooks and get image embeddings
             image_emb = self.encode_image(image_rep)  # [P, d_img]
