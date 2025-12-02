@@ -223,19 +223,20 @@ class LeWrapper(nn.Module):
 
     def compute_gradcam_clip(self, text_embedding, image=None, target_layer=None, allow_fallback=False):
         """
-        Grad-CAM for CLIP ViT:
-        - Uses the output of a chosen transformer block (after MLP, including residual)
-          as target activations.
-        - For each prompt separately, computes a text–image similarity score and
-          backprops to those activations to obtain Grad-CAM weights (class-specific),
-          following the standard Grad-CAM recipe adapted to ViTs.
-        - Returns heatmaps over patch tokens, upsampled to the input resolution.
-
+        Grad-CAM for CLIP ViT following the paper's formula:
+        
+        w = (1/n) * Σ_{i=0}^n (∂s/∂z_i^l)  ∈ R^d
+        Ê_GradCAM = ((1/d) * Σ_{k=1}^d (w_k * Z^l_{1:,k}))^+  ∈ R^n
+        
+        Key insight from the paper:
+        - Weights w are computed by averaging gradients across ALL tokens (including CLS)
+        - The CAM is computed using only patch token activations (excluding CLS)
+        
         Args:
             text_embedding: [P, d] text embeddings (will be L2-normalised inside).
             image: image tensor, [1, 3, H, W]; it will be repeated P times.
             target_layer: which transformer block to use (int). If None, we choose a model-aware default:
-                          for ViT-B/16 (12 layers) we use 8; otherwise we pick a mid-late block.
+                          for ViT-B/16 (12 layers) we use layer 8 (0-indexed); otherwise mid-late block.
             allow_fallback: if True, when the selected layer yields a zero CAM, aggregate Grad-CAM across layers.
         Returns:
             Tensor of shape [1, P, H, W] with values in [0, 1].
@@ -253,7 +254,7 @@ class LeWrapper(nn.Module):
         if target_layer is None:
             # Pick an empirically good default
             num_blocks = len(blocks_list)
-            # Heuristic: ViT-B/16 has 12 blocks → use 8, else mid-late layer
+            # Paper: "layer 8 of ViT-B/16 yields optimal results" (using 0-indexed)
             target_layer = 8 if num_blocks == 12 and getattr(self, "patch_size", None) == 16 else max(self.starting_depth, num_blocks // 2)
         if target_layer < 0 or target_layer >= len(blocks_list):
             raise ValueError(f"Invalid target_layer index {target_layer} for Grad-CAM (num_blocks={len(blocks_list)}).")
@@ -265,17 +266,20 @@ class LeWrapper(nn.Module):
         gradients = {}
 
         def _forward_hook(module, inp, out):
-            # out: [L, B, C]
-            # store all tokens (CLS + patches), reshaped to [B, L, C]
+            # out: [L, B, C] where L = num_tokens (including CLS)
             if isinstance(out, tuple):
                 x = out[0]
             else:
                 x = out
-            activations["value"] = x.permute(1, 0, 2)  # [B, L, C]
-            # capture gradients w.r.t. the module output tensor
+            # Store patch tokens only for activations (excluding CLS at index 0)
+            # Paper formula: Z^l_{1:,k} means patch tokens only
+            activations["patch_tokens"] = x[1:].permute(1, 0, 2)  # [B, L_p, C]
+            
+            # Capture gradients w.r.t. the FULL output tensor (including CLS)
             def _tensor_grad_hook(grad):
                 # grad has same shape as out: [L, B, C]
-                gradients["value"] = grad.permute(1, 0, 2)  # [B, L, C]
+                # Paper formula: w = (1/n) * Σ_{i=0}^n (∂s/∂z_i^l) includes ALL tokens
+                gradients["all_tokens"] = grad.permute(1, 0, 2)  # [B, L, C] including CLS
             x.register_hook(_tensor_grad_hook)
 
         # Register hooks
@@ -295,26 +299,25 @@ class LeWrapper(nn.Module):
             sims = torch.sum(text_embedding * image_emb, dim=-1)  # [P]
             score = sims.sum()
 
-            # Backward pass: populates gradients["value"]
+            # Backward pass: populates gradients
             self.zero_grad()
             score.backward(retain_graph=False)
 
-            if "value" not in activations or "value" not in gradients:
+            if "patch_tokens" not in activations or "all_tokens" not in gradients:
                 raise RuntimeError("Grad-CAM hooks did not capture activations/gradients.")
 
-            feats_all = activations["value"]       # [P, L, C]
-            grads_all = gradients["value"]         # [P, L, C]
+            feats_patches = activations["patch_tokens"]   # [P, L_p, C] - patch tokens only
+            grads_all = gradients["all_tokens"]           # [P, L, C] - ALL tokens including CLS
 
-            # Global-average-pool gradients over ALL tokens (CLS + spatial) to get per-channel weights
-            weights = grads_all.mean(dim=1)        # [P, C]
+            # Paper formula: w = (1/n) * Σ_{i=0}^n (∂s/∂z_i^l)
+            # Global-average-pool gradients over ALL tokens (including CLS) to get per-channel weights
+            weights = grads_all.mean(dim=1)    # [P, C]
 
-            # For the heatmap, we use only the spatial tokens
-            feats_patches = feats_all[:, 1:, :]    # [P, L_p, C]
-
-            # Weighted combination of activations across channels
+            # Paper formula: Ê = (1/d) * Σ_k (w_k * Z^l_{1:,k})
+            # Weighted combination of patch token activations across channels
             cam = torch.einsum("plc,pc->pl", feats_patches, weights)  # [P, L_p]
 
-            # ReLU as in standard Grad-CAM
+            # ReLU as in standard Grad-CAM (the ^+ in the paper formula)
             cam = F.relu(cam)
         finally:
             # Remove hooks to avoid leaking references
@@ -333,7 +336,7 @@ class LeWrapper(nn.Module):
         degenerate = (cam.detach().abs().max() == 0)
         if degenerate and allow_fallback:
             # Re-run a forward pass with hooks on all blocks to capture activations+grads,
-            # then aggregate Grad-CAM across layers.
+            # then aggregate Grad-CAM across layers using the same formula.
             acts_by_layer = {}
             grads_by_layer = {}
             hook_handles = []
@@ -341,11 +344,11 @@ class LeWrapper(nn.Module):
             def make_fwd_hook(layer_idx):
                 def _fwd(module, inp, out):
                     x = out[0] if isinstance(out, tuple) else out  # [L, P, C]
-                    # store all tokens, reshaped to [P, L, C]
-                    acts_by_layer[layer_idx] = x.permute(1, 0, 2)
-                    # attach a grad hook to capture dS/dA for this layer's output tensor
+                    # Store patch tokens only for activations
+                    acts_by_layer[layer_idx] = x[1:].permute(1, 0, 2)  # [P, L_p, C]
+                    # Capture gradients for ALL tokens (including CLS)
                     def _grad_hook(grad):
-                        grads_by_layer[layer_idx] = grad.permute(1, 0, 2)
+                        grads_by_layer[layer_idx] = grad.permute(1, 0, 2)  # [P, L, C]
                     x.register_hook(_grad_hook)
                 return _fwd
 
@@ -375,20 +378,19 @@ class LeWrapper(nn.Module):
                 # infer from any captured layer
                 sample_layer = next(iter(acts_by_layer)) if len(acts_by_layer) else None
                 if sample_layer is not None:
-                    L_all = acts_by_layer[sample_layer].shape[1]
-                    h_g = w_g = int(math.sqrt(L_all - 1))
+                    Lp = acts_by_layer[sample_layer].shape[1]
+                    h_g = w_g = int(math.sqrt(Lp))
                 else:
                     h_g, w_g = h, w
 
             for li in range(self.starting_depth, len(blocks_list)):
-                A_all = acts_by_layer.get(li, None)   # [P, L_all, C]
-                G_all = grads_by_layer.get(li, None)  # [P, L_all, C]
-                if A_all is None or G_all is None:
+                A = acts_by_layer.get(li, None)   # [P, L_p, C] - patch tokens only
+                G = grads_by_layer.get(li, None)  # [P, L, C] - ALL tokens including CLS
+                if A is None or G is None:
                     continue
-                wts = G_all.mean(dim=1)               # [P, C]
-                A_patches = A_all[:, 1:, :]           # [P, L_p, C]
-
-                cam_l = torch.einsum("plc,pc->pl", A_patches, wts)  # [P, L_p]
+                # Average gradients over ALL tokens (including CLS) for weights
+                wts = G.mean(dim=1)               # [P, C]
+                cam_l = torch.einsum("plc,pc->pl", A, wts)  # [P, L_p]
                 cam_l = F.relu(cam_l)
                 cam_l = cam_l.view(num_prompts, h_g, w_g)
                 accum = cam_l if accum is None else (accum + cam_l)
