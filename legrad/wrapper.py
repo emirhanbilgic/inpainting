@@ -224,10 +224,11 @@ class LeWrapper(nn.Module):
     def compute_gradcam_clip(self, text_embedding, image=None, target_layer=-1):
         """
         Grad-CAM for CLIP ViT:
-        - Uses the hidden states after the MLP of a chosen transformer block
-          (feat_post_mlp) as target activations.
+        - Uses the output of a chosen transformer block (after MLP, including residual)
+          as target activations.
         - For each prompt separately, computes a text–image similarity score and
-          backprops to those activations to obtain Grad-CAM weights (class-specific).
+          backprops to those activations to obtain Grad-CAM weights (class-specific),
+          following the standard Grad-CAM recipe adapted to ViTs.
         - Returns heatmaps over patch tokens, upsampled to the input resolution.
 
         Args:
@@ -246,11 +247,6 @@ class LeWrapper(nn.Module):
         # L2-normalise both text and image embeddings for cosine-style similarity
         text_embedding = F.normalize(text_embedding, dim=-1)
 
-        # Forward pass with a single image to populate hooks (feat_post_mlp)
-        # and get its global image embedding
-        image_emb = self.encode_image(image)  # [1, d_img]
-        image_emb = F.normalize(image_emb, dim=-1)  # [1, d_img]
-
         # Select target transformer block
         blocks_list = list(dict(self.visual.transformer.resblocks.named_children()).values())
         if target_layer < 0:
@@ -259,42 +255,66 @@ class LeWrapper(nn.Module):
             raise ValueError(f"Invalid target_layer index {target_layer} for Grad-CAM.")
 
         target_block = blocks_list[target_layer]
-        feats = target_block.feat_post_mlp  # [L, B, C] = [tokens, batch, dim], here B should be 1
-        if feats is None:
-            raise RuntimeError(
-                "feat_post_mlp is None – make sure LeWrapper hooks are active "
-                "and that compute_gradcam_clip is called after a forward pass."
-            )
 
-        # Discard CLS token at index 0 and treat remaining tokens as spatial grid
-        feats_patches = feats[1:]  # [L_p, 1, C]
+        # Containers for forward activations and backward gradients
+        activations = {}
+        gradients = {}
 
-        cams = []
-        for r in range(num_prompts):
-            # Class-specific (prompt-specific) score
-            self.visual.zero_grad()
-            score_r = torch.sum(text_embedding[r : r + 1] * image_emb)  # scalar
+        def _forward_hook(module, inp, out):
+            # out: [L, B, C]
+            # store patch tokens only, reshaped to [B, L_p, C]
+            if isinstance(out, tuple):
+                x = out[0]
+            else:
+                x = out
+            activations["value"] = x[1:].permute(1, 0, 2)  # [B, L_p, C]
 
-            grads = torch.autograd.grad(score_r, feats, retain_graph=True, create_graph=False)[0]  # [L, 1, C]
-            grads_patches = grads[1:]  # [L_p, 1, C]
+        def _backward_hook(module, grad_in, grad_out):
+            # grad_out[0]: [L, B, C]
+            g = grad_out[0]
+            gradients["value"] = g[1:].permute(1, 0, 2)  # [B, L_p, C]
+
+        # Register hooks
+        h_fwd = target_block.register_forward_hook(_forward_hook)
+        h_bwd = target_block.register_full_backward_hook(_backward_hook)
+
+        try:
+            # Repeat image per prompt so that each sample corresponds to one prompt
+            image_rep = image.repeat(num_prompts, 1, 1, 1)  # [P, 3, H, W]
+
+            # Forward pass to populate hooks and get image embeddings
+            image_emb = self.encode_image(image_rep)  # [P, d_img]
+            image_emb = F.normalize(image_emb, dim=-1)  # [P, d_img]
+
+            # Similarity scores per (prompt, image) pair: use per-prompt diagonal
+            sims = torch.sum(text_embedding * image_emb, dim=-1)  # [P]
+            score = sims.sum()
+
+            # Backward pass: populates gradients["value"]
+            self.zero_grad()
+            score.backward(retain_graph=False)
+
+            if "value" not in activations or "value" not in gradients:
+                raise RuntimeError("Grad-CAM hooks did not capture activations/gradients.")
+
+            feats_patches = activations["value"]   # [P, L_p, C]
+            grads_patches = gradients["value"]     # [P, L_p, C]
 
             # Global-average-pool gradients over spatial tokens (L_p) to get per-channel weights
-            weights = grads_patches.mean(dim=0)  # [1, C]
+            weights = grads_patches.mean(dim=1)    # [P, C]
 
             # Weighted combination of activations across channels
-            # feats_patches: [L_p, 1, C] -> [1, L_p, C]
-            feats_patches_b = feats_patches.permute(1, 0, 2)  # [1, L_p, C]
-            cam_r = torch.einsum("blc,bc->bl", feats_patches_b, weights)  # [1, L_p]
+            cam = torch.einsum("plc,pc->pl", feats_patches, weights)  # [P, L_p]
 
             # ReLU as in standard Grad-CAM
-            cam_r = F.relu(cam_r)
-            cams.append(cam_r)
-
-        # Stack cams for all prompts: list of [1, L_p] -> [P, L_p]
-        cam = torch.cat(cams, dim=0)  # [P, L_p]
+            cam = F.relu(cam)
+        finally:
+            # Remove hooks to avoid leaking references
+            h_fwd.remove()
+            h_bwd.remove()
 
         # Reshape tokens to spatial grid
-        num_tokens = feats_patches.shape[0]
+        num_tokens = feats_patches.shape[1]
         if hasattr(self.visual, 'last_grid_size'):
             h, w = self.visual.last_grid_size
         else:
