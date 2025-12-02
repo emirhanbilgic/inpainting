@@ -146,7 +146,7 @@ class LeWrapper(nn.Module):
     # -------------------------------------------------------------------------
     # Grad-CAM style explainability for CLIP
     # -------------------------------------------------------------------------
-    def compute_gradcam(self, text_embedding, image=None, target_layer=-1):
+    def compute_gradcam(self, text_embedding, image=None, target_layer=None):
         """
         Compute Grad-CAM-style heatmaps for CLIP models.
 
@@ -156,8 +156,8 @@ class LeWrapper(nn.Module):
         Args:
             text_embedding: Tensor of shape [P, d], text embeddings (will be L2-normalised inside).
             image: image tensor of shape [1, 3, H, W] or [B, 3, H, W].
-            target_layer: Index of the transformer block to use as the Grad-CAM
-                target. Follows Python indexing, so -1 is the last block.
+            target_layer: Index of the transformer block to use as the Grad-CAM target.
+                If None, we pick an empirically good default (e.g., 8 for ViT-B/16).
         """
         if 'clip' in self.model_type:
             return self.compute_gradcam_clip(text_embedding, image, target_layer=target_layer)
@@ -221,7 +221,7 @@ class LeWrapper(nn.Module):
         accum_expl_map = min_max(accum_expl_map)
         return accum_expl_map
 
-    def compute_gradcam_clip(self, text_embedding, image=None, target_layer=-1):
+    def compute_gradcam_clip(self, text_embedding, image=None, target_layer=None, allow_fallback=False):
         """
         Grad-CAM for CLIP ViT:
         - Uses the output of a chosen transformer block (after MLP, including residual)
@@ -234,8 +234,9 @@ class LeWrapper(nn.Module):
         Args:
             text_embedding: [P, d] text embeddings (will be L2-normalised inside).
             image: image tensor, [1, 3, H, W]; it will be repeated P times.
-            target_layer: which transformer block to use (int, Python-style
-                          index; -1 = last block).
+            target_layer: which transformer block to use (int). If None, we choose a model-aware default:
+                          for ViT-B/16 (12 layers) we use 8; otherwise we pick a mid-late block.
+            allow_fallback: if True, when the selected layer yields a zero CAM, aggregate Grad-CAM across layers.
         Returns:
             Tensor of shape [1, P, H, W] with values in [0, 1].
         """
@@ -249,10 +250,13 @@ class LeWrapper(nn.Module):
 
         # Select target transformer block
         blocks_list = list(dict(self.visual.transformer.resblocks.named_children()).values())
-        if target_layer < 0:
-            target_layer = len(blocks_list) + target_layer
+        if target_layer is None:
+            # Pick an empirically good default
+            num_blocks = len(blocks_list)
+            # Heuristic: ViT-B/16 has 12 blocks → use 8, else mid-late layer
+            target_layer = 8 if num_blocks == 12 and getattr(self, "patch_size", None) == 16 else max(self.starting_depth, num_blocks // 2)
         if target_layer < 0 or target_layer >= len(blocks_list):
-            raise ValueError(f"Invalid target_layer index {target_layer} for Grad-CAM.")
+            raise ValueError(f"Invalid target_layer index {target_layer} for Grad-CAM (num_blocks={len(blocks_list)}).")
 
         target_block = blocks_list[target_layer]
 
@@ -322,9 +326,9 @@ class LeWrapper(nn.Module):
         cam = cam.view(num_prompts, h, w)  # [P, H_t, W_t]
         cam = cam.unsqueeze(0)  # [1, P, H_t, W_t]
 
-        # If this layer yields a degenerate CAM (all zeros), fall back to aggregating layers
+        # If this layer yields a degenerate CAM (all zeros), optionally fall back to aggregating layers
         degenerate = (cam.detach().abs().max() == 0)
-        if degenerate:
+        if degenerate and allow_fallback:
             # Re-run a forward pass with hooks on all blocks to capture activations+grads,
             # then aggregate Grad-CAM across layers.
             acts_by_layer = {}
