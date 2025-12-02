@@ -192,10 +192,18 @@ class LeWrapper(nn.Module):
 
         blk = blocks_list[layer_idx]
         # Z^l tokens: [num_tokens_with_cls, batch, dim]
+        if not hasattr(blk, "feat_post_mlp"):
+            raise RuntimeError(
+                "Selected transformer block does not have 'feat_post_mlp'. "
+                "Ensure LeWrapper was constructed with layer_index <= target_layer "
+                "so that hooks are active for this block."
+            )
         Z = blk.feat_post_mlp  # [L, B, D]
         if Z is None:
-            raise RuntimeError("feat_post_mlp for the selected layer is None. "
-                               "Make sure hooks are correctly activated via LeWrapper.")
+            raise RuntimeError(
+                "feat_post_mlp for the selected layer is None. "
+                "Make sure hooks are correctly activated via LeWrapper and that an image forward pass was run."
+            )
 
         L, B, D = Z.shape
         if B != num_prompts:

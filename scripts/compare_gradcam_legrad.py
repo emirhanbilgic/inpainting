@@ -130,8 +130,10 @@ def main():
     tokenizer = open_clip.get_tokenizer(model_name=args.model_name)
     model.eval()
 
-    # Equip with LeGrad / hooks
-    model = LeWrapper(model)
+    # Equip with LeGrad / hooks.
+    # We set layer_index to target_layer so that the requested block has the
+    # necessary hooks (feat_post_mlp, attention maps, etc.) for both LeGrad and GradCAM.
+    model = LeWrapper(model, layer_index=args.target_layer)
 
     prompts = parse_prompts(args.prompt, args.prompts)
     # Treat prompts as class names; we wrap them in the CLIP style template.
