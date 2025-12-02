@@ -154,8 +154,8 @@ class LeWrapper(nn.Module):
         (P = number of prompts), min-max normalised per prompt.
 
         Args:
-            text_embedding: Tensor of shape [P, d], L2-normalised text embeddings.
-            image: Optional image tensor of shape [1, 3, H, W] or [B, 3, H, W].
+            text_embedding: Tensor of shape [P, d], text embeddings (will be L2-normalised inside).
+            image: image tensor of shape [1, 3, H, W] or [B, 3, H, W].
             target_layer: Index of the transformer block to use as the Grad-CAM
                 target. Follows Python indexing, so -1 is the last block.
         """
@@ -224,26 +224,25 @@ class LeWrapper(nn.Module):
         - Returns heatmaps over patch tokens, upsampled to the input resolution.
 
         Args:
-            text_embedding: [P, d] normalised text embeddings.
+            text_embedding: [P, d] text embeddings (will be L2-normalised inside).
             image: image tensor, [1, 3, H, W]; it will be repeated P times.
             target_layer: which transformer block to use (int, Python-style
                           index; -1 = last block).
         Returns:
             Tensor of shape [1, P, H, W] with values in [0, 1].
         """
+        if image is None:
+            raise ValueError("compute_gradcam_clip requires an image tensor (cannot be None).")
+
         num_prompts = text_embedding.shape[0]
 
-        if image is not None:
-            # repeat image per prompt to match CLIP's batched encode_image
-            image = image.repeat(num_prompts, 1, 1, 1)
-            # Forward pass to populate hooks (feat_post_mlp) and get image embeddings
-            image_emb = self.encode_image(image)  # [P, d_img]
-        else:
-            # assume hooks are already populated by a previous forward
-            # but still need embeddings for similarity
-            image_emb = self.encode_image(None)
+        # L2-normalise both text and image embeddings for cosine-style similarity
+        text_embedding = F.normalize(text_embedding, dim=-1)
 
-        # Ensure normalised embeddings for cosine-style similarity
+        # repeat image per prompt to match CLIP's batched encode_image
+        image = image.repeat(num_prompts, 1, 1, 1)
+        # Forward pass to populate hooks (feat_post_mlp) and get image embeddings
+        image_emb = self.encode_image(image)  # [P, d_img]
         image_emb = F.normalize(image_emb, dim=-1)
 
         # Select target transformer block
@@ -294,10 +293,11 @@ class LeWrapper(nn.Module):
         cam = cam.view(num_prompts, h, w)              # [P, H_t, W_t]
         cam = cam.unsqueeze(0)                         # [1, P, H_t, W_t]
 
-        # Upsample to image resolution (patch_size is set by LeWrapper)
-        cam = F.interpolate(cam, scale_factor=self.patch_size, mode='bilinear', align_corners=False)
+        # Upsample to the exact input image resolution
+        H_img, W_img = image.shape[-2], image.shape[-1]
+        cam = F.interpolate(cam, size=(H_img, W_img), mode='bilinear', align_corners=False)
 
-        # Min-max normalisation per prompt
+        # Min-max normalisation per prompt (handled per [B, P] by min_max)
         cam = min_max(cam)
         return cam
 

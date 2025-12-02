@@ -1,7 +1,7 @@
 import os
 import argparse
+import re
 
-import requests
 from PIL import Image
 
 import torch
@@ -12,26 +12,70 @@ import matplotlib.pyplot as plt
 from legrad import LeWrapper, LePreprocess
 
 
-def load_image(path_or_url: str) -> Image.Image:
-    if path_or_url.startswith("http://") or path_or_url.startswith("https://"):
-        img = Image.open(requests.get(path_or_url, stream=True).raw).convert("RGB")
+def sanitize(name: str) -> str:
+    s = name.strip().lower()
+    s = re.sub(r"[^a-z0-9]+", "_", s)
+    s = re.sub(r"_+", "_", s).strip("_")
+    return s or "x"
+
+
+def list_images(folder: str, limit: int, seed: int = 42):
+    import random
+
+    entries = []
+    if not os.path.isdir(folder):
+        return entries
+    for name in sorted(os.listdir(folder)):
+        path = os.path.join(folder, name)
+        if os.path.isfile(path):
+            ext = name.lower().rsplit(".", 1)[-1]
+            if ext in {"jpg", "jpeg", "png", "bmp", "webp"}:
+                entries.append(path)
+    random.Random(seed).shuffle(entries)
+    return entries[:limit]
+
+
+def collect_dataset_paths(dataset_root: str, num_per_class: int, max_images: int = 0):
+    paths = []
+    cat_dir = os.path.join(dataset_root, "Cat")
+    dog_dir = os.path.join(dataset_root, "Dog")
+    if os.path.isdir(cat_dir) and os.path.isdir(dog_dir):
+        paths += list_images(cat_dir, limit=num_per_class)
+        paths += list_images(dog_dir, limit=num_per_class)
     else:
-        if not os.path.isfile(path_or_url):
-            raise FileNotFoundError(f"Image file not found: {path_or_url}")
-        img = Image.open(path_or_url).convert("RGB")
-    return img
+        flat_limit = max_images if max_images > 0 else max(1, num_per_class * 2)
+        paths += list_images(dataset_root, limit=flat_limit)
+    if max_images > 0:
+        paths = paths[:max_images]
+    return paths
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Compare LeGrad and Grad-CAM heatmaps for CLIP.")
-    parser.add_argument("--image", type=str, required=True,
-                        help="Path or URL to an input image.")
-    parser.add_argument("--prompts", type=str, nargs="+", required=True,
-                        help="Text prompts, e.g. --prompts 'a photo of a dog' 'a photo of a cat'")
+    parser = argparse.ArgumentParser(description="Compare LeGrad and Grad-CAM heatmaps for CLIP over a dataset.")
+    parser.add_argument(
+        "--dataset_root",
+        type=str,
+        required=True,
+        help='Root folder with images (optionally containing "Cat" and "Dog" subfolders).',
+    )
+    parser.add_argument(
+        "--prompts",
+        type=str,
+        nargs="+",
+        required=True,
+        help="Text prompts, e.g. --prompts 'a photo of a dog.' 'a photo of a cat.'",
+    )
     parser.add_argument("--model_name", type=str, default="ViT-B-16")
     parser.add_argument("--pretrained", type=str, default="laion2b_s34b_b88k")
     parser.add_argument("--image_size", type=int, default=448)
-    parser.add_argument("--output", type=str, default="outputs/compare_legrad_gradcam.png")
+    parser.add_argument("--num_per_class", type=int, default=4)
+    parser.add_argument("--max_images", type=int, default=0, help="Cap total images processed; 0 means auto.")
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="outputs/compare_legrad_gradcam",
+        help="Directory where per-image comparison figures will be saved.",
+    )
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -49,59 +93,74 @@ def main():
     model = LeWrapper(model)
     preprocess = LePreprocess(preprocess=preprocess, image_size=args.image_size)
 
-    # ------- Prepare inputs -------
-    raw_image = load_image(args.image)
-    img_tensor = preprocess(raw_image).unsqueeze(0).to(device)  # [1, 3, H, W]
+    os.makedirs(args.output_dir, exist_ok=True)
 
+    # Collect image paths
+    paths = collect_dataset_paths(args.dataset_root, num_per_class=args.num_per_class, max_images=args.max_images)
+    if len(paths) == 0:
+        raise RuntimeError(f"No images found under {args.dataset_root}")
+
+    # Prepare text embeddings once
     text_tokens = tokenizer(args.prompts).to(device)
     with torch.no_grad():
         text_emb = model.encode_text(text_tokens)
         text_emb = F.normalize(text_emb, dim=-1)  # [P, d]
 
-    # ------- LeGrad heatmaps -------
-    with torch.no_grad():
-        legrad_maps = model.compute_legrad_clip(text_embedding=text_emb, image=img_tensor)  # [1, P, H, W]
+    for pth in paths:
+        try:
+            raw_image = Image.open(pth).convert("RGB")
+        except Exception:
+            continue
 
-    # ------- Grad-CAM heatmaps -------
-    # Uses last transformer block by default (target_layer=-1)
-    gradcam_maps = model.compute_gradcam_clip(text_embedding=text_emb, image=img_tensor, target_layer=-1)
+        img_tensor = preprocess(raw_image).unsqueeze(0).to(device)  # [1, 3, H, W]
 
-    # ------- Visual comparison -------
-    # Convert to CPU numpy
-    legrad_np = legrad_maps.squeeze(0).detach().cpu().numpy()    # [P, H, W]
-    gradcam_np = gradcam_maps.squeeze(0).detach().cpu().numpy()  # [P, H, W]
+        # ------- LeGrad heatmaps -------
+        with torch.no_grad():
+            legrad_maps = model.compute_legrad_clip(text_embedding=text_emb, image=img_tensor)  # [1, P, H, W]
 
-    P = legrad_np.shape[0]
-    fig, axes = plt.subplots(nrows=P, ncols=3, figsize=(9, 3 * P))
+        # ------- Grad-CAM heatmaps -------
+        gradcam_maps = model.compute_gradcam_clip(
+            text_embedding=text_emb, image=img_tensor, target_layer=-1
+        )  # [1, P, H, W]
 
-    if P == 1:
-        axes = [axes]
+        # ------- Visual comparison -------
+        legrad_np = legrad_maps.squeeze(0).detach().cpu().numpy()  # [P, H, W]
+        gradcam_np = gradcam_maps.squeeze(0).detach().cpu().numpy()  # [P, H, W]
 
-    for i in range(P):
-        # Original image
-        axes[i][0].imshow(raw_image.resize((args.image_size, args.image_size)))
-        axes[i][0].set_title(f"Image\nPrompt: {args.prompts[i]}")
-        axes[i][0].axis("off")
+        P = legrad_np.shape[0]
+        fig, axes = plt.subplots(nrows=P, ncols=3, figsize=(9, 3 * P))
 
-        # LeGrad heatmap
-        axes[i][1].imshow(raw_image.resize((args.image_size, args.image_size)))
-        axes[i][1].imshow(legrad_np[i], cmap="jet", alpha=0.6, vmin=0.0, vmax=1.0)
-        axes[i][1].set_title("LeGrad")
-        axes[i][1].axis("off")
+        if P == 1:
+            axes = [axes]
 
-        # Grad-CAM heatmap
-        axes[i][2].imshow(raw_image.resize((args.image_size, args.image_size)))
-        axes[i][2].imshow(gradcam_np[i], cmap="jet", alpha=0.6, vmin=0.0, vmax=1.0)
-        axes[i][2].set_title("Grad-CAM")
-        axes[i][2].axis("off")
+        resized = raw_image.resize((args.image_size, args.image_size))
+        for i in range(P):
+            # Original image
+            axes[i][0].imshow(resized)
+            axes[i][0].set_title(f"Image\nPrompt: {args.prompts[i]}")
+            axes[i][0].axis("off")
 
-    plt.tight_layout()
-    os.makedirs(os.path.dirname(args.output), exist_ok=True)
-    plt.savefig(args.output, dpi=150)
-    print(f"Saved comparison figure to {args.output}")
+            # LeGrad heatmap
+            axes[i][1].imshow(resized)
+            axes[i][1].imshow(legrad_np[i], cmap="jet", alpha=0.6, vmin=0.0, vmax=1.0)
+            axes[i][1].set_title("LeGrad")
+            axes[i][1].axis("off")
+
+            # Grad-CAM heatmap
+            axes[i][2].imshow(resized)
+            axes[i][2].imshow(gradcam_np[i], cmap="jet", alpha=0.6, vmin=0.0, vmax=1.0)
+            axes[i][2].set_title("Grad-CAM")
+            axes[i][2].axis("off")
+
+        plt.tight_layout()
+        base = os.path.splitext(os.path.basename(pth))[0]
+        out_name = f"{sanitize(base)}_compare_legrad_gradcam.png"
+        out_path = os.path.join(args.output_dir, out_name)
+        plt.savefig(out_path, dpi=150)
+        plt.close(fig)
+        print(f"Saved: {out_path}")
 
 
 if __name__ == "__main__":
     main()
-
 
