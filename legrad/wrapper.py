@@ -143,6 +143,269 @@ class LeWrapper(nn.Module):
         elif 'coca' in self.model_type:
             return self.compute_legrad_coca(text_embedding, image)
 
+    def compute_gradcam(self, text_embedding, image=None, layer_index=8):
+        """
+        Compute GradCAM explainability map for Vision Transformers.
+        
+        Args:
+            text_embedding: Text embedding tensor [num_prompts, dim]
+            image: Input image tensor [batch_size, 3, H, W]
+            layer_index: Which layer to extract GradCAM from (default: 8 for ViT-B/16)
+            
+        Returns:
+            GradCAM heatmap [num_prompts, 1, H, W]
+        """
+        if 'clip' in self.model_type:
+            return self.compute_gradcam_clip(text_embedding, image, layer_index)
+        elif 'siglip' in self.model_type:
+            return self.compute_gradcam_siglip(text_embedding, image, layer_index)
+        elif 'coca' in self.model_type:
+            return self.compute_gradcam_coca(text_embedding, image, layer_index)
+    
+    def compute_gradcam_clip(self, text_embedding, image=None, layer_index=8):
+        """
+        GradCAM for CLIP models.
+        Formula from paper:
+        w = (1/n) * sum_i(∂s/∂z_i^l)
+        E_GradCAM = ((1/d) * sum_d(w_d * Z^l[:, d]))^+
+        
+        For GradCAM, we compute the gradient of the similarity score with respect to
+        the intermediate layer activations, then use these gradients as weights.
+        """
+        num_prompts = text_embedding.shape[0]
+        if image is not None:
+            image_input = image.repeat(num_prompts, 1, 1, 1)
+            H_img, W_img = image.shape[-2], image.shape[-1]
+        else:
+            image_input = None
+        
+        # Get the blocks
+        blocks_list = list(dict(self.visual.transformer.resblocks.named_children()).values())
+        
+        # Ensure layer_index is valid
+        if layer_index >= len(blocks_list):
+            layer_index = len(blocks_list) - 1
+        
+        if layer_index < self.starting_depth:
+            raise ValueError(f"Layer {layer_index} is before starting_depth {self.starting_depth}. "
+                           f"Please use a layer >= {self.starting_depth}")
+        
+        # Forward pass to get intermediate features
+        _ = self.encode_image(image_input)
+        
+        # Get intermediate tokens Z^l from the specified layer
+        intermediate_tokens = blocks_list[layer_index].feat_post_mlp  # [num_tokens, batch, dim]
+        
+        # Compute image features from intermediate tokens through remaining layers
+        # We need to pass through remaining transformer blocks
+        x = intermediate_tokens
+        for i in range(layer_index + 1, len(blocks_list)):
+            x = blocks_list[i](x)
+        
+        # Apply final layer norm and projection
+        image_features = self.visual.ln_post(x.mean(dim=0)) @ self.visual.proj
+        image_features = F.normalize(image_features, dim=-1)
+        
+        # Compute similarity
+        sim = text_embedding @ image_features.transpose(-1, -2)  # [num_prompts, num_prompts]
+        one_hot = F.one_hot(torch.arange(0, num_prompts)).float().requires_grad_(True).to(text_embedding.device)
+        s = torch.sum(one_hot * sim)
+        
+        # Compute gradients with respect to intermediate tokens
+        self.visual.zero_grad()
+        grads = torch.autograd.grad(s, [intermediate_tokens], retain_graph=False)[0]  # [num_tokens, batch, dim]
+        
+        # Permute to [batch, num_tokens, dim]
+        grads = grads.permute(1, 0, 2)
+        intermediate_tokens = intermediate_tokens.permute(1, 0, 2)
+        
+        # Average gradients across all tokens to get weights w
+        # w shape: [batch, 1, dim]
+        w = grads.mean(dim=1, keepdim=True)  # [batch, 1, dim]
+        
+        # Remove CLS token from intermediate_tokens
+        tokens_no_cls = intermediate_tokens[:, 1:, :].detach()  # [batch, num_patches, dim]
+        
+        # Weighted sum: (1/d) * sum_d(w_d * Z^l[:, d])
+        # Element-wise multiplication and sum over dimension
+        weighted_tokens = w.detach() * tokens_no_cls  # [batch, num_patches, dim]
+        gradcam_map = weighted_tokens.mean(dim=-1)  # [batch, num_patches]
+        
+        # Apply ReLU
+        gradcam_map = torch.clamp(gradcam_map, min=0.)
+        
+        # Get spatial dimensions
+        num_tokens = tokens_no_cls.shape[1]
+        if hasattr(self.visual, 'last_grid_size'):
+            w, h = self.visual.last_grid_size
+        else:
+            w = h = int(math.sqrt(num_tokens))
+        
+        # Reshape to spatial dimensions
+        gradcam_map = rearrange(gradcam_map, 'b (w h) -> b 1 w h', w=w, h=h)
+        
+        # Resize to image dimensions
+        if image is not None:
+            gradcam_map = F.interpolate(gradcam_map, size=(H_img, W_img), mode='bilinear', align_corners=False)
+        else:
+            gradcam_map = F.interpolate(gradcam_map, scale_factor=self.patch_size, mode='bilinear')
+        
+        # Normalize
+        gradcam_map = min_max(gradcam_map)
+        
+        return gradcam_map
+    
+    def compute_gradcam_siglip(self, text_embedding, image=None, layer_index=8):
+        """
+        GradCAM for SigLIP models.
+        """
+        num_prompts = text_embedding.shape[0]
+        if image is not None:
+            image_input = image.repeat(num_prompts, 1, 1, 1)
+            H_img, W_img = image.shape[-2], image.shape[-1]
+        else:
+            image_input = None
+        
+        blocks_list = list(dict(self.visual.trunk.blocks.named_children()).values())
+        
+        # Ensure layer_index is valid
+        if layer_index >= len(blocks_list):
+            layer_index = len(blocks_list) - 1
+        
+        if layer_index < self.starting_depth:
+            raise ValueError(f"Layer {layer_index} is before starting_depth {self.starting_depth}. "
+                           f"Please use a layer >= {self.starting_depth}")
+        
+        # Forward pass
+        _ = self.encode_image(image_input)
+        
+        # Get intermediate tokens from specified layer
+        intermediate_tokens = blocks_list[layer_index].feat_post_mlp  # [batch, num_tokens, dim]
+        
+        # Pass through remaining blocks
+        x = intermediate_tokens
+        for i in range(layer_index + 1, len(blocks_list)):
+            x = blocks_list[i](x)
+        
+        # Get final pooled features
+        pooled_feat = self.visual.trunk.attn_pool(x)
+        pooled_feat = F.normalize(pooled_feat, dim=-1)
+        
+        # Compute similarity
+        sim = text_embedding @ pooled_feat.transpose(-1, -2)
+        one_hot = F.one_hot(torch.arange(0, num_prompts)).float().requires_grad_(True).to(text_embedding.device)
+        s = torch.sum(one_hot * sim)
+        
+        # Compute gradients
+        self.zero_grad()
+        grads = torch.autograd.grad(s, [intermediate_tokens], retain_graph=False)[0]
+        
+        # Average gradients across tokens
+        w = grads.mean(dim=1, keepdim=True)  # [batch, 1, dim]
+        
+        # Weighted sum over dimensions
+        weighted_tokens = w.detach() * intermediate_tokens.detach()  # [batch, num_tokens, dim]
+        gradcam_map = weighted_tokens.mean(dim=-1)  # [batch, num_tokens]
+        
+        # Apply ReLU
+        gradcam_map = torch.clamp(gradcam_map, min=0.)
+        
+        # Get spatial dimensions
+        num_tokens = intermediate_tokens.shape[1]
+        w = h = int(math.sqrt(num_tokens))
+        
+        # Reshape
+        gradcam_map = rearrange(gradcam_map, 'b (w h) -> b 1 w h', w=w, h=h)
+        
+        # Resize
+        if image is not None:
+            gradcam_map = F.interpolate(gradcam_map, size=(H_img, W_img), mode='bilinear', align_corners=False)
+        else:
+            gradcam_map = F.interpolate(gradcam_map, scale_factor=self.patch_size, mode='bilinear')
+        
+        # Normalize
+        gradcam_map = min_max(gradcam_map)
+        
+        return gradcam_map
+    
+    def compute_gradcam_coca(self, text_embedding, image=None, layer_index=8):
+        """
+        GradCAM for CoCa models.
+        """
+        if image is not None:
+            _ = self.encode_image(image)
+            H_img, W_img = image.shape[-2], image.shape[-1]
+        
+        blocks_list = list(dict(self.visual.transformer.resblocks.named_children()).values())
+        
+        # Ensure layer_index is valid
+        if layer_index >= len(blocks_list):
+            layer_index = len(blocks_list) - 1
+        
+        if layer_index < self.starting_depth:
+            raise ValueError(f"Layer {layer_index} is before starting_depth {self.starting_depth}. "
+                           f"Please use a layer >= {self.starting_depth}")
+        
+        # Forward pass
+        num_prompts = text_embedding.shape[0]
+        
+        # Get intermediate tokens
+        intermediate_tokens = blocks_list[layer_index].feat_post_mlp  # [num_tokens, batch, dim]
+        
+        # Pass through remaining blocks
+        x = intermediate_tokens
+        for i in range(layer_index + 1, len(blocks_list)):
+            x = blocks_list[i](x)
+        
+        # Get final image embedding through attn_pool
+        x = x.permute(1, 0, 2)  # [batch, num_tokens, dim]
+        image_embedding = self.visual.attn_pool(x)[:, 0]
+        image_embedding = image_embedding @ self.visual.proj
+        
+        # Compute similarity
+        sim = text_embedding @ image_embedding.transpose(-1, -2)
+        one_hot = F.one_hot(torch.arange(0, num_prompts)).float().requires_grad_(True).to(text_embedding.device)
+        s = torch.sum(one_hot * sim)
+        
+        # Compute gradients
+        self.visual.zero_grad()
+        grads = torch.autograd.grad(s, [intermediate_tokens], retain_graph=False)[0]
+        
+        # Permute to [batch, num_tokens, dim]
+        grads = grads.permute(1, 0, 2)
+        intermediate_tokens = intermediate_tokens.permute(1, 0, 2)
+        
+        # Average gradients across tokens
+        w = grads.mean(dim=1, keepdim=True)  # [batch, 1, dim]
+        
+        # Remove CLS token
+        tokens_no_cls = intermediate_tokens[:, 1:, :].detach()
+        
+        # Weighted sum
+        weighted_tokens = w.detach() * tokens_no_cls
+        gradcam_map = weighted_tokens.mean(dim=-1)
+        
+        # Apply ReLU
+        gradcam_map = torch.clamp(gradcam_map, min=0.)
+        
+        # Get spatial dimensions
+        num_tokens = tokens_no_cls.shape[1]
+        w = h = int(math.sqrt(num_tokens))
+        
+        # Reshape
+        gradcam_map = rearrange(gradcam_map, 'b (w h) -> b 1 w h', w=w, h=h)
+        
+        # Resize
+        if image is not None:
+            gradcam_map = F.interpolate(gradcam_map, size=(H_img, W_img), mode='bilinear', align_corners=False)
+        else:
+            gradcam_map = F.interpolate(gradcam_map, scale_factor=self.patch_size, mode='bilinear')
+        
+        # Normalize
+        gradcam_map = min_max(gradcam_map)
+        
+        return gradcam_map
+
 
     def compute_legrad_clip(self, text_embedding, image=None):
         num_prompts = text_embedding.shape[0]
