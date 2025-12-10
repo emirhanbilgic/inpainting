@@ -13,12 +13,17 @@ from sklearn.metrics import average_precision_score
 from tqdm import tqdm
 import torchvision.transforms.functional as TF
 from torchvision.transforms import InterpolationMode
+import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
 import requests
 
-# Add project root to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-sys.path.append(os.path.abspath(os.path.dirname(__file__)))
+# Add project root to path (ensure local legrad overrides any installed package)
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+scripts_dir = os.path.abspath(os.path.dirname(__file__))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+if scripts_dir not in sys.path:
+    sys.path.insert(0, scripts_dir)
 
 try:
     import nltk
@@ -139,6 +144,20 @@ def compute_map_score(heatmap, gt_mask):
     if y_true.sum() == 0:
         return 0.0
     return average_precision_score(y_true, y_scores)
+
+
+def compute_gradcam_for_embedding(model, image, text_emb_1x, layer_index: int = 8):
+    """
+    Compute a GradCAM heatmap (normalized to [0, 1]) for a single text embedding.
+    Returns: 2D tensor [H, W] on CPU.
+    """
+    # Ensure we use a valid layer for this wrapped model
+    if hasattr(model, "starting_depth"):
+        layer_index = max(layer_index, int(model.starting_depth))
+    with torch.enable_grad():
+        heatmap = model.compute_gradcam(image=image, text_embedding=text_emb_1x, layer_index=layer_index)
+    heatmap = heatmap[0, 0].clamp(0, 1).detach().cpu()
+    return heatmap
 
 # --- Sparse Encoding Logic Copies ---
 def omp_sparse_residual(
@@ -353,8 +372,8 @@ def main():
     )
     tokenizer = open_clip.get_tokenizer(args.model_name)
     model.eval()
-    # Use default layer_index as in original LeGrad (typically -2)
-    model = LeWrapper(model)
+    # Use default layer_index as in original LeGrad (-2 = second-to-last layer)
+    model = LeWrapper(model, layer_index=-2)
     # Match official LeGrad usage: wrap preprocess for e.g. 448x448 input
     preprocess = LePreprocess(preprocess=preprocess, image_size=args.image_size)
     
@@ -423,8 +442,9 @@ def main():
     debugged_classes = set()
 
     results = {
-        'original': {'iou': [], 'acc': [], 'ap': []},
-        'sparse': {'iou': [], 'acc': [], 'ap': []}
+        'original': {'iou': [], 'acc': [], 'ap': []},   # LeGrad
+        'gradcam': {'iou': [], 'acc': [], 'ap': []},    # Grad-CAM
+        'sparse': {'iou': [], 'acc': [], 'ap': []},     # Sparse LeGrad (kept for completeness)
     }
 
     for idx in tqdm(range(limit)):
@@ -447,9 +467,22 @@ def main():
                 real_gt = np.array(f[real_gt_ref])
                 gt_mask = real_gt.transpose(1, 0)
             else:
-                gt_mask = np.zeros((base_img.height, base_img.width))
-            
-            H_orig, W_orig = gt_mask.shape
+                gt_mask = np.zeros((base_img.height, base_img.width), dtype=np.uint8)
+
+            # ------------------------------------------------------------------
+            # IMPORTANT: match reference ImageNet-Seg processing
+            # Resize GT mask to (image_size, image_size) using nearest-neighbor,
+            # just like clip_text_span/utils/imagenet_segmentation.py does via
+            # target_transform = Resize((image_size, image_size), Image.NEAREST)
+            # ------------------------------------------------------------------
+            gt_pil = Image.fromarray(gt_mask.astype(np.uint8))
+            target_resize = transforms.Resize(
+                (args.image_size, args.image_size),
+                interpolation=InterpolationMode.NEAREST,
+            )
+            gt_pil = target_resize(gt_pil)
+            gt_mask = np.array(gt_pil).astype(np.uint8)
+            H_gt, W_gt = gt_mask.shape
             
             # Get Class Name & prompt / embedding from precomputed tables
             target_ref = targets_refs[idx, 0]
@@ -468,14 +501,23 @@ def main():
             cls_idx = wnid_to_idx[wnid]
             original_1x = all_text_embs[cls_idx:cls_idx + 1]  # [1, d]
             
-            # --- ORIGINAL ---
+            # --- ORIGINAL (LeGrad) ---
             heatmap_orig = compute_map_for_embedding(model, img_t, original_1x)  # [H_feat, W_feat]
+
+            # --- GRAD-CAM ---
+            heatmap_gradcam = compute_gradcam_for_embedding(model, img_t, original_1x)  # [H_feat, W_feat]
 
             # Resize to original size
             # Note: F.interpolate expects [B, C, H, W]
             heatmap_orig_resized = F.interpolate(
                 heatmap_orig.view(1, 1, H_feat, W_feat),
-                size=(H_orig, W_orig),
+                size=(H_gt, W_gt),
+                mode='bilinear',
+                align_corners=False
+            ).squeeze().numpy()
+            heatmap_gradcam_resized = F.interpolate(
+                heatmap_gradcam.view(1, 1, H_feat, W_feat),
+                size=(H_gt, W_gt),
                 mode='bilinear',
                 align_corners=False
             ).squeeze().numpy()
@@ -564,13 +606,13 @@ def main():
             heatmap_sparse = compute_map_for_embedding(model, img_t, sparse_1x)
             heatmap_sparse_resized = F.interpolate(
                 heatmap_sparse.view(1, 1, H_feat, W_feat),
-                size=(H_orig, W_orig),
+                size=(H_gt, W_gt),
                 mode='bilinear',
                 align_corners=False
             ).squeeze().numpy()
 
             # --- METRICS ---
-            # Original LeGrad: fixed threshold 0.5
+            # Original LeGrad: fixed threshold 0.5 on normalized heatmap (as in paper)
             iou_o, acc_o = compute_iou_acc(heatmap_orig_resized, gt_mask, threshold=0.5)
             ap_o = compute_map_score(heatmap_orig_resized, gt_mask)
             
@@ -578,7 +620,15 @@ def main():
             results['original']['acc'].append(acc_o)
             results['original']['ap'].append(ap_o)
 
-            # Sparse encoding: user-controllable threshold
+            # Grad-CAM: same fixed threshold 0.5 for fair comparison
+            iou_g, acc_g = compute_iou_acc(heatmap_gradcam_resized, gt_mask, threshold=0.5)
+            ap_g = compute_map_score(heatmap_gradcam_resized, gt_mask)
+
+            results['gradcam']['iou'].append(iou_g)
+            results['gradcam']['acc'].append(acc_g)
+            results['gradcam']['ap'].append(ap_g)
+
+            # Sparse encoding: user-controllable fixed threshold (default 0.5)
             iou_s, acc_s = compute_iou_acc(heatmap_sparse_resized, gt_mask, threshold=args.sparse_threshold)
             ap_s = compute_map_score(heatmap_sparse_resized, gt_mask)
             
@@ -589,10 +639,10 @@ def main():
             # --- OPTIONAL VISUALIZATION GRID ---
             if idx < args.vis_first_k:
                 # Resize original image to GT size
-                vis_img = base_img.resize((W_orig, H_orig))
+                vis_img = base_img.resize((W_gt, H_gt))
                 # Binary masks
                 gt_bin = gt_mask.astype(np.uint8)
-                legrad_bin = (int(0.5 < 0.0) + (heatmap_orig_resized > 0.5)).astype(np.uint8)
+                legrad_bin = (heatmap_orig_resized > 0.5).astype(np.uint8)
                 sparse_bin = (heatmap_sparse_resized > args.sparse_threshold).astype(np.uint8)
 
                 fig, axes = plt.subplots(1, 4, figsize=(12, 3))
@@ -622,11 +672,11 @@ def main():
             continue
 
     print("\n--- Results ---")
-    for method in ['original', 'sparse']:
+    for method in ['original', 'gradcam', 'sparse']:
         miou = np.mean(results[method]['iou']) * 100
         macc = np.mean(results[method]['acc']) * 100
         map_score = np.mean(results[method]['ap']) * 100
-        print(f"{method.capitalize()}: mIoU={miou:.2f}, PixelAcc={macc:.2f}, mAP={map_score:.2f}")
+        print(f"{method.capitalize()}: PixelAcc={macc:.2f}, mIoU={miou:.2f}, mAP={map_score:.2f}")
 
 if __name__ == '__main__':
     main()

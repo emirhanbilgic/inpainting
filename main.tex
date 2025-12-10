@@ -10,8 +10,6 @@
 % Import additional packages in the preamble file, before hyperref
 \input{preamble}
 
-
-% (Or just hit 'q' on the first LaTeX run, let it finish, and you should be clear).
 \definecolor{cvprblue}{rgb}{0.21,0.49,0.74}
 \usepackage[pagebackref,breaklinks,colorlinks,allcolors=cvprblue]{hyperref}
 
@@ -64,49 +62,6 @@
 An Explainability Method for Vision Transformers via Feature Formation Sensitivity}
 
 
-%%%%%%%%% AUTHORS - PLEASE UPDATE
-\author{%
-    Walid Bousselham$^{1}$ \quad
-    Angie Boggust$^2$  \quad
-    Sofian Chaybouti$^{1}$ \quad
-    Hendrik Strobelt$^{3, 4}$  \quad
-    Hilde Kuehne$^{1, 3}$ \\
-    \kern-1.1em\small{
-    $^1$University of Bonn \& Goethe University Frankfurt,
-    $^2$MIT CSAIL, 
-    $^3$MIT-IBM Watson AI Lab
-    $^4$IBM Research, 
-    } \\
-}
-
-% \author{First Author\\
-% Institution1\\
-% Institution1 address\\
-% {\tt\small firstauthor@i1.org}
-% % For a paper whose authors are all at the same institution,
-% % omit the following lines up until the closing ``}''.
-% % Additional authors and addresses can be added with ``\and'',
-% % just like the second author.
-% % To save space, use either the email address or home page, not both
-% \and
-% Second Author\\
-% Institution2\\
-% First line of institution2 address\\
-% {\tt\small secondauthor@i2.org}
-% }
-
-% \author{Walid Bousselham\inst{1,2} \and
-%  Angie Boggust\inst{3} \and
-% Sofian Chaybouti \inst{1,2} \and \\
-% Hendrik Strobelt \inst{4, 5} \and
-% Hilde Kuehne \inst{1,2,4}
-% }
-% \institute{
-% University of Bonn \and Goethe University Frankfurt \and
-% MIT CSAIL \and
-% MIT-IBM Watson AI Lab\and
-% IBM Research}
-
 \begin{document}
 \maketitle
 
@@ -145,9 +100,6 @@ To address this problem, we propose \textbf{LeGrad}, a \textbf{L}ayerwise \textb
 Compared to other methods, LeGrad uses the gradient with respect to the attention maps as the explanatory signal, as e.g. opposed to CheferCam~\citep{chefer2020transformer,chefer2021generic}, which uses the gradient to weight the attention maps. This is done independently for each layer. The final explainability signal is then pooled over all layers of the ViT. Note that using a layerwise gradient, compared to other signals, allows to sum up over different layers without further need for normalization. To further improve the signal, the gradient is clipped by a ReLU function preventing negative gradients to impact positive activations (see Figure~\ref{fig:method_figure} for details).
 The approach is conceptually simple and versatile, as it only requires the gradient w.r.t. to the ViT's attention maps. This facilitates its adoption across various applications and architecture, including larger ViTs such as ViT-BigG as well as attention pooling architectures~\citep{lee2019set, zhai2023sigmoid}.  %enhancing the transparency of ViTs. 
 
-% We evaluate the proposed method for various ViT backbones
-% on four challenging tasks: segmentation, open-vocabulary detection, and perturbation and audio localization on ImageNet~\citep{russakovsky2015imagenet, gao2022luss}, OpenImagesV7~\citep{benenson2022colouring} as well as ADE20KSound/SpeechPrompted\citep{hamilton2024separating} . It shows that while current methods struggle especially with the diverse object categories in OpenImagesV7, LeGrad can achieve performance gains of $2\times$--$5\times$, reaching a score of $48.4$ \textit{p-mIoU} on OpenImagesV7 using OpenCLIP-ViT-B/16. Furthermore, we demonstrate the applicability of LeGrad to very large models, such as the ViT-BigG/14~\citep{cherti2023reproducible} with 2.5 billion parameters. Finally, it also adapts well to different feature aggregation strategies employed by ViTs~\citep{radford2021learning, zhai2023sigmoid}, making it a versatile tool for explainability. LeGrad also establishes a new SoTA on zero-shoot sound localization on ADE10KSoundPrompted by scoring $+15mAP$/$+14mIoU$ over previous SoTA.
-
 We evaluate the proposed method for various ViT backbones
 on four challenging tasks, segmentation, open-vocabulary detection, perturbation, and audio localization, spanning over various datasets, incl. ImageNet~\citep{russakovsky2015imagenet, gao2022luss}, OpenImagesV7~\citep{benenson2022colouring}, and ADE20KSound/SpeechPrompted~\citep{hamilton2024separating}. It shows that while current methods struggle with the diverse object categories in OpenImagesV7, LeGrad reaches a score of $48.4$ \textit{p-mIoU} on OpenImagesV7 using OpenCLIP-ViT-B/16. Furthermore, we demonstrate the applicability of LeGrad to very large models, such as the ViT-BigG/14~\citep{cherti2023reproducible} with 2.5 billion parameters while also adapting well to different feature aggregation strategies employed e.g. by SigLIP~\citep{zhai2023sigmoid}. Finally, LeGrad also establishes a new SoTA on zero-shot sound localization on ADE20KSoundPrompted scoring $+14mIoU$ over previous SoTA.
 
@@ -159,15 +111,7 @@ We summarize the contributions as follows:
 
 % --------------------------------------------------
 % --------------------------------------------------
-% \begin{figure*}[t]
-%     \centering
-%     \includegraphics[width=1.\textwidth]{images/method_figure.pdf}
-%     %\vspace{-2.5em}
-%     \caption{\textbf{Overview of LeGrad:} Given a text prompt or a classifier $\mathcal{C}$, an activation $s^l$ is computed for each layer $l$. The activation $s^l$ is then used to compute the explainability map of that layer. The layerwise explainability maps are then merged to produce LeGrad's output.}
-%     \label{fig:method_figure}
-% \end{figure*}
-% %\vspace{-1em}
-% 
+
 \section{Related Work}
 % 
 \textbf{Gradient-Based Explanation Methods}
@@ -202,9 +146,6 @@ Attention flow~\citep{abnar2020quantifying} contextualizes the attention mechani
 While these methods offer insights into the attention mechanism, they often neglect the non-linear interactions between attention heads and the subsequent layers. 
 Moreover, they may not adequately distinguish between positive and negative contributions to the final decision, leading to potentially misleading interpretations, as found in Chefer et al.~\citep{chefer2020transformer}. 
 Compared to that LeGrad uses the gradient w.r.t. to the attention maps, thereby assessing the sensitivity of the attention maps to a change in the patch tokens. 
-%LeGrad does not attempt to track the flow of information throughout the transformer layers but, rather, focuses on assessing the sensitivity of the model prediction at each layer for every location of the image.
-%While LeGrad also focuses on the attention maps to generate its explanation, it uses the gradient w.r.t. to the attention maps, thereby assessing the sensitivity of the attention maps to a change in the patch tokens. 
-%LeGrad does not attempt to track the flow of information throughout the transformer layers but, rather, focuses on assessing the sensitivity of the model prediction at each layer for every location of the image.
 
 
 \noindent\textbf{Vision-Language Explainability Methods}
@@ -213,14 +154,6 @@ For instance, leveraging CLIP's language-image space, researchers have provided 
 In particular, \textsc{TextSpan}~\citep{gandelsman2023interpreting} focuses on the explainability of CLIP-like models. 
 It refrains from using gradient computation by aggregating the intermediate features' similarities along a given text direction, creating a relevancy map for a text query. 
 LeGrad advances this line of work by focusing on the sensitivity of feature representations within ViTs to generate relevancy maps that can be adapted to various feature aggregation strategies.
-
-% \textbf{Evaluating Explanation Methods}
-% As the popularity of feature-attribution based explanation methods has grown, so has research evaluating their ability to faithfully reflect the model's decision making process~\citep{sundararajan2017axiomatic,yeh2019on,kindermans2019reliability,samek2016evaluating,hooker2019benchmark,alvarez2018on,adebayo2018sanity,tomsett2020sanity,gomez2022metrics,zhang2016top}.
-% Faithfulness is an important criteria because explanation methods that highlight human-salient pixels may look correct even if the model relies on spurious correlations and give human interpreters unwarranted confidence in the model.
-% These evaluations can be categorized based on the aspect of faithfulness that they test~\citep{boggust2023saliency}, such as the method's sensitivity to meaningful changes to the input, model, or data~\citep{sundararajan2017axiomatic,yeh2019on,kindermans2019reliability,samek2016evaluating,hooker2019benchmark,alvarez2018on,adebayo2018sanity,tomsett2020sanity} and its ability to highlight a succinct and meaningful pixel region~\citep{gomez2022metrics,zhang2016top}.
-% We evaluate LeGrad on both of these types of tests, demonstrating that it is faithful to the model's decision making process by testing that removing LeGrad's important pixels impacts the model's output and checking that LeGrad's output corresponds to a concise object region. %
-
-
 
 % --------------------------------------------------
 \section{Method}
@@ -573,6 +506,465 @@ Further details on the methodological adaptations of LeGrad and other evaluated 
 \vspace{-1.5em}
 \label{tab:perturbations}
 \end{table*}
+
+
+
+\subsection{Ablation Studies}\label{subsec:layer_abl}
+
+
+\noindent\textbf{Layer Accumulation.}To further understand the impact of the number of layers considered in the computation of LeGrad's explainability maps, we investigate this aspect across two distinct benchmarks: a perturbation-based evaluation using the ImageNet validation set and an open-vocabulary segmentation task on the OpenImagesV7 dataset. The experiments are performed on various model sizes from the OpenCLIP library, including ViT-B/16, ViT-L/14, and ViT-H/14.
+
+$\diamondsuit$ \textbf{Perturbation-Based Evaluation:} In the perturbation-based evaluation (Figure \ref{subfig:layer_ablation_pert} left) we employ a negative perturbation test as described in Section \ref{sec:exp:subsec:perturbation}, using the ground-truth class for reference. The results indicate that the ViT-B/16 model's performance is optimal when fewer layers are included in the explainability map computation. Conversely, larger models such as ViT-L/14 and ViT-H/14 show improved performance with the inclusion of more layers. This suggests that in larger models, the aggregation of information into the [CLS] token is distributed across a greater number of layers, necessitating a more comprehensive layer-wise analysis for accurate explainability.
+
+$\diamondsuit$ \textbf{Open-Vocabulary Segmentation:} For the open-vocabulary segmentation task (Figure \ref{subfig:layer_ablation_pert} right) all models demonstrate enhanced performance with the inclusion of additional layers in the explainability map computation. The optimal number of layers varies with the size of the model, with larger models requiring a larger number of layers. This finding is consistent with existing literature~\citep{gandelsman2023interpreting}, suggesting that the information aggregation process in ViTs is more distributed in larger architectures. However, it is also observed that beyond a certain number of layers, the performance plateaus, indicating that the inclusion of additional layers does not further enhance the explainability map's quality.
+% 
+To further analyze those effects, we provide a qualitative visualization of the per-layer heatmaps produced by LeGrad in Figure \ref{fig:qualitative_layers}. It shows that the localization of the prompt is not confined to a single layer but is distributed across multiple layers. This observation is consistent with the findings from the above ablations, which underscore the necessity of incorporating multiple layers into the explainability framework to capture the full scope of the model's decision-making process.
+% 
+This observation not only corroborates the utility of incorporating multiple layers into the explainability analysis but also suggests a more distributed information aggregation process into the [CLS] token in larger models, as posited in the literature~\citep{gandelsman2023interpreting}.
+
+
+\begin{figure}[t]
+ \centering
+ % \hspace{-14mm}
+% \hspace{-12mm}
+ % \includegraphics[width=.4\textwidth]{images/ablation_layers_merged_horizontal.pdf}
+ \includegraphics[width=.49\textwidth]{images/ablation_layers_merged.pdf}
+ \vspace{-1.5em}
+ \caption{Ablation on the number of layers used in LeGrad for different architecture sizes. \textit{(Up)}: AUC for Negative perturbation on ImageNet-val for different layers used for LeGrad. (\textit{Down}): point-mIoU on OpenImagesV7 for different layers used for LeGrad.}
+ \vspace{-1em}
+ \label{subfig:layer_ablation_pert}
+ % \label{subfig:abl_layers}
+\end{figure}
+
+\begin{figure*}[t]
+    \vspace{-1em}
+    \centering
+    \includegraphics[width=.9\textwidth]{images/qualitative_layers_horizontal.pdf}
+    \vspace{-0.5em}
+    \caption{\textbf{Qualitative analysis} of the impact of each layer for different model sizes using \textit{"a photo of a cat"} as prompt. In smaller models, the explainability signal predominantly emanates from the final layers, while in larger models, lower layers also contribute.}
+    % to the explainability map.}
+    \label{fig:qualitative_layers}
+    \vspace{-1.5em}
+\end{figure*}
+% %\vspace{-2mm}
+
+\begin{figure}[t]
+\vspace{-0.5em}
+% \hspace{-20mm}
+    \centering
+    \includegraphics[width=0.4\textwidth]{images/qualitative_examples_cropped.pdf}
+    % \includegraphics[width=1\textwidth]{images/qualitative_sota.pdf}
+    \caption{\textbf{SOTA Qualitative Comparison:} visual comparison of different explainability methods on images from OpenImagesV7.}
+    \vspace{-2.em}
+    \label{fig:qualitative_comparison}
+\end{figure}
+
+\noindent\textbf{Gradient Distribution Analysis.}
+To better understand the inner workings of the proposed LeGrad method, we further analyse the gradient intensity distribution across the  layers of ViT-L/14 models from OpenCLIP based on Laion400M, OpenAI CLIP, and MetaCLIP. This analysis was performed using the PascalVOC dataset. 
+%
+The explainability maps for each layer were computed in accordance with Equation \ref{eq:aggregation}. Subsequently, the associated segmentation mask was utilized to compute the average gradient within the mask for each layer. This process yielded a single value per layer. To account for the impact of the mask size, we apply min-max normalization across all layers. This normalization process ensured that the layer contributing the most to the final explainability map was assigned a value of one, while the least contributing layer was assigned a value of zero.
+% 
+Figure \ref{fig:grad_distr_avg} depicts the gradient distribution over the layers for different sets of pretrained ViT-L/14 models.
+First, we observe that for most models, the layers contributing the most are typically located towards the end of the ViT. Second, despite all sharing the exact same model architecture and being trained with the same loss, we observe significant difference in layer importance. For Laion400M and OpenAI the most important layer is the last one whereas for MetaCLIP it is rather the penultimate. Interestingly, for the Laion400M variant, the middle layers have a more pronounced influence. Overall, this provides a generalized view of the model's behavior, serving as a sort of ``fingerprint" for the model. Annex \ref{supp:sec:grad_distr} provides an analysis for more model sizes and weights, as well as a visualization of the gradient distribution over all layers independently for each class in PascalVOC.
+
+
+\begin{figure}[t]
+%\vspace{-2em}
+    % \hspace{-2em}
+    \centering
+    \includegraphics[width=.5\textwidth]{images/gradient_distribution_averaged_vit_l_reshaped.pdf}
+    \vspace{-2.5em}
+    \caption{Gradient distribution over layers on PascalVOC for different pretrained ViT-L/14.}
+    \label{fig:grad_distr_avg}
+    \vspace{-2.em}
+\end{figure}
+
+\subsection{Qualitative Comparison to SOTA}
+Here, we present a qualitative analysis of the explainability maps generated by LeGrad in comparison to other SOTA methods. The results are depicted in Figure~\ref{fig:qualitative_comparison}, which includes a diverse set of explainability approaches such as gradient-based methods (e.g., CheferCAM, GradCAM), attention-based methods (e.g., Raw Attention weights visualization, Rollout), and methods that integrate intermediate visual representations with text prompts (e.g., TextSpan).
+% 
+Our observations indicate that raw attention visualizations tend to highlight a few specific pixels with high intensity, often associated with the background rather than the object of interest. This pattern, consistent with findings in the literature~\citep{bousselham2023grounding, darcet2023vision}, suggests that certain tokens disproportionately capture attention weights. Consequently, methods that rely on raw attention weights to construct explainability maps, such as CheferCAM, exhibit similar artifacts. For instance, in the localization of "Basket" (Figure~\ref{fig:qualitative_comparison}, row 1), the basket is marginally accentuated amidst a predominance of noisy.
+% 
+In contrast, for LeGrad, the presence of uniform noisy activations across different prompts results in minimal gradients for these regions, effectively filtering them out from the final heatmaps. This characteristic enables LeGrad to produce more focused and relevant visual explanations.
+
+
+
+
+
+% --------------------------------------------------
+% \vspace{-0.5em}
+\section{Conclusion}
+% \vspace{-0.5em}
+We proposed LeGrad as an explainability method that highlights the decision-making process of ViTs across layers and for various feature aggregation strategies. We validated the method's effectiveness in generating interpretable visual explanations that align with the model's reasoning. Our approach offers a granular view of feature formation sensitivity, providing insights into the contribution of individual layers. 
+The evaluation across object segmentation, perturbation, and open-vocabulary scenarios underscores LeGrad's versatility and fidelity in different contexts. By facilitating a deeper understanding of ViTs, LeGrad paves the way for more transparent and interpretable models.
+
+
+
+% ------------------------------- <\Experiments> -------------------------------
+
+{
+    \small
+    \bibliographystyle{ieeenat_fullname}
+    \bibliography{main}
+}
+
+% WARNING: do not forget to delete the supplementary pages from your submission 
+% \input{sec/X_suppl}
+
+\clearpage
+\setcounter{page}{1}
+\maketitlesupplementary
+
+\section{Overview}
+
+
+In this supplementary material, we first provide in section~\ref{supp:sec:implementations} detailes regarding the implementation, including pre-trained weights, baseline methodologies, and necessary adaptations for applying GradCAM to Vision Transformers (ViT). An expanded evaluation of LeGrad's performance, specifically on Vision Transformers trained with the ImageNet dataset, is documented in section~\ref{supp:sec:results}. Section~\ref{supp:sec:perturbation_ex} offers a visual representation of the perturbation benchmarks utilized to assess the efficacy of various explainability approaches, along with additional qualitative examples in section~\ref{supp:sec:qualitative_ex} to further illustrate the capabilities of our method. Section~\ref{supp:sec:grad_distr} further explores the gradient distribution across layers for different models and datasets. Furthermore, section~\ref{supp:sec:sanity_check} conducts a sanity check using the FunnyBirds Co-12 setup to evaluate the robustness of our explainability method. Lastly, section~\ref{supp:sec:disclaimer} includes a disclaimer on the use of personal and human subject data within our research.
+
+
+\section{Implementation details}\label{supp:sec:implementations}
+ \subsection{Pretrained weights}
+The experiments conducted in our study leverage a suite of models with varying capacities, including ViT-B/16, ViT-L/14, ViT-H/14, and ViT-bigG/14. These models are initialized with pretrained weights from the OpenCLIP library respectively identified by: $\texttt{"laion2b\_s34b\_b88k"}$, $\texttt{"laion2b\_s32b\_b82k"}$, $\texttt{"laion2b\_s32b\_b79k"}$, and $\texttt{"laion2b\_s39b\_b160k"}$. For the SigLIP method, we utilize the ViT-B/16 model equipped with the $\texttt{"webl"}$ weights.
+For the "gradient distribution over layers" graphs, Figure~\ref{fig:grad_distr_avg}, we also used the pretrained weights from OpenAI~\citep{radford2021learning} and MetaCLIP~\citep{xudemystifying}.
+
+\subsection{Detailed Description of Baselines}
+In this section, we provide an overview of the baseline methods against which our proposed approach is compared.
+
+\textbf{GradCAM}: While originally designed for convolutional neural networks (CNNs), GradCAM can be adapted for Vision Transformers (ViTs) by treating the tokens as activations. To compute the GradCAM explainability map for a given activation $s$, we calculate the gradient of $s$ with respect to the token dimensions. The gradients are aggregated across all tokens and serve as weights to quantify the contribution of each token dimension. Formally, for intermediate tokens $Z^l = \{ z_0^l, z_1^l, \dots, z_n^l \} \in \mathbb{R}^{(n+1) \times d}$, the GradCAM map $E_{GradCAM}$ is defined as:
+\begin{equation}
+    \begin{aligned}
+        w &= \frac{1}{n} \sum_{i=0}^n \frac{\partial s}{\partial z_i^l} \quad \in \mathbb{R}^{d \times 1 \times 1} \\
+        \hat{E}_{GradCAM} &= \left( \frac{1}{d} \sum_{k=1}^{d} w_d * Z^l_{1:, d} \right)^+ \quad \in \mathbb{R}^n \\
+        E_{GradCAM} &= \text{norm}(\text{resize}(\hat{E}_{GradCAM})) \quad \in \mathbb{R}^{W \times H},
+    \end{aligned}
+\end{equation}
+\noindent with $d$ representing the token dimension, $*$ denoting element-wise multiplication, and the superscript $+$ the ReLU operation. We empirically determined that applying GradCAM to layer 8 of ViT-B/16 yields optimal results.
+
+\begin{table*}[t]
+    \centering
+    \begin{tabular}{c |c c c}
+        %& V7 & \multicolumn{2}{c}{ImageNet}\\
+        & mIoU(V7) & Neg $\uparrow$(INet) & Pos $\downarrow$(INet)\\
+        \hline
+    GradCAM w/ [CLS] & 8.72 & 45.26 & 22.86 \\
+    GradCAM w/o [CLS] & 8.18 & 41.29 & 24.20 \\
+    \hline
+    Multi-layer w/ [CLS] & 9.51 & 45.31 & 22.54 \\
+    \hline
+    \textit{LeGrad} & \textit{48.38} & \textit{52.27} & \textit{13.97}   
+    \end{tabular}
+    \caption{Evaluation of GradCAM with and without [CLS] token as well as with layer aggregation as proposed in equation \ref{eq:aggregation} on ViT-B/16 for open-vocabulary detection(V7) and perturbation (ImageNet).}
+    \label{tab:gradcam_cls_MultiGrad}
+\end{table*}
+
+\textbf{AttentionCAM}: This method extends the principles of GradCAM to ViTs by utilizing the attention mechanism within the transformer's architecture. AttentionCAM leverages the gradient signal to weight the attention maps in the self-attention layers. Specifically, for the last block's self-attention maps $\mathbf{A}^L$, the AttentionCAM map $E_{AttnCAM}$ is computed as:
+
+\begin{equation}
+    \begin{aligned}
+        \nabla \mathbf{A}^L &= \frac{\partial s}{\partial \mathbf{A}^L} \in \mathbb{R}^{h \times (n+1) \times (n+1)} \\
+        w &= \frac{1}{n^2}\sum_{i, j} \nabla \mathbf{A}^L_{:, i, j} \in \mathbb{R}^{h} \\
+        \hat{E}_{AttnCAM} &= \sum_p^h\left( w_p * A^L_{p, :, :} \right) \in \mathbb{R}^{(n+1) \times (n+1)} \\
+        E_{AttnCAM} &= \text{norm}(\text{resize}(\hat{E}_{AttnCAM})_{0, 1:})
+    \end{aligned},
+\end{equation}
+
+where $h$ denotes the number of heads in the self-attention mechanism.
+
+\textbf{Raw Attention}: This baseline considers the attention maps from the last layer, focusing on the weights associated with the [CLS] token. The attention heads are averaged and the resulting explainability map is normalized. The Raw Attention map $E_{Attn}$ is formalized as:
+
+\begin{equation}
+    \begin{aligned}
+        \hat{E}_{Attn} &= \mathbf{A}^L_{:, 0, 1:} \in \mathbb{R}^{h \times 1 \times n} \\
+        E_{Attn} &= \text{norm}(\text{resize}(\frac{1}{h}\sum_{k=1}^h (\hat{E}_{Attn})_{k})) \quad \in \mathbb{R}^{W \times H}
+    \end{aligned}
+\end{equation}
+
+These baselines provide a comprehensive set of comparative measures to evaluate the efficacy of our proposed method in the context of explainability for ViTs.%
+
+
+\subsection{Details on adapting GradCAM to ViT}
+ As GradCAM was designed for CNNs without [CLS] tokens, we tried both alternatives, \textit{i.e.} including/excluding [CLS] token, Tab.~\ref{tab:gradcam_cls_MultiGrad} showcases a comparison of including/excluding the [CLS] token in the gradient computation on ViT-B. We observe that including the [CLS] token result in a marginal improvement. Overall, we would consider both options valid.
+% 
+% 
+GradCAM was originally designed for CNNs, therefore needs some adaptation to work for ViT. In an effort to consolidate the baselines used in this paper, we tried different configurations. One of which is whether or not include the [CLS] token in the gradient computation or not.  We note that both alternatives are aligned with the original design of the GradCAM and that this choice is a matter of implementation.
+
+ We found that including the [CLS] token was producing better numbers, we therefore used that choice. Indeed, Table \ref{tab:gradcam_cls_MultiGrad} shows the results on all the benchmark for GradCAM w/ and w/o the [CLS] token included in the gradient computation and shows that not including it translate in a slight decrease.
+% 
+Moreover, including the [CLS] token in the gradient computation is the option that makes more sense, as it is the [CLS] that is used to compute the similarity with the text query.
+% 
+We also tried to use the layer aggregation used in LeGrad for GradCAM and provide an evaluation in Table \ref{tab:gradcam_cls_MultiGrad}. We apply the same layer aggregation as in LeGrad (see \ref{eq:aggregation}) showing a slight improvement on the V7 benchmark. We attribute the only modest improvement to the fact that layers in ViT have different activation value ranges.
+LeGrad uses only gradients to produce layer-wise explainability maps, thereby avoiding this issue.
+
+
+
+
+\subsection{Adaptation of Baseline Methods to Attentional Pooler}
+
+In the main manuscript, we introduced our novel method, LeGrad, and its application to Vision Transformers (ViTs) with attentional poolers. Here, we provide supplementary details on how LeGrad and other baseline methods were adapted %
+ViTs employing attentional poolers:
+
+\noindent\textbf{CheferCAM:}
+Following the original paper~\citep{chefer2021generic} that introduces CheferCAM, we considered the attentional pooler as an instance of a \textit{"decoder transformer"} and applied the relevancy update rules described in equation (10) of that paper~\citep{chefer2021generic}, (following the example of DETR). Since the attentional pooler has no skip connection we adapted the relevancy update rule not to consider the skip connection.
+
+\noindent\textbf{AttentionCAM:}
+For AttentionCAM, instead of using the attention maps of the last layer, we use the attention maps of the attentional pooler. We found this variant to work better.
+
+\noindent\textbf{Raw Attention:}
+Similarly, the Raw Attention baseline was adjusted by substituting the attention maps from the last self-attention layer with those from the attentional pooler.
+
+\noindent\textbf{Other Baselines:}
+For the remaining baseline methods, no alterations were necessary. These methods were inherently compatible with the attentional pooler, and thus could be applied directly without any further adaptation.
+
+The adaptations described above ensure that each baseline method is appropriately tailored to the ViTs with attentional poolers, allowing for a fair comparison with our proposed LeGrad method.
+
+\begin{table*}[th!]
+\centering
+\begin{tabular}{l cc cc}
+\toprule 
+& \multicolumn{2}{c}{Negative} & \multicolumn{2}{c}{Positive}  \\
+Method & Predicted $\uparrow$ & Target $\uparrow$ & Predicted $\downarrow$& Target $\downarrow$ \\ 
+\midrule 
+rollout~\citep{abnar2020quantifying} & 53.10 & 53.10 & 20.06 & 20.06\\
+Raw attention & 45.55 & 45.55 & 24.01 & 24.01\\
+GradCAM~\citep{selvaraju2017grad} & 43.17 & 42.97 & 26.89 & 26.99\\
+AttentionCAM~\citep{chefer2021generic} & 41.53 & 42.03 & 33.54 & 34.05\\
+Trans. Attrib.~\citep{chefer2020transformer} & 54.19 & 55.09 & 17.01 & 16.36\\
+Partial-LRP~\citep{voita2019analyzing} & 50.28 & 50.29 & 19.82 & 19.80\\
+CheferCAM~\citep{chefer2021generic} & 54.68 & 55.70 & 17.30 & 16.75 \\
+\cellcolor{almond} LeGrad & \cellcolor{almond} \tabbold 54.72 & \cellcolor{almond} \tabbold 56.43 & \cellcolor{almond} \tabbold 15.20 & \cellcolor{almond} \tabbold 14.13 \\
+\bottomrule
+\end{tabular}
+\caption{\textbf{SOTA comparison on ViT-B/16} on perturbation-based tasks on ImageNet-val for a ViT trained on ImageNet.
+}
+\label{tab:vit_in_cls}
+% \vspace{-3em}
+\end{table*}
+
+\begin{table*}%[ht]
+\centering
+\begin{tabular}{cc | rr | rr}
+\toprule 
+\multicolumn{2}{c}{} & \multicolumn{2}{c}{L/14} & \multicolumn{2}{c}{H/14} \\ 
+ReLU & All Layers & Negative$\uparrow$ & Positive$\downarrow$& Negative$\uparrow$ & Positive$\downarrow$\\ 
+\midrule 
+ \textcolor{gray}{\ding{55}} & \textcolor{gray}{\ding{55}} &47.81& 20.80 & 57.57 & 21.73\\ 
+ \ding{51} & \textcolor{gray}{\ding{55}} &49.32 & 19.95 &59.55 & 19.50\\ 
+ \textcolor{gray}{\ding{55}} & \ding{51} & 52.01& 16.80  &60.28 & 18.26\\ 
+\cellcolor{almond} \ding{51} & \cellcolor{almond}\ding{51} &\cellcolor{almond} \tabbold{54.48} & \cellcolor{almond}\tabbold{15.23} & \cellcolor{almond} \tabbold{61.72} &\cellcolor{almond}\tabbold{18.26}\\ 
+\bottomrule
+\end{tabular}
+\caption{\textbf{Ablation study:} \textit{"ReLU"} corresponds to whether or not negative gradients are set to 0. \textit{"All layers"} corresponds to whether or not the intermediate tokens are used to compute the gradient for every layer or if only the features from the last layer are used. Numbers are the AUC score for the perturbation base benchmark using the target class to compute the explainability map.}
+\label{tab:more_ablation}
+\end{table*}
+
+
+\subsection{Mitigation of sensitivity to irrelevant regions:}
+We observe that for all evaluated explainability methods, SigLIP displays high activations in image regions corresponding to the background. These activations appeared to be invariant to the input, regardless of the gradient computation's basis, these regions were consistently highlighted. To address this issue, we computed the explainability map for a non-informative prompt, specifically $\texttt{"a photo of"}$. We then leveraged this map to suppress the irrelevant activations.
+
+Namely, for an activation $s$ under examination, we nullify any location where the activation exceeds a predefined threshold (set at 0.8) in the map generated for the dummy prompt. Formally, let $E^s$ denote the explainability map for activation $s$, and $E^{empty}$ represent the map for the prompt $\texttt{"a photo of"}$. The correction procedure is defined as follows:
+\begin{equation}
+    E^s_{E^{empty} > th} = 0,
+\end{equation}
+where $th=0.8$. This method effectively addresses the issue without resorting to external data on the image content.
+
+
+
+\section{Additional results}\label{supp:sec:results}
+
+\subsection{Image Classification}
+
+In this section, we extend our evaluation of the proposed LeGrad method to Vision Transformers (ViTs) that have been trained on the ImageNet dataset for the task of image classification. The results of this evaluation are presented in Table~\ref{tab:vit_in_cls}, also providing a comparison with other state-of-the-art explainability methods.
+
+It shows that LeGrad achieves superior performance on the perturbation-based benchmark, particularly in scenarios involving positive perturbations. %
+
+Another observation is that even elementary explainability approaches, such as examining the raw attention maps from the final attention layer of the ViT, demonstrate competitive results. In fact, these basic methods surpass more complex ones like GradCAM (achieving an AUC of 53.1 versus 43.0 for negative perturbations).
+
+
+
+
+
+\subsection{Pertubation example}\label{supp:sec:perturbation_ex}
+Figure \ref{fig:perturbation_example} illustrates the perturbation-based benchmark of Section \textcolor{red}{4.1} in the main paper. Given the explainability map generated by the explainability method, for the negative (respectively positive) we progressively remove the most important (respectively the least important) part of the image. We then look at the decline in the model accuracy. 
+
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=1.\textwidth]{images/perturbations_example.pdf}
+    \centering
+    \vspace{-1em}
+    \caption{\textbf{Example of positive/negative perturbations:} illustration of positive and negative perturbations used in the perturbation-based benchmark. \textit{(Top row)}: positive perturbation. \textit{{Bottom row}}: negative perturbations}
+    \label{fig:perturbation_example}
+\end{figure*}
+
+\subsection{Qualitative examples}\label{supp:sec:qualitative_ex}
+Finally, Figure~\ref{fig:more_qualitative_examples} provides additional qualitative comparisons with state-of-the-art explainability methods, illustrating the efficacy of the proposed approach.
+
+
+\subsubsection{Ablations of ReLU and Layer Aggregation}
+
+We finally scrutinize the design choices underpinning LeGrad  in Table~\ref{tab:more_ablation}. Specifically, we investigate the effect of discarding negative gradients before aggregating layer-specific explainability maps vai ReLU, as well as the implications of leveraging intermediate feature tokens $Z^l$ to compute gradients for each respective layer. We use the framework of the perturbation benchmark delineated in Section~\ref{sec:exp:subsec:perturbation} and both ViT-L/14 and ViT-H/14 models. The results indicate that the omission of either component induces decline in performance, thereby affirming the role these elements play in the architecture of the method.
+
+
+
+% \vspace{-2mm}
+
+\section{Gradient Distribution over Layers}\label{supp:sec:grad_distr}
+Figures~\ref{appendix:fig:grad_dist_vit-l}~\&~\ref{appendix:fig:grad_dist_vit-b} extend the "gradient distribution over Layers" analysis conducted Section~\ref{subsec:layer_abl} to more backbone size and more set of weights .
+
+In Figures~\ref{appendix:fig:grad_distr_vit_b_laion2b}~\&~\ref{appendix:fig:grad_distr_vit_b_openai}~\&~\ref{appendix:fig:grad_distr_vit_b_laion400m}~\&~\ref{appendix:fig:grad_distr_vit_b_metaclip}~\&~\ref{appendix:fig:grad_distr_vit_l_openai}~\&~\ref{appendix:fig:grad_distr_vit_l_laion400m}~\&~\ref{appendix:fig:grad_distr_vit_h_laion2b} provide the gradient distribution over layer independetly for each class in PascalVOC.
+We observe that for most models and classes, the layers contributing the most were typically located towards the end of the ViT. An interesting exception to this trend was observed for the 'person' class, which exhibited a higher sensitivity to the middle layers across all model sizes and weight sets. We hypothesize that this is due to the high frequency of the 'person' class in the training data, enabling the ViT to identify the object early in the layer sequence, thereby triggering the activation in the middle layers.
+
+Furthermore, we note that the most activated layer varied significantly depending on the class and the model. This variability was observed even between two models of the same size, such as ViT-L(openai) and ViT-L(metaclip). This observation underscores the rationale behind the LeGrad method's approach of utilizing multiple layers, hence alleviating the need to select a specific layer, as the optimal choice would differ from model to model.
+
+% In addition to the class-specific gradient distribution, we also computed the gradient distribution across layers averaged over different classes. This provided a generalized view of the model's behavior, serving as a sort of 'fingerprint' for the model.
+
+\begin{figure*}
+\begin{minipage}{.5\linewidth} %
+    \centering
+    \includegraphics[width=1.1\linewidth]{images/gradient_distribution_vit_l_averaged_all.png}
+    \caption{Gradient distribution over layers on PascalVOC for different pretrained ViT-L/14.}
+    \label{appendix:fig:grad_dist_vit-l}
+\end{minipage} \hfill %\hspace{10mm}
+\begin{minipage}{.5\linewidth} %
+    \centering
+    \includegraphics[width=1.1\linewidth]{images/gradient_distribution_vit_b_averaged_all.png}
+    \caption{Gradient distribution over layers on PascalVOC for different pretrained ViT-B/16.}
+    \label{appendix:fig:grad_dist_vit-b}
+\end{minipage}
+\end{figure*}
+
+
+\begin{table}[t]
+% \vspace{-0.3cm}
+    \centering
+    \small
+    \footnotesize
+    \begin{tabular}{c |c c c c c c}
+      Method & CSDC & PC & DC & D & SD & TS  \\
+      \hline
+      GradCAM & 0.75 & 0.67 & 0.68 & 0.91 & 0.7 & 0.48 \\
+      Rollout & 0.86 & 0.8 & 0.82 & 0.8 & 0.76 & 0. \\
+      Chefer LRP & \textbf{0.91} & \textbf{0.92} & 0.89 & 0.9 & 0.74 & 0.95\\
+     \rowcolor{almond} LeGrad &0.90 & 0.83 & \textbf{0.92} & \textbf{1.} & \textbf{0.77} & \textbf{0.97}\\
+    % - & - &  - &  - &  - &  - &  - &  - &  -\\
+    \end{tabular}
+    \vspace{-0.3cm}
+    % \caption{Evaluation of different explainability methods on ViT-B/16 on the FunnyBirds Co-12 setup.}
+    \caption{Evaluation of ViT-B/16 on the FunnyBirds Co-12 setup}
+    \label{tab:funny_birds}
+    \vspace{-0.5cm}
+\end{table}
+
+% \vspace{+24em}
+% \vspace{-2.3em}
+\section{Sanity Check}\label{supp:sec:sanity_check}
+
+The Co-12 recipe\citep{nauta2023anecdotal} is a set of 12 properties for evaluating the explanation quality of explainability method for machine learing models. These properties provide a comprehensive framework for assessing how well one can explain the decision-making process of a model. In \cite{hesse2023funnybirds} proposed a dataset, called FunnyBirds, to evaluate explainability methods for visual models. 
+
+% \vspace{+16em}
+% \columnbreak
+% \clearpage
+
+As a sanity check for the proposed LeGrad method, we follow the authors guidelines and evaluate on the provided ViT-B/16\footnote{\tiny\url{https://github.com/visinf/funnybirds-framework}} using LeGrad, 
+showing improvement over gradient-based methods while being on par with LRP.
+
+
+\begin{figure*}[ht!]
+    \centering
+    \includegraphics[width=1.\textwidth]{images/qualitative_sota_supp.pdf}
+    \centering
+    \vspace{-1em}
+    \caption{\textbf{Qualitative Comparison to SOTA:} visual comparison of different explainability methods on images from OpenImagesV7}
+    \label{fig:more_qualitative_examples}
+\end{figure*}
+
+% \vspace{+7em}
+\section{Personal and human subjects data}\label{supp:sec:disclaimer}
+We acknowledge the use of datasets such as ImageNet and OpenImagesV7, which contain images sourced from the internet, potentially without the consent of the individuals depicted. We recognize that the VL models used in this study were trained on the LAION-2B dataset, which may include sensitive content. We emphasize the importance of ethical considerations in the use of such data.
+
+
+% \newpage
+% \breakpage
+% \begin{figure}
+%     \centering
+%     \includegraphics[width=.8\linewidth]{images/gradient_distribution_vit_l_openai.png}
+%     \caption{Gradient Distributlion over Layers for each class in the PascalVOC dataset for OpenAI-ViT-L/14.}
+%     \label{fig:enter-label}
+% \end{figure}
+
+% ViT-B/16 Laion2B
+\begin{figure*}
+    \vspace{-4em}
+    \centering
+    \includegraphics[width=.9\linewidth]{images/gradient_distribution_vit_b_laion2b.png}
+    % \caption{Gradient Distributlion over Layers for each class in the PascalVOC dataset for OpenAI-ViT-B/16.}
+    \vspace{-1em}
+    \caption{Gradient Distributlion over Layers for different classes dataset for Laion2B-ViT-B/16.}
+    \label{appendix:fig:grad_distr_vit_b_laion2b}
+\end{figure*}
+
+% ViT-B/16 Openai
+\begin{figure*}
+\vspace{-2em}
+    \centering
+    \includegraphics[width=.9\linewidth]{images/gradient_distribution_vit_b_openai.png}
+    \vspace{-1em}
+    \caption{Gradient Distributlion over Layers for different classes dataset for OpenAI-ViT-B/16.}
+    \label{appendix:fig:grad_distr_vit_b_openai}
+\end{figure*}
+
+% ViT-B/16 Laion400M
+\begin{figure*}
+    \vspace{-4em}
+    \centering
+    \includegraphics[width=.9\linewidth]{images/gradient_distribution_vit_b_laion400m.png}
+    % \caption{Gradient Distributlion over Layers for each class in the PascalVOC dataset for OpenAI-ViT-B/16.}
+    \vspace{-1em}
+    \caption{Gradient Distributlion over Layers for different classes dataset for Laion400M-ViT-B/16.}
+    \label{appendix:fig:grad_distr_vit_b_laion400m}
+\end{figure*}
+
+% ViT-B/16 MetaCLIP
+\begin{figure*}
+\vspace{-2em}
+    \centering
+    \includegraphics[width=.9\linewidth]{images/gradient_distribution_vit_b_metaclip.png}
+    \vspace{-1em}
+    \caption{Gradient Distributlion over Layers for different classes dataset for MetaCLIP-ViT-B/16.}
+    \label{appendix:fig:grad_distr_vit_b_metaclip}
+\end{figure*}
+
+
+
+% -----------
+% ViT-L/14 OpenAI
+\begin{figure*}
+    \vspace{-4em}
+    \centering
+    \includegraphics[width=.9\linewidth]{images/gradient_distribution_vit_l_openai.png}
+    % \caption{Gradient Distributlion over Layers for each class in the PascalVOC dataset for OpenAI-ViT-B/16.}
+    \vspace{-1em}
+    \caption{Gradient Distributlion over Layers for different classes dataset for OpenAI-ViT-L/14.}
+    \label{appendix:fig:grad_distr_vit_l_openai}
+\end{figure*}
+
+% ViT-L/14 Laion400M
+\begin{figure*}
+\vspace{-2em}
+    \centering
+    \includegraphics[width=.9\linewidth]{images/gradient_distribution_vit_l_laion400m.png}
+    \vspace{-1em}
+    \caption{Gradient Distributlion over Layers for different classes dataset for Laion400M-ViT-L/14.}
+    \label{appendix:fig:grad_distr_vit_l_laion400m}
+\end{figure*}
+
+% ViT-H/14 Laion2B
+\begin{figure*}%[ht!]
+% \vspace{-2em}
+    \centering
+    \includegraphics[width=1.\linewidth]{images/gradient_distribution_vit_h_laion2b.png}
+    % \vspace{-1em}
+    \caption{Gradient Distributlion over Layers for different classes dataset for Laion2B-ViT-H/14.}
+    \label{appendix:fig:grad_distr_vit_h_laion2b}
+\end{figure*}
+
 
 
 \end{document}
