@@ -7,3 +7,7 @@ matplotlib
 numpy
 requests
 einops
+nltk
+scikit-learn
+h5py
+optuna
