@@ -124,14 +124,31 @@ def dynamic_preprocess(img: Image.Image, target_size: int = 448, patch_size: int
     return t
 
 def compute_iou_acc(heatmap, gt_mask, threshold: float):
+    """Compute 2-class mIoU and pixel accuracy for a given heatmap and GT mask.
+    
+    IMPORTANT: This follows the reference ImageNet-Segmentation evaluation protocol
+    from clip_text_span (batch_intersection_union), which computes the mean IoU
+    over BOTH background and foreground classes, not just foreground IoU.
+    
+    mIoU = (IoU_background + IoU_foreground) / 2
+    """
     pred_mask = (heatmap > threshold).astype(np.uint8)
     gt_mask = gt_mask.astype(np.uint8)
-    
-    intersection = np.logical_and(pred_mask, gt_mask).sum()
-    union = np.logical_or(pred_mask, gt_mask).sum()
-    
-    iou = intersection / (union + 1e-6)
-    
+
+    # Foreground IoU (class 1)
+    fg_intersection = np.logical_and(pred_mask == 1, gt_mask == 1).sum()
+    fg_union = np.logical_or(pred_mask == 1, gt_mask == 1).sum()
+    iou_fg = fg_intersection / (fg_union + 1e-6)
+
+    # Background IoU (class 0)
+    bg_intersection = np.logical_and(pred_mask == 0, gt_mask == 0).sum()
+    bg_union = np.logical_or(pred_mask == 0, gt_mask == 0).sum()
+    iou_bg = bg_intersection / (bg_union + 1e-6)
+
+    # 2-class mean IoU (as per ImageNet-Segmentation protocol)
+    iou = (iou_bg + iou_fg) / 2.0
+
+    # Pixel accuracy
     correct = (pred_mask == gt_mask).sum()
     total = gt_mask.size
     acc = correct / total
@@ -139,11 +156,34 @@ def compute_iou_acc(heatmap, gt_mask, threshold: float):
     return iou, acc
 
 def compute_map_score(heatmap, gt_mask):
-    y_true = gt_mask.flatten().astype(int)
-    y_scores = heatmap.flatten()
-    if y_true.sum() == 0:
+    """Compute 2-class mean average precision for a continuous heatmap vs. GT mask.
+    
+    IMPORTANT: This follows the reference ImageNet-Segmentation evaluation protocol
+    from clip_text_span (get_ap_scores), which computes AP over BOTH classes by:
+    1. Creating 2-channel predictions: [1-heatmap, heatmap] for [bg_prob, fg_prob]
+    2. One-hot encoding the target
+    3. Computing AP over all predictions and targets combined
+    
+    This gives a 2-class mAP that averages performance on both background and foreground.
+    """
+    gt_mask = gt_mask.astype(int)
+    
+    # Create 2-channel predictions: background and foreground probabilities
+    fg_prob = heatmap.flatten()
+    bg_prob = 1.0 - fg_prob
+    
+    # One-hot encode the target
+    fg_target = (gt_mask.flatten() == 1).astype(int)
+    bg_target = (gt_mask.flatten() == 0).astype(int)
+    
+    # Combine both classes into single arrays (as in reference get_ap_scores)
+    all_scores = np.concatenate([bg_prob, fg_prob])
+    all_targets = np.concatenate([bg_target, fg_target])
+    
+    if all_targets.sum() == 0:
         return 0.0
-    return average_precision_score(y_true, y_scores)
+    
+    return average_precision_score(all_targets, all_scores)
 
 
 def compute_gradcam_for_embedding(model, image, text_emb_1x, layer_index: int = 8):
