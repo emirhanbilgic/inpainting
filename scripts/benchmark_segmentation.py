@@ -349,6 +349,30 @@ def main():
         help='Binarization threshold for sparse-encoding heatmaps (LeGrad stays fixed at 0.5).'
     )
     parser.add_argument(
+        '--optimize_thresholds',
+        type=int,
+        default=0,
+        help='If 1, sweep segmentation thresholds to find per-method best mIoU.'
+    )
+    parser.add_argument(
+        '--opt_threshold_min',
+        type=float,
+        default=0.05,
+        help='Minimum threshold value for optimization sweep.'
+    )
+    parser.add_argument(
+        '--opt_threshold_max',
+        type=float,
+        default=0.95,
+        help='Maximum threshold value for optimization sweep.'
+    )
+    parser.add_argument(
+        '--opt_threshold_steps',
+        type=int,
+        default=19,
+        help='Number of threshold values (linspace) between min and max.'
+    )
+    parser.add_argument(
         '--vis_first_k',
         type=int,
         default=0,
@@ -446,6 +470,27 @@ def main():
         'gradcam': {'iou': [], 'acc': [], 'ap': []},    # Grad-CAM
         'sparse': {'iou': [], 'acc': [], 'ap': []},     # Sparse LeGrad (kept for completeness)
     }
+
+    # Optional threshold-sweep structures (for mIoU / pixel-acc optimization)
+    optimize_thresholds = bool(getattr(args, "optimize_thresholds", 0))
+    if optimize_thresholds:
+        thr_min = float(getattr(args, "opt_threshold_min", 0.05))
+        thr_max = float(getattr(args, "opt_threshold_max", 0.95))
+        thr_steps = int(getattr(args, "opt_threshold_steps", 19))
+        if thr_steps < 2:
+            thr_steps = 2
+        opt_thresholds = np.linspace(thr_min, thr_max, thr_steps).tolist()
+        opt_results = {
+            method: {
+                thr: {'iou': [], 'acc': []} for thr in opt_thresholds
+            }
+            for method in ['original', 'gradcam', 'sparse']
+        }
+        print(f"[threshold-opt] Enabled sweep over {len(opt_thresholds)} thresholds "
+              f"from {thr_min:.3f} to {thr_max:.3f}.")
+    else:
+        opt_thresholds = []
+        opt_results = {}
 
     for idx in tqdm(range(limit)):
         try:
@@ -636,6 +681,25 @@ def main():
             results['sparse']['acc'].append(acc_s)
             results['sparse']['ap'].append(ap_s)
 
+            # --- THRESHOLD SWEEP (OPTIONAL) ---
+            if optimize_thresholds and opt_thresholds:
+                for thr in opt_thresholds:
+                    thr_val = float(thr)
+                    # Original
+                    iou_o_t, acc_o_t = compute_iou_acc(heatmap_orig_resized, gt_mask, threshold=thr_val)
+                    opt_results['original'][thr]['iou'].append(iou_o_t)
+                    opt_results['original'][thr]['acc'].append(acc_o_t)
+
+                    # Grad-CAM
+                    iou_g_t, acc_g_t = compute_iou_acc(heatmap_gradcam_resized, gt_mask, threshold=thr_val)
+                    opt_results['gradcam'][thr]['iou'].append(iou_g_t)
+                    opt_results['gradcam'][thr]['acc'].append(acc_g_t)
+
+                    # Sparse
+                    iou_s_t, acc_s_t = compute_iou_acc(heatmap_sparse_resized, gt_mask, threshold=thr_val)
+                    opt_results['sparse'][thr]['iou'].append(iou_s_t)
+                    opt_results['sparse'][thr]['acc'].append(acc_s_t)
+
             # --- OPTIONAL VISUALIZATION GRID ---
             if idx < args.vis_first_k:
                 # Resize original image to GT size
@@ -677,6 +741,38 @@ def main():
         macc = np.mean(results[method]['acc']) * 100
         map_score = np.mean(results[method]['ap']) * 100
         print(f"{method.capitalize()}: PixelAcc={macc:.2f}, mIoU={miou:.2f}, mAP={map_score:.2f}")
+
+    # Report best thresholds per method if optimization was enabled
+    if optimize_thresholds and opt_thresholds:
+        print("\n--- Threshold optimization (best mIoU per method) ---")
+        for method in ['original', 'gradcam', 'sparse']:
+            best_thr = None
+            best_miou = -1.0
+            best_macc = 0.0
+            for thr in opt_thresholds:
+                ious = opt_results[method][thr]['iou']
+                accs = opt_results[method][thr]['acc']
+                if not ious:
+                    continue
+                miou = np.mean(ious) * 100
+                macc = np.mean(accs) * 100
+                if miou > best_miou:
+                    best_miou = miou
+                    best_macc = macc
+                    best_thr = thr
+            if best_thr is not None:
+                print(
+                    f"{method.capitalize()}: best_threshold={float(best_thr):.3f}, "
+                    f"PixelAcc={best_macc:.2f}, mIoU={best_miou:.2f}"
+                )
+
+        # Note: mAP is threshold-independent (it uses the continuous heatmaps),
+        # so there is no separate "best threshold" for mAP. We still summarize
+        # the achieved mAP here next to the optimized mIoU thresholds.
+        print("\n--- mAP (threshold-independent) per method ---")
+        for method in ['original', 'gradcam', 'sparse']:
+            map_score = np.mean(results[method]['ap']) * 100
+            print(f"{method.capitalize()}: mAP={map_score:.2f}")
 
 if __name__ == '__main__':
     main()
