@@ -445,7 +445,7 @@ def main():
     # Use layer_index=8 to enable hooks/gradients from layer 8 onwards.
     # GradCAM now uses mean pooling (like LeGrad) which works best with the last layer.
     # With mean pooling, all tokens receive gradients, making the last layer optimal.
-    model = LeWrapper(model, layer_index=8)
+    model = LeWrapper(model, layer_index=-2)
     # Match official LeGrad usage: wrap preprocess for e.g. 448x448 input
     preprocess = LePreprocess(preprocess=preprocess, image_size=args.image_size)
     
