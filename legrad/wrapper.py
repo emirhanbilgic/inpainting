@@ -151,6 +151,7 @@ class LeWrapper(nn.Module):
             text_embedding: Text embedding tensor [num_prompts, dim]
             image: Input image tensor [batch_size, 3, H, W]
             layer_index: Which layer to extract GradCAM from (default: 8 for ViT-B/16)
+                         NOTE: LeWrapper must be initialized with layer_index <= this value
             
         Returns:
             GradCAM heatmap [num_prompts, 1, H, W]
@@ -165,12 +166,15 @@ class LeWrapper(nn.Module):
     def compute_gradcam_clip(self, text_embedding, image=None, layer_index=8):
         """
         GradCAM for CLIP models.
-        Formula from paper:
-        w = (1/n) * sum_i(∂s/∂z_i^l)
-        E_GradCAM = ((1/d) * sum_d(w_d * Z^l[:, d]))^+
+        Formula from paper (supplementary section, lines 631-639):
+        w = (1/n) * sum_i(∂s/∂z_i^l)  -- average gradients over ALL tokens (incl. CLS)
+        E_GradCAM = ((1/d) * sum_d(w_d * Z^l_{1:, d}))^+  -- weighted sum over patch tokens only
         
         For GradCAM, we compute the gradient of the similarity score with respect to
         the intermediate layer activations, then use these gradients as weights.
+        
+        NOTE: The paper says "We empirically determined that applying GradCAM to 
+        layer 8 of ViT-B/16 yields optimal results." (line 639)
         """
         num_prompts = text_embedding.shape[0]
         if image is not None:
@@ -188,7 +192,7 @@ class LeWrapper(nn.Module):
         
         if layer_index < self.starting_depth:
             raise ValueError(f"Layer {layer_index} is before starting_depth {self.starting_depth}. "
-                           f"Please use a layer >= {self.starting_depth}")
+                           f"Please initialize LeWrapper with layer_index={layer_index} or lower.")
         
         # Forward pass to get intermediate features
         _ = self.encode_image(image_input)
@@ -197,16 +201,17 @@ class LeWrapper(nn.Module):
         intermediate_tokens = blocks_list[layer_index].feat_post_mlp  # [num_tokens, batch, dim]
         
         # Compute image features from intermediate tokens through remaining layers
-        # We need to pass through remaining transformer blocks
         x = intermediate_tokens
         for i in range(layer_index + 1, len(blocks_list)):
             x = blocks_list[i](x)
         
-        # Apply final layer norm and projection
-        image_features = self.visual.ln_post(x.mean(dim=0)) @ self.visual.proj
+        # Apply final layer norm and projection using [CLS] token (standard CLIP)
+        # Paper says (line 684): "including the [CLS] token was producing better numbers"
+        pooled = x[0]  # [CLS] token: [batch, dim]
+        image_features = self.visual.ln_post(pooled) @ self.visual.proj
         image_features = F.normalize(image_features, dim=-1)
         
-        # Compute similarity
+        # Compute similarity score s
         sim = text_embedding @ image_features.transpose(-1, -2)  # [num_prompts, num_prompts]
         one_hot = F.one_hot(torch.arange(0, num_prompts)).float().requires_grad_(True).to(text_embedding.device)
         s = torch.sum(one_hot * sim)
@@ -219,30 +224,31 @@ class LeWrapper(nn.Module):
         grads = grads.permute(1, 0, 2)
         intermediate_tokens = intermediate_tokens.permute(1, 0, 2)
         
-        # Average gradients across all tokens to get weights w
-        # w shape: [batch, 1, dim]
+        # Average gradients across ALL tokens (including CLS) to get weights w
+        # Paper formula: w = (1/n) * sum_i(∂s/∂z_i^l)
         w = grads.mean(dim=1, keepdim=True)  # [batch, 1, dim]
         
-        # Remove CLS token from intermediate_tokens
+        # Remove CLS token from intermediate_tokens for the weighted sum
+        # Paper formula uses Z^l_{1:} which means patch tokens only
         tokens_no_cls = intermediate_tokens[:, 1:, :].detach()  # [batch, num_patches, dim]
         
-        # Weighted sum: (1/d) * sum_d(w_d * Z^l[:, d])
-        # Element-wise multiplication and sum over dimension
+        # Weighted sum: (1/d) * sum_d(w_d * Z^l_{1:, d})
+        # Element-wise multiplication and mean over dimension
         weighted_tokens = w.detach() * tokens_no_cls  # [batch, num_patches, dim]
         gradcam_map = weighted_tokens.mean(dim=-1)  # [batch, num_patches]
         
-        # Apply ReLU
+        # Apply ReLU: (...)^+
         gradcam_map = torch.clamp(gradcam_map, min=0.)
         
         # Get spatial dimensions
         num_tokens = tokens_no_cls.shape[1]
         if hasattr(self.visual, 'last_grid_size'):
-            w, h = self.visual.last_grid_size
+            grid_w, grid_h = self.visual.last_grid_size
         else:
-            w = h = int(math.sqrt(num_tokens))
+            grid_w = grid_h = int(math.sqrt(num_tokens))
         
         # Reshape to spatial dimensions
-        gradcam_map = rearrange(gradcam_map, 'b (w h) -> b 1 w h', w=w, h=h)
+        gradcam_map = rearrange(gradcam_map, 'b (w h) -> b 1 w h', w=grid_w, h=grid_h)
         
         # Resize to image dimensions
         if image is not None:
@@ -250,7 +256,7 @@ class LeWrapper(nn.Module):
         else:
             gradcam_map = F.interpolate(gradcam_map, scale_factor=self.patch_size, mode='bilinear')
         
-        # Normalize
+        # Normalize (min-max)
         gradcam_map = min_max(gradcam_map)
         
         return gradcam_map
