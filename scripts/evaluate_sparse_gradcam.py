@@ -66,13 +66,14 @@ from benchmark_segmentation import (
 )
 
 
-def compute_gradcam_for_embedding(model, image, text_emb_1x, layer_index: int = 8):
+def compute_gradcam_for_embedding(model, image, text_emb_1x, layer_index=None):
     """
     Compute a GradCAM heatmap (normalized to [0, 1]) for a single text embedding.
     Returns: 2D tensor [H, W] on CPU.
     
-    Note: Paper says layer 8 is optimal for ViT-B/16 (supplementary section, line 639).
-    The LeWrapper must be initialized with layer_index=8 or lower to enable this.
+    Args:
+        layer_index: Which layer to use. If None (default), uses the last layer (11 for ViT-B/16).
+                     GradCAM now uses mean pooling which works best with the last layer.
     """
     with torch.enable_grad():
         heatmap = model.compute_gradcam(
@@ -94,8 +95,8 @@ def main():
     parser.add_argument('--image_size', type=int, default=448)
     parser.add_argument('--class_index_path', type=str, default='resources/imagenet_class_index.json')
     
-    # GradCAM layer
-    parser.add_argument('--gradcam_layer', type=int, default=8, help='GradCAM layer index')
+    # GradCAM layer (default 11 = last layer, works best with mean pooling approach)
+    parser.add_argument('--gradcam_layer', type=int, default=11, help='GradCAM layer index (default: 11, last layer)')
     
     # Sparse settings
     parser.add_argument('--atoms', type=int, default=8, help='Number of atoms for OMP sparse residual.')
@@ -127,8 +128,7 @@ def main():
     tokenizer = open_clip.get_tokenizer(args.model_name)
     model.eval()
     # Use layer_index=8 to enable hooks/gradients from layer 8 onwards.
-    # This is needed for GradCAM which uses layer 8 (per paper: "We empirically 
-    # determined that applying GradCAM to layer 8 of ViT-B/16 yields optimal results").
+    # GradCAM now uses mean pooling (like LeGrad) which works best with the last layer (11).
     model = LeWrapper(model, layer_index=8)
     preprocess = LePreprocess(preprocess=preprocess, image_size=args.image_size)
     

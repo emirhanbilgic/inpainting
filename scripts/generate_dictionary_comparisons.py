@@ -131,8 +131,8 @@ def compute_heatmap_legrad(model: LeWrapper, image: torch.Tensor, text_emb_1x: t
     return heatmap
 
 
-def compute_heatmap_gradcam(model: LeWrapper, image: torch.Tensor, text_emb_1x: torch.Tensor, layer_index: int = 8) -> torch.Tensor:
-    """Compute Grad-CAM heatmap."""
+def compute_heatmap_gradcam(model: LeWrapper, image: torch.Tensor, text_emb_1x: torch.Tensor, layer_index: int = 11) -> torch.Tensor:
+    """Compute Grad-CAM heatmap. Default layer 11 (last layer) works best with mean pooling."""
     with torch.enable_grad():
         heatmap = model.compute_gradcam(image=image, text_embedding=text_emb_1x, layer_index=layer_index)
     heatmap = heatmap[0, 0].clamp(0, 1).detach().cpu()
@@ -170,7 +170,7 @@ def main():
     model_name = 'ViT-B-16'
     pretrained = 'laion2b_s34b_b88k'
     max_atoms = 8
-    layer_index = 8
+    layer_index = 11  # Last layer works best with mean pooling GradCAM
     max_similarity = 0.9  # Filter out dictionary atoms with similarity >= this value
     
     # Classes and prompts

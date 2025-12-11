@@ -186,13 +186,15 @@ def compute_map_score(heatmap, gt_mask):
     return average_precision_score(all_targets, all_scores)
 
 
-def compute_gradcam_for_embedding(model, image, text_emb_1x, layer_index: int = 8):
+def compute_gradcam_for_embedding(model, image, text_emb_1x, layer_index=None):
     """
     Compute a GradCAM heatmap (normalized to [0, 1]) for a single text embedding.
-    Returns: 2D tensor [H, W] on CPU.
     
-    Note: Paper says layer 8 is optimal for ViT-B/16 (supplementary section, line 639).
-    The LeWrapper must be initialized with layer_index=8 or lower to enable this.
+    Args:
+        layer_index: Which layer to use. If None (default), uses penultimate layer
+                     which is standard for ViT GradCAM (layer 10 for ViT-B/16).
+    
+    Returns: 2D tensor [H, W] on CPU.
     """
     with torch.enable_grad():
         heatmap = model.compute_gradcam(
@@ -441,9 +443,8 @@ def main():
     tokenizer = open_clip.get_tokenizer(args.model_name)
     model.eval()
     # Use layer_index=8 to enable hooks/gradients from layer 8 onwards.
-    # This is needed for GradCAM which uses layer 8 (per paper: "We empirically 
-    # determined that applying GradCAM to layer 8 of ViT-B/16 yields optimal results").
-    # LeGrad will still work correctly, using layers 8-11 instead of just 10-11.
+    # GradCAM now uses mean pooling (like LeGrad) which works best with the last layer.
+    # With mean pooling, all tokens receive gradients, making the last layer optimal.
     model = LeWrapper(model, layer_index=8)
     # Match official LeGrad usage: wrap preprocess for e.g. 448x448 input
     preprocess = LePreprocess(preprocess=preprocess, image_size=args.image_size)

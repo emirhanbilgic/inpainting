@@ -75,13 +75,17 @@ from benchmark_segmentation import (
 )
 
 
-def compute_gradcam_for_embedding(model, image, text_emb_1x, layer_index: int = 8):
+def compute_gradcam_for_embedding(model, image, text_emb_1x, layer_index=None):
     """
     Compute a GradCAM heatmap (normalized to [0, 1]) for a single text embedding.
     Returns: 2D tensor [H, W] on CPU.
+    
+    Args:
+        layer_index: Which layer to use. If None (default), uses the last layer (11 for ViT-B/16).
+                     GradCAM now uses mean pooling which works best with the last layer.
     """
     # Ensure we use a valid layer for this wrapped model
-    if hasattr(model, "starting_depth"):
+    if layer_index is not None and hasattr(model, "starting_depth"):
         layer_index = max(layer_index, int(model.starting_depth))
     with torch.enable_grad():
         heatmap = model.compute_gradcam(image=image, text_embedding=text_emb_1x, layer_index=layer_index)
@@ -172,7 +176,7 @@ class SparseGradCAMObjective:
         sparse_threshold: float,
         atoms: int,
         max_dict_cos_sim: float,
-        gradcam_layer_index: int = 8,
+        gradcam_layer_index: int = 11,
         show_progress: bool = False,
     ):
         """
@@ -318,7 +322,7 @@ class SparseGradCAMObjective:
             max_layer = 11  # ViT-B/16 has 12 layers (0-11)
             gradcam_layer_index = trial.suggest_int('gradcam_layer_index', min_layer, max_layer)
         else:
-            gradcam_layer_index = 8  # Default
+            gradcam_layer_index = 11  # Default: last layer works best with mean pooling
         
         # Evaluate
         miou, macc, map_score = self.evaluate_sparse_gradcam_config(
@@ -347,7 +351,7 @@ class SparseGradCAMObjective:
         return miou
 
 
-def compute_baseline_gradcam(objective: SparseGradCAMObjective, layer_index: int = 8):
+def compute_baseline_gradcam(objective: SparseGradCAMObjective, layer_index: int = 11):
     """Compute baseline GradCAM mIoU for comparison."""
     print("\n[baseline] Computing original GradCAM metrics...")
     
@@ -444,7 +448,7 @@ def main():
     
     # Additional optimization options
     parser.add_argument('--optimize_layer', action='store_true', help='Also optimize GradCAM layer index')
-    parser.add_argument('--gradcam_layer', type=int, default=8, help='Default GradCAM layer index (if not optimizing)')
+    parser.add_argument('--gradcam_layer', type=int, default=11, help='Default GradCAM layer index (default: 11, last layer)')
     
     # Output
     parser.add_argument('--output_json', type=str, default='sparse_gradcam_optimization_results.json')

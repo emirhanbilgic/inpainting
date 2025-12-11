@@ -47,7 +47,7 @@ def create_heatmap_overlay(image_pil, heatmap_tensor, alpha=0.6):
     return overlay, heatmap
 
 def compare_methods(image_path, text_prompt, model_name='ViT-B-16', pretrained='laion2b_s34b_b88k', 
-                   save_path='comparison_output.png', layer_index=8):
+                   save_path='comparison_output.png', layer_index=11):
     """
     Compare LeGrad and GradCAM on a given image and text prompt
     
@@ -57,7 +57,7 @@ def compare_methods(image_path, text_prompt, model_name='ViT-B-16', pretrained='
         model_name: Vision model architecture
         pretrained: Pretrained weights to use
         save_path: Where to save the comparison figure
-        layer_index: Which layer to use for GradCAM (default: 8 for middle layer of ViT-B-16)
+        layer_index: Which layer to use for GradCAM (default: 11, last layer works best with mean pooling)
     """
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -75,8 +75,8 @@ def compare_methods(image_path, text_prompt, model_name='ViT-B-16', pretrained='
     
     # ------- Equip the model with LeGrad -------
     print("Wrapping model with LeGrad...")
-    # Use layer_index=6 to enable gradients from layer 6 onwards (so layer 8 is accessible)
-    model = LeWrapper(model, layer_index=6)
+    # Use layer_index=8 to enable gradients from layer 8 onwards (so layer 11 is accessible)
+    model = LeWrapper(model, layer_index=8)
     preprocess = LePreprocess(preprocess=preprocess, image_size=448)
     
     # ------- Load and preprocess image -------
@@ -221,7 +221,7 @@ if __name__ == "__main__":
         image_path=os.path.join(data_dir, "cat.jpg"),
         text_prompt="a photo of a cat",
         save_path="legrad_vs_gradcam_cat.png",
-        layer_index=8
+        layer_index=11  # Last layer works best with mean pooling GradCAM
     )
     
     # Example 2: Multiple images

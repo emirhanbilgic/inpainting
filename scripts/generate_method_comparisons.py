@@ -89,10 +89,11 @@ def compute_heatmap_legrad(model: LeWrapper, image: torch.Tensor, text_emb_1x: t
     return heatmap
 
 
-def compute_heatmap_gradcam(model: LeWrapper, image: torch.Tensor, text_emb_1x: torch.Tensor, layer_index: int = 8) -> torch.Tensor:
+def compute_heatmap_gradcam(model: LeWrapper, image: torch.Tensor, text_emb_1x: torch.Tensor, layer_index: int = 11) -> torch.Tensor:
     """
     Compute Grad-CAM heatmap.
     text_emb_1x: [1, d] normalized text embedding
+    layer_index: Default 11 (last layer) works best with mean pooling approach.
     Returns: [H, W] heatmap in [0, 1]
     """
     with torch.enable_grad():
@@ -124,7 +125,7 @@ def main():
     model_name = 'ViT-B-16'
     pretrained = 'laion2b_s34b_b88k'
     max_atoms = 8  # For OMP
-    layer_index = 8  # For Grad-CAM
+    layer_index = 11  # For Grad-CAM (last layer works best with mean pooling)
     
     # Classes and prompts
     classes = ['car', 'plane', 'bird', 'cat', 'dog']

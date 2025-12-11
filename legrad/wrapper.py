@@ -143,15 +143,18 @@ class LeWrapper(nn.Module):
         elif 'coca' in self.model_type:
             return self.compute_legrad_coca(text_embedding, image)
 
-    def compute_gradcam(self, text_embedding, image=None, layer_index=8):
+    def compute_gradcam(self, text_embedding, image=None, layer_index=None):
         """
         Compute GradCAM explainability map for Vision Transformers.
         
         Args:
             text_embedding: Text embedding tensor [num_prompts, dim]
             image: Input image tensor [batch_size, 3, H, W]
-            layer_index: Which layer to extract GradCAM from (default: 8 for ViT-B/16)
-                         NOTE: LeWrapper must be initialized with layer_index <= this value
+            layer_index: Which layer to extract GradCAM from. If None, uses penultimate
+                         layer (recommended). For ViT-B/16 with 12 blocks, this is layer 10.
+                         NOTE: Using the last layer is NOT recommended because only the CLS
+                         token influences the output, so patch tokens get zero gradients.
+                         NOTE: LeWrapper must be initialized with layer_index <= this value.
             
         Returns:
             GradCAM heatmap [num_prompts, 1, H, W]
@@ -163,18 +166,20 @@ class LeWrapper(nn.Module):
         elif 'coca' in self.model_type:
             return self.compute_gradcam_coca(text_embedding, image, layer_index)
     
-    def compute_gradcam_clip(self, text_embedding, image=None, layer_index=8):
+    def compute_gradcam_clip(self, text_embedding, image=None, layer_index=None):
         """
-        GradCAM for CLIP models.
-        Formula from paper (supplementary section, lines 631-639):
-        w = (1/n) * sum_i(∂s/∂z_i^l)  -- average gradients over ALL tokens (incl. CLS)
-        E_GradCAM = ((1/d) * sum_d(w_d * Z^l_{1:, d}))^+  -- weighted sum over patch tokens only
+        GradCAM for CLIP models using mean pooling (like LeGrad approach).
         
-        For GradCAM, we compute the gradient of the similarity score with respect to
-        the intermediate layer activations, then use these gradients as weights.
+        Key insight: Using mean pooling over all tokens (instead of just CLS token) 
+        ensures all patch tokens receive gradients, which is essential for GradCAM.
+        This approach mirrors how LeGrad computes its intermediate features.
         
-        NOTE: The paper says "We empirically determined that applying GradCAM to 
-        layer 8 of ViT-B/16 yields optimal results." (line 639)
+        The last layer (layer 11 for ViT-B/16) works well with this approach because
+        all tokens contribute to the mean-pooled representation.
+        
+        Formula:
+        w = (1/n) * sum_i(∂s/∂z_i^l)  -- average gradients over ALL tokens
+        E_GradCAM = ((1/d) * sum_d(w_d * Z^l_{1:, d}))^+  -- weighted sum over patch tokens
         """
         num_prompts = text_embedding.shape[0]
         if image is not None:
@@ -186,9 +191,15 @@ class LeWrapper(nn.Module):
         # Get the blocks
         blocks_list = list(dict(self.visual.transformer.resblocks.named_children()).values())
         
+        # Default to last layer - works well with mean pooling approach
+        if layer_index is None:
+            layer_index = len(blocks_list) - 1  # Last layer
+        
         # Ensure layer_index is valid
         if layer_index >= len(blocks_list):
             layer_index = len(blocks_list) - 1
+        if layer_index < 0:
+            layer_index = len(blocks_list) + layer_index  # Handle negative indices
         
         if layer_index < self.starting_depth:
             raise ValueError(f"Layer {layer_index} is before starting_depth {self.starting_depth}. "
@@ -200,15 +211,10 @@ class LeWrapper(nn.Module):
         # Get intermediate tokens Z^l from the specified layer
         intermediate_tokens = blocks_list[layer_index].feat_post_mlp  # [num_tokens, batch, dim]
         
-        # Compute image features from intermediate tokens through remaining layers
-        x = intermediate_tokens
-        for i in range(layer_index + 1, len(blocks_list)):
-            x = blocks_list[i](x)
-        
-        # Apply final layer norm and projection using [CLS] token (standard CLIP)
-        # Paper says (line 684): "including the [CLS] token was producing better numbers"
-        pooled = x[0]  # [CLS] token: [batch, dim]
-        image_features = self.visual.ln_post(pooled) @ self.visual.proj
+        # Use MEAN POOLING over all tokens (like LeGrad) instead of CLS token only
+        # This ensures all tokens receive gradients, which is essential for GradCAM
+        mean_pooled = intermediate_tokens.mean(dim=0)  # [batch, dim]
+        image_features = self.visual.ln_post(mean_pooled) @ self.visual.proj
         image_features = F.normalize(image_features, dim=-1)
         
         # Compute similarity score s
@@ -224,20 +230,17 @@ class LeWrapper(nn.Module):
         grads = grads.permute(1, 0, 2)
         intermediate_tokens = intermediate_tokens.permute(1, 0, 2)
         
-        # Average gradients across ALL tokens (including CLS) to get weights w
-        # Paper formula: w = (1/n) * sum_i(∂s/∂z_i^l)
+        # Average gradients across ALL tokens to get weights w
         w = grads.mean(dim=1, keepdim=True)  # [batch, 1, dim]
         
         # Remove CLS token from intermediate_tokens for the weighted sum
-        # Paper formula uses Z^l_{1:} which means patch tokens only
         tokens_no_cls = intermediate_tokens[:, 1:, :].detach()  # [batch, num_patches, dim]
         
-        # Weighted sum: (1/d) * sum_d(w_d * Z^l_{1:, d})
-        # Element-wise multiplication and mean over dimension
+        # Weighted sum over dimensions
         weighted_tokens = w.detach() * tokens_no_cls  # [batch, num_patches, dim]
         gradcam_map = weighted_tokens.mean(dim=-1)  # [batch, num_patches]
         
-        # Apply ReLU: (...)^+
+        # Apply ReLU
         gradcam_map = torch.clamp(gradcam_map, min=0.)
         
         # Get spatial dimensions
@@ -261,9 +264,10 @@ class LeWrapper(nn.Module):
         
         return gradcam_map
     
-    def compute_gradcam_siglip(self, text_embedding, image=None, layer_index=8):
+    def compute_gradcam_siglip(self, text_embedding, image=None, layer_index=None):
         """
         GradCAM for SigLIP models.
+        Uses penultimate layer by default for proper gradient flow.
         """
         num_prompts = text_embedding.shape[0]
         if image is not None:
@@ -274,9 +278,15 @@ class LeWrapper(nn.Module):
         
         blocks_list = list(dict(self.visual.trunk.blocks.named_children()).values())
         
+        # Default to penultimate layer
+        if layer_index is None:
+            layer_index = len(blocks_list) - 2
+        
         # Ensure layer_index is valid
         if layer_index >= len(blocks_list):
-            layer_index = len(blocks_list) - 1
+            layer_index = len(blocks_list) - 2
+        if layer_index < 0:
+            layer_index = len(blocks_list) + layer_index
         
         if layer_index < self.starting_depth:
             raise ValueError(f"Layer {layer_index} is before starting_depth {self.starting_depth}. "
@@ -334,9 +344,10 @@ class LeWrapper(nn.Module):
         
         return gradcam_map
     
-    def compute_gradcam_coca(self, text_embedding, image=None, layer_index=8):
+    def compute_gradcam_coca(self, text_embedding, image=None, layer_index=None):
         """
         GradCAM for CoCa models.
+        Uses penultimate layer by default for proper gradient flow.
         """
         if image is not None:
             _ = self.encode_image(image)
@@ -344,9 +355,15 @@ class LeWrapper(nn.Module):
         
         blocks_list = list(dict(self.visual.transformer.resblocks.named_children()).values())
         
+        # Default to penultimate layer
+        if layer_index is None:
+            layer_index = len(blocks_list) - 2
+        
         # Ensure layer_index is valid
         if layer_index >= len(blocks_list):
-            layer_index = len(blocks_list) - 1
+            layer_index = len(blocks_list) - 2
+        if layer_index < 0:
+            layer_index = len(blocks_list) + layer_index
         
         if layer_index < self.starting_depth:
             raise ValueError(f"Layer {layer_index} is before starting_depth {self.starting_depth}. "
