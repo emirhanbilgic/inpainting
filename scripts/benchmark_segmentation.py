@@ -425,7 +425,34 @@ def main():
         help='Directory to save visualization grids when --vis_first_k > 0.'
     )
     
+    # ------------------------------------------------------------
+    # Method selection
+    # ------------------------------------------------------------
+    parser.add_argument(
+        '--methods',
+        type=str,
+        default='original,gradcam,sparse',
+        help="Comma-separated methods to run from: original,gradcam,sparse. "
+             "Example: --methods gradcam,sparse"
+    )
+    parser.add_argument(
+        '--sparse_target',
+        type=str,
+        default='legrad',
+        choices=['legrad', 'gradcam'],
+        help="Which heatmap function to use for the sparse embedding. "
+             "'legrad' -> compute_map_for_embedding (LeGrad); "
+             "'gradcam' -> compute_gradcam_for_embedding (Sparse-GradCAM)."
+    )
+    
     args = parser.parse_args()
+
+    # Normalize and validate methods list
+    methods = [m.strip().lower() for m in str(getattr(args, "methods", "")).split(",") if m.strip()]
+    allowed_methods = {'original', 'gradcam', 'sparse'}
+    methods = [m for m in methods if m in allowed_methods]
+    if not methods:
+        raise ValueError("No valid methods selected. Use --methods with any of: original,gradcam,sparse")
     
     # Load Model (use CLIP's preprocess, then wrap with LePreprocess for higher-res input)
     print(f"Loading model {args.model_name}...")
@@ -510,6 +537,8 @@ def main():
         'gradcam': {'iou': [], 'acc': [], 'ap': []},    # Grad-CAM
         'sparse': {'iou': [], 'acc': [], 'ap': []},     # Sparse LeGrad (kept for completeness)
     }
+    # Keep only requested methods
+    results = {k: v for k, v in results.items() if k in methods}
 
     # Optional threshold-sweep structures (for mIoU / pixel-acc optimization)
     optimize_thresholds = bool(getattr(args, "optimize_thresholds", 0))
@@ -520,12 +549,7 @@ def main():
         if thr_steps < 2:
             thr_steps = 2
         opt_thresholds = np.linspace(thr_min, thr_max, thr_steps).tolist()
-        opt_results = {
-            method: {
-                thr: {'iou': [], 'acc': []} for thr in opt_thresholds
-            }
-            for method in ['original', 'gradcam', 'sparse']
-        }
+        opt_results = {method: {thr: {'iou': [], 'acc': []} for thr in opt_thresholds} for method in methods}
         print(f"[threshold-opt] Enabled sweep over {len(opt_thresholds)} thresholds "
               f"from {thr_min:.3f} to {thr_max:.3f}.")
     else:
@@ -587,25 +611,31 @@ def main():
             original_1x = all_text_embs[cls_idx:cls_idx + 1]  # [1, d]
             
             # --- ORIGINAL (LeGrad) ---
-            heatmap_orig = compute_map_for_embedding(model, img_t, original_1x)  # [H_feat, W_feat]
+            if 'original' in methods:
+                heatmap_orig = compute_map_for_embedding(model, img_t, original_1x)  # [H_feat, W_feat]
 
             # --- GRAD-CAM ---
-            heatmap_gradcam = compute_gradcam_for_embedding(model, img_t, original_1x)  # [H_feat, W_feat]
+            if 'gradcam' in methods:
+                heatmap_gradcam = compute_gradcam_for_embedding(model, img_t, original_1x)  # [H_feat, W_feat]
 
             # Resize to original size
             # Note: F.interpolate expects [B, C, H, W]
-            heatmap_orig_resized = F.interpolate(
-                heatmap_orig.view(1, 1, H_feat, W_feat),
-                size=(H_gt, W_gt),
-                mode='bilinear',
-                align_corners=False
-            ).squeeze().numpy()
-            heatmap_gradcam_resized = F.interpolate(
-                heatmap_gradcam.view(1, 1, H_feat, W_feat),
-                size=(H_gt, W_gt),
-                mode='bilinear',
-                align_corners=False
-            ).squeeze().numpy()
+            heatmap_orig_resized = None
+            heatmap_gradcam_resized = None
+            if 'original' in methods:
+                heatmap_orig_resized = F.interpolate(
+                    heatmap_orig.view(1, 1, H_feat, W_feat),
+                    size=(H_gt, W_gt),
+                    mode='bilinear',
+                    align_corners=False
+                ).squeeze().numpy()
+            if 'gradcam' in methods:
+                heatmap_gradcam_resized = F.interpolate(
+                    heatmap_gradcam.view(1, 1, H_feat, W_feat),
+                    size=(H_gt, W_gt),
+                    mode='bilinear',
+                    align_corners=False
+                ).squeeze().numpy()
 
             # --- SPARSE: build dictionary from other prompts + WordNet neighbors ---
             parts = []
@@ -688,7 +718,10 @@ def main():
                 else:
                     print("  Dictionary empty; sparse residual falls back to original embedding.")
 
-            heatmap_sparse = compute_map_for_embedding(model, img_t, sparse_1x)
+            if args.sparse_target == 'gradcam':
+                heatmap_sparse = compute_gradcam_for_embedding(model, img_t, sparse_1x)
+            else:
+                heatmap_sparse = compute_map_for_embedding(model, img_t, sparse_1x)
             heatmap_sparse_resized = F.interpolate(
                 heatmap_sparse.view(1, 1, H_feat, W_feat),
                 size=(H_gt, W_gt),
@@ -698,47 +731,50 @@ def main():
 
             # --- METRICS ---
             # Original LeGrad: fixed threshold 0.5 on normalized heatmap (as in paper)
-            iou_o, acc_o = compute_iou_acc(heatmap_orig_resized, gt_mask, threshold=0.5)
-            ap_o = compute_map_score(heatmap_orig_resized, gt_mask)
-            
-            results['original']['iou'].append(iou_o)
-            results['original']['acc'].append(acc_o)
-            results['original']['ap'].append(ap_o)
+            if 'original' in methods and heatmap_orig_resized is not None:
+                iou_o, acc_o = compute_iou_acc(heatmap_orig_resized, gt_mask, threshold=0.5)
+                ap_o = compute_map_score(heatmap_orig_resized, gt_mask)
+                
+                results['original']['iou'].append(iou_o)
+                results['original']['acc'].append(acc_o)
+                results['original']['ap'].append(ap_o)
 
             # Grad-CAM: same fixed threshold 0.5 for fair comparison
-            iou_g, acc_g = compute_iou_acc(heatmap_gradcam_resized, gt_mask, threshold=0.5)
-            ap_g = compute_map_score(heatmap_gradcam_resized, gt_mask)
+            if 'gradcam' in methods and heatmap_gradcam_resized is not None:
+                iou_g, acc_g = compute_iou_acc(heatmap_gradcam_resized, gt_mask, threshold=0.5)
+                ap_g = compute_map_score(heatmap_gradcam_resized, gt_mask)
 
-            results['gradcam']['iou'].append(iou_g)
-            results['gradcam']['acc'].append(acc_g)
-            results['gradcam']['ap'].append(ap_g)
+                results['gradcam']['iou'].append(iou_g)
+                results['gradcam']['acc'].append(acc_g)
+                results['gradcam']['ap'].append(ap_g)
 
             # Sparse encoding: user-controllable fixed threshold (default 0.5)
-            iou_s, acc_s = compute_iou_acc(heatmap_sparse_resized, gt_mask, threshold=args.sparse_threshold)
-            ap_s = compute_map_score(heatmap_sparse_resized, gt_mask)
-            
-            results['sparse']['iou'].append(iou_s)
-            results['sparse']['acc'].append(acc_s)
-            results['sparse']['ap'].append(ap_s)
+            if 'sparse' in methods:
+                iou_s, acc_s = compute_iou_acc(heatmap_sparse_resized, gt_mask, threshold=args.sparse_threshold)
+                ap_s = compute_map_score(heatmap_sparse_resized, gt_mask)
+                
+                results['sparse']['iou'].append(iou_s)
+                results['sparse']['acc'].append(acc_s)
+                results['sparse']['ap'].append(ap_s)
 
             # --- THRESHOLD SWEEP (OPTIONAL) ---
             if optimize_thresholds and opt_thresholds:
                 for thr in opt_thresholds:
                     thr_val = float(thr)
-                    # Original
-                    iou_o_t, acc_o_t = compute_iou_acc(heatmap_orig_resized, gt_mask, threshold=thr_val)
-                    opt_results['original'][thr]['iou'].append(iou_o_t)
-                    opt_results['original'][thr]['acc'].append(acc_o_t)
+                    if 'original' in methods and heatmap_orig_resized is not None:
+                        iou_o_t, acc_o_t = compute_iou_acc(heatmap_orig_resized, gt_mask, threshold=thr_val)
+                        opt_results['original'][thr]['iou'].append(iou_o_t)
+                        opt_results['original'][thr]['acc'].append(acc_o_t)
 
-                    # Grad-CAM
-                    iou_g_t, acc_g_t = compute_iou_acc(heatmap_gradcam_resized, gt_mask, threshold=thr_val)
-                    opt_results['gradcam'][thr]['iou'].append(iou_g_t)
-                    opt_results['gradcam'][thr]['acc'].append(acc_g_t)
+                    if 'gradcam' in methods and heatmap_gradcam_resized is not None:
+                        iou_g_t, acc_g_t = compute_iou_acc(heatmap_gradcam_resized, gt_mask, threshold=thr_val)
+                        opt_results['gradcam'][thr]['iou'].append(iou_g_t)
+                        opt_results['gradcam'][thr]['acc'].append(acc_g_t)
 
-                    # Sparse
-                    iou_s_t, acc_s_t = compute_iou_acc(heatmap_sparse_resized, gt_mask, threshold=thr_val)
-                    opt_results['sparse'][thr]['iou'].append(iou_s_t)
-                    opt_results['sparse'][thr]['acc'].append(acc_s_t)
+                    if 'sparse' in methods:
+                        iou_s_t, acc_s_t = compute_iou_acc(heatmap_sparse_resized, gt_mask, threshold=thr_val)
+                        opt_results['sparse'][thr]['iou'].append(iou_s_t)
+                        opt_results['sparse'][thr]['acc'].append(acc_s_t)
 
             # --- OPTIONAL VISUALIZATION GRID ---
             if idx < args.vis_first_k:
@@ -776,7 +812,7 @@ def main():
             continue
 
     print("\n--- Results ---")
-    for method in ['original', 'gradcam', 'sparse']:
+    for method in methods:
         miou = np.mean(results[method]['iou']) * 100
         macc = np.mean(results[method]['acc']) * 100
         map_score = np.mean(results[method]['ap']) * 100
@@ -785,7 +821,7 @@ def main():
     # Report best thresholds per method if optimization was enabled
     if optimize_thresholds and opt_thresholds:
         print("\n--- Threshold optimization (best mIoU per method) ---")
-        for method in ['original', 'gradcam', 'sparse']:
+        for method in methods:
             best_thr = None
             best_miou = -1.0
             best_macc = 0.0
@@ -810,7 +846,7 @@ def main():
         # so there is no separate "best threshold" for mAP. We still summarize
         # the achieved mAP here next to the optimized mIoU thresholds.
         print("\n--- mAP (threshold-independent) per method ---")
-        for method in ['original', 'gradcam', 'sparse']:
+        for method in methods:
             map_score = np.mean(results[method]['ap']) * 100
             print(f"{method.capitalize()}: mAP={map_score:.2f}")
 
