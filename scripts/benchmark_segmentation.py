@@ -1,6 +1,7 @@
 import sys
 import os
 import argparse
+import math
 import json
 import re
 import time
@@ -198,6 +199,64 @@ def compute_gradcam_for_embedding(model, image, text_emb_1x, layer_index: int = 
         heatmap = model.compute_gradcam(image=image, text_embedding=text_emb_1x, layer_index=layer_index)
     heatmap = heatmap[0, 0].clamp(0, 1).detach().cpu()
     return heatmap
+
+
+def compute_attention_rollout(model, image, start_layer: int = None):
+    """
+    Compute Attention Rollout heatmap (normalized to [0, 1]) for a single image.
+    - Uses self-attention maps saved by LeWrapper hooks.
+    - Aggregates heads by mean, adds residual connection, and multiplies across layers.
+    Returns: 2D tensor [H, W] on CPU aligned with image resolution.
+    """
+    start_layer = model.starting_depth if start_layer is None else start_layer
+
+    # Forward pass to populate attention maps
+    with torch.no_grad():
+        _ = model.encode_image(image)
+
+    blocks = list(dict(model.visual.transformer.resblocks.named_children()).values())
+    attn_stack = []
+    for idx in range(start_layer, len(blocks)):
+        attn = getattr(blocks[idx].attn, "attention_maps", None)
+        if attn is None:
+            continue
+        num_heads = blocks[idx].attn.num_heads
+        B = attn.shape[0] // num_heads
+        tgt = attn.shape[1]
+        attn = attn.view(B, num_heads, tgt, tgt)
+        attn = attn.mean(dim=1)  # fuse heads
+        eye = torch.eye(attn.shape[-1], device=attn.device).unsqueeze(0)
+        attn = attn + eye
+        attn = attn / attn.sum(dim=-1, keepdim=True)
+        attn_stack.append(attn)
+
+    if len(attn_stack) == 0:
+        raise RuntimeError("No attention maps found for rollout computation.")
+
+    rollout = attn_stack[0]
+    for attn in attn_stack[1:]:
+        rollout = attn @ rollout
+
+    rollout = rollout[:, 0, 1:]  # CLS to patches
+    if hasattr(model.visual, "last_grid_size"):
+        w, h = model.visual.last_grid_size
+    else:
+        tokens = rollout.shape[-1]
+        w = h = int(math.sqrt(tokens))
+    rollout = rollout.view(rollout.shape[0], 1, w, h)
+
+    # Normalize to [0, 1]
+    rollout = rollout - rollout.amin(dim=(2, 3), keepdim=True)
+    denom = rollout.amax(dim=(2, 3), keepdim=True) + 1e-6
+    rollout = rollout / denom
+
+    rollout = F.interpolate(
+        rollout,
+        size=image.shape[-2:],
+        mode='bilinear',
+        align_corners=False
+    )
+    return rollout[0, 0].detach().cpu()
 
 # --- Sparse Encoding Logic Copies ---
 def omp_sparse_residual(
@@ -431,9 +490,9 @@ def main():
     parser.add_argument(
         '--methods',
         type=str,
-        default='original,gradcam,sparse',
-        help="Comma-separated methods to run from: original,gradcam,sparse. "
-             "Example: --methods gradcam,sparse"
+        default='original,gradcam,sparse,rollout',
+        help="Comma-separated methods to run from: original,gradcam,sparse,rollout. "
+             "Example: --methods gradcam,sparse,rollout"
     )
     parser.add_argument(
         '--sparse_target',
@@ -449,7 +508,7 @@ def main():
 
     # Normalize and validate methods list
     methods = [m.strip().lower() for m in str(getattr(args, "methods", "")).split(",") if m.strip()]
-    allowed_methods = {'original', 'gradcam', 'sparse'}
+    allowed_methods = {'original', 'gradcam', 'sparse', 'rollout'}
     methods = [m for m in methods if m in allowed_methods]
     if not methods:
         raise ValueError("No valid methods selected. Use --methods with any of: original,gradcam,sparse")
@@ -536,6 +595,7 @@ def main():
         'original': {'iou': [], 'acc': [], 'ap': []},   # LeGrad
         'gradcam': {'iou': [], 'acc': [], 'ap': []},    # Grad-CAM
         'sparse': {'iou': [], 'acc': [], 'ap': []},     # Sparse LeGrad (kept for completeness)
+        'rollout': {'iou': [], 'acc': [], 'ap': []},    # Attention Rollout
     }
     # Keep only requested methods
     results = {k: v for k, v in results.items() if k in methods}
@@ -622,9 +682,19 @@ def main():
             # Note: F.interpolate expects [B, C, H, W]
             heatmap_orig_resized = None
             heatmap_gradcam_resized = None
+            heatmap_rollout_resized = None
             if 'original' in methods:
                 heatmap_orig_resized = F.interpolate(
                     heatmap_orig.view(1, 1, H_feat, W_feat),
+                    size=(H_gt, W_gt),
+                    mode='bilinear',
+                    align_corners=False
+                ).squeeze().numpy()
+            if 'rollout' in methods:
+                rollout_map = compute_attention_rollout(model, img_t)  # already at image resolution
+                # Resize to GT size (image_size) to match evaluation dimensions
+                heatmap_rollout_resized = F.interpolate(
+                    rollout_map.view(1, 1, rollout_map.shape[-2], rollout_map.shape[-1]),
                     size=(H_gt, W_gt),
                     mode='bilinear',
                     align_corners=False
@@ -638,96 +708,98 @@ def main():
                 ).squeeze().numpy()
 
             # --- SPARSE: build dictionary from other prompts + WordNet neighbors ---
-            parts = []
-            d_labels = []
-            prompt_atoms = 0
-            neighbor_atoms = 0
+            heatmap_sparse_resized = None
+            if 'sparse' in methods:
+                parts = []
+                d_labels = []
+                prompt_atoms = 0
+                neighbor_atoms = 0
 
-            # 1) Other class prompts in the segmentation set (if enabled)
-            if bool(args.dict_include_prompts) and len(unique_wnids) > 1:
-                if cls_idx > 0:
-                    other = all_text_embs[:cls_idx]
-                    parts.append(other)
-                    prompt_atoms += other.shape[0]
-                    d_labels.extend([f"class_{i}" for i in range(cls_idx)])
-                if cls_idx + 1 < len(unique_wnids):
-                    other = all_text_embs[cls_idx + 1:]
-                    parts.append(other)
-                    prompt_atoms += other.shape[0]
-                    d_labels.extend([f"class_{i}" for i in range(cls_idx + 1, len(unique_wnids))])
+                # 1) Other class prompts in the segmentation set (if enabled)
+                if bool(args.dict_include_prompts) and len(unique_wnids) > 1:
+                    if cls_idx > 0:
+                        other = all_text_embs[:cls_idx]
+                        parts.append(other)
+                        prompt_atoms += other.shape[0]
+                        d_labels.extend([f"class_{i}" for i in range(cls_idx)])
+                    if cls_idx + 1 < len(unique_wnids):
+                        other = all_text_embs[cls_idx + 1:]
+                        parts.append(other)
+                        prompt_atoms += other.shape[0]
+                        d_labels.extend([f"class_{i}" for i in range(cls_idx + 1, len(unique_wnids))])
 
-            # 2) WordNet neighbors of the class label
-            use_wn = any([
-                bool(args.wn_use_synonyms),
-                bool(args.wn_use_hypernyms),
-                bool(args.wn_use_hyponyms),
-                bool(args.wn_use_siblings),
-            ])
-            if use_wn:
-                raw_neighbors = wordnet_neighbors_configured(
-                    class_name,
-                    use_synonyms=bool(args.wn_use_synonyms),
-                    use_hypernyms=bool(args.wn_use_hypernyms),
-                    use_hyponyms=bool(args.wn_use_hyponyms),
-                    use_siblings=bool(args.wn_use_siblings),
-                    use_fallback=bool(args.wn_fallback_search),
-                    limit_per_relation=8,
-                )
-                if raw_neighbors:
-                    neighbor_prompts = [prompt.replace(class_name, w) for w in raw_neighbors]
-                    n_tok = tokenizer(neighbor_prompts).to(args.device)
-                    with torch.no_grad():
-                        n_emb = model.encode_text(n_tok)
-                        n_emb = F.normalize(n_emb, dim=-1)
-                    parts.append(n_emb)
-                    neighbor_atoms += n_emb.shape[0]
-                    d_labels.extend(neighbor_prompts)
+                # 2) WordNet neighbors of the class label
+                use_wn = any([
+                    bool(args.wn_use_synonyms),
+                    bool(args.wn_use_hypernyms),
+                    bool(args.wn_use_hyponyms),
+                    bool(args.wn_use_siblings),
+                ])
+                if use_wn:
+                    raw_neighbors = wordnet_neighbors_configured(
+                        class_name,
+                        use_synonyms=bool(args.wn_use_synonyms),
+                        use_hypernyms=bool(args.wn_use_hypernyms),
+                        use_hyponyms=bool(args.wn_use_hyponyms),
+                        use_siblings=bool(args.wn_use_siblings),
+                        use_fallback=bool(args.wn_fallback_search),
+                        limit_per_relation=8,
+                    )
+                    if raw_neighbors:
+                        neighbor_prompts = [prompt.replace(class_name, w) for w in raw_neighbors]
+                        n_tok = tokenizer(neighbor_prompts).to(args.device)
+                        with torch.no_grad():
+                            n_emb = model.encode_text(n_tok)
+                            n_emb = F.normalize(n_emb, dim=-1)
+                        parts.append(n_emb)
+                        neighbor_atoms += n_emb.shape[0]
+                        d_labels.extend(neighbor_prompts)
 
-            dict_raw_size = prompt_atoms + neighbor_atoms
+                dict_raw_size = prompt_atoms + neighbor_atoms
 
-            if len(parts) > 0:
-                D = torch.cat(parts, dim=0)
-                D = F.normalize(D, dim=-1)
-                sim = (D @ original_1x.t()).squeeze(-1).abs()
+                if len(parts) > 0:
+                    D = torch.cat(parts, dim=0)
+                    D = F.normalize(D, dim=-1)
+                    sim = (D @ original_1x.t()).squeeze(-1).abs()
 
-                # Filter by max cosine similarity if requested
-                dropped = 0
-                if args.max_dict_cos_sim is not None and 0.0 < float(args.max_dict_cos_sim) < 1.0:
-                    keep = sim < float(args.max_dict_cos_sim)
-                    dropped = int((~keep).sum().item())
-                    D = D[keep]
-            else:
-                D = original_1x.new_zeros((0, original_1x.shape[-1]))
-                dict_raw_size = 0
-                dropped = 0
-
-            sparse_1x, num_selected = omp_sparse_residual(
-                original_1x, D, max_atoms=args.atoms, return_num_selected=True
-            )
-
-            # Debug logging for first few classes
-            if cls_idx not in debugged_classes and len(debugged_classes) < 4:
-                debugged_classes.add(cls_idx)
-                print(f"\n[sparse-debug] class_idx={cls_idx}, wnid={wnid}")
-                print(f"  prompt: '{prompt}'")
-                print(f"  dict_raw_size={dict_raw_size} (prompts={prompt_atoms}, neighbors={neighbor_atoms})")
-                if dict_raw_size > 0:
-                    print(f"  max_dict_cos_sim={args.max_dict_cos_sim}, dropped={dropped}")
-                    print(f"  dict_final_size={D.shape[0]}")
-                    print(f"  atoms_selected={num_selected}")
+                    # Filter by max cosine similarity if requested
+                    dropped = 0
+                    if args.max_dict_cos_sim is not None and 0.0 < float(args.max_dict_cos_sim) < 1.0:
+                        keep = sim < float(args.max_dict_cos_sim)
+                        dropped = int((~keep).sum().item())
+                        D = D[keep]
                 else:
-                    print("  Dictionary empty; sparse residual falls back to original embedding.")
+                    D = original_1x.new_zeros((0, original_1x.shape[-1]))
+                    dict_raw_size = 0
+                    dropped = 0
 
-            if args.sparse_target == 'gradcam':
-                heatmap_sparse = compute_gradcam_for_embedding(model, img_t, sparse_1x)
-            else:
-                heatmap_sparse = compute_map_for_embedding(model, img_t, sparse_1x)
-            heatmap_sparse_resized = F.interpolate(
-                heatmap_sparse.view(1, 1, H_feat, W_feat),
-                size=(H_gt, W_gt),
-                mode='bilinear',
-                align_corners=False
-            ).squeeze().numpy()
+                sparse_1x, num_selected = omp_sparse_residual(
+                    original_1x, D, max_atoms=args.atoms, return_num_selected=True
+                )
+
+                # Debug logging for first few classes
+                if cls_idx not in debugged_classes and len(debugged_classes) < 4:
+                    debugged_classes.add(cls_idx)
+                    print(f"\n[sparse-debug] class_idx={cls_idx}, wnid={wnid}")
+                    print(f"  prompt: '{prompt}'")
+                    print(f"  dict_raw_size={dict_raw_size} (prompts={prompt_atoms}, neighbors={neighbor_atoms})")
+                    if dict_raw_size > 0:
+                        print(f"  max_dict_cos_sim={args.max_dict_cos_sim}, dropped={dropped}")
+                        print(f"  dict_final_size={D.shape[0]}")
+                        print(f"  atoms_selected={num_selected}")
+                    else:
+                        print("  Dictionary empty; sparse residual falls back to original embedding.")
+
+                if args.sparse_target == 'gradcam':
+                    heatmap_sparse = compute_gradcam_for_embedding(model, img_t, sparse_1x)
+                else:
+                    heatmap_sparse = compute_map_for_embedding(model, img_t, sparse_1x)
+                heatmap_sparse_resized = F.interpolate(
+                    heatmap_sparse.view(1, 1, H_feat, W_feat),
+                    size=(H_gt, W_gt),
+                    mode='bilinear',
+                    align_corners=False
+                ).squeeze().numpy()
 
             # --- METRICS ---
             # Original LeGrad: fixed threshold 0.5 on normalized heatmap (as in paper)
@@ -747,6 +819,15 @@ def main():
                 results['gradcam']['iou'].append(iou_g)
                 results['gradcam']['acc'].append(acc_g)
                 results['gradcam']['ap'].append(ap_g)
+
+            # Attention Rollout: fixed 0.5 threshold on normalized rollout map
+            if 'rollout' in methods and heatmap_rollout_resized is not None:
+                iou_r, acc_r = compute_iou_acc(heatmap_rollout_resized, gt_mask, threshold=0.5)
+                ap_r = compute_map_score(heatmap_rollout_resized, gt_mask)
+
+                results['rollout']['iou'].append(iou_r)
+                results['rollout']['acc'].append(acc_r)
+                results['rollout']['ap'].append(ap_r)
 
             # Sparse encoding: user-controllable fixed threshold (default 0.5)
             if 'sparse' in methods:
@@ -771,6 +852,11 @@ def main():
                         opt_results['gradcam'][thr]['iou'].append(iou_g_t)
                         opt_results['gradcam'][thr]['acc'].append(acc_g_t)
 
+                    if 'rollout' in methods and heatmap_rollout_resized is not None:
+                        iou_r_t, acc_r_t = compute_iou_acc(heatmap_rollout_resized, gt_mask, threshold=thr_val)
+                        opt_results['rollout'][thr]['iou'].append(iou_r_t)
+                        opt_results['rollout'][thr]['acc'].append(acc_r_t)
+
                     if 'sparse' in methods:
                         iou_s_t, acc_s_t = compute_iou_acc(heatmap_sparse_resized, gt_mask, threshold=thr_val)
                         opt_results['sparse'][thr]['iou'].append(iou_s_t)
@@ -785,7 +871,8 @@ def main():
                 legrad_bin = (heatmap_orig_resized > 0.5).astype(np.uint8)
                 sparse_bin = (heatmap_sparse_resized > args.sparse_threshold).astype(np.uint8)
 
-                fig, axes = plt.subplots(1, 4, figsize=(12, 3))
+                num_cols = 4 + (1 if 'rollout' in methods else 0)
+                fig, axes = plt.subplots(1, num_cols, figsize=(3 * num_cols, 3))
                 axes[0].imshow(vis_img)
                 axes[0].set_title('Image')
                 axes[0].axis('off')
@@ -796,9 +883,16 @@ def main():
                 axes[2].imshow(legrad_bin, cmap='gray')
                 axes[2].set_title('LeGrad (0.5)')
                 axes[2].axis('off')
-                axes[3].imshow(sparse_bin, cmap='gray')
-                axes[3].set_title(f'Sparse ({args.sparse_threshold:.2f})')
-                axes[3].axis('off')
+                next_ax = 3
+                if 'rollout' in methods and heatmap_rollout_resized is not None:
+                    rollout_bin = (heatmap_rollout_resized > 0.5).astype(np.uint8)
+                    axes[next_ax].imshow(rollout_bin, cmap='gray')
+                    axes[next_ax].set_title('Rollout (0.5)')
+                    axes[next_ax].axis('off')
+                    next_ax += 1
+                axes[next_ax].imshow(sparse_bin, cmap='gray')
+                axes[next_ax].set_title(f'Sparse ({args.sparse_threshold:.2f})')
+                axes[next_ax].axis('off')
                 plt.tight_layout()
 
                 out_name = f"seg_vis_{idx:04d}.png"
