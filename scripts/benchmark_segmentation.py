@@ -201,62 +201,65 @@ def compute_gradcam_for_embedding(model, image, text_emb_1x, layer_index: int = 
     return heatmap
 
 
-def compute_attention_rollout(model, image, start_layer: int = None):
+def compute_attention_rollout(model, image, start_layer=0):
     """
-    Compute Attention Rollout heatmap (normalized to [0, 1]) for a single image.
-    - Uses self-attention maps saved by LeWrapper hooks.
-    - Aggregates heads by mean, adds residual connection, and multiplies across layers.
-    Returns: 2D tensor [H, W] on CPU aligned with image resolution.
+    Refined Attention Rollout implementation (Abnar & Zuidema).
+    Computes the flow of attention from the CLS token to all patches.
     """
-    start_layer = model.starting_depth if start_layer is None else start_layer
-
-    # Forward pass to populate attention maps
+    # 1. Clear previous hooks or maps and run a forward pass
     with torch.no_grad():
         _ = model.encode_image(image)
 
+    # 2. Extract attention maps from visual blocks
+    # Note: Ensure your LeWrapper captures 'attention_maps' in the .attn module
     blocks = list(dict(model.visual.transformer.resblocks.named_children()).values())
-    attn_stack = []
-    for idx in range(start_layer, len(blocks)):
-        attn = getattr(blocks[idx].attn, "attention_maps", None)
-        if attn is None:
-            continue
-        num_heads = blocks[idx].attn.num_heads
+    
+    # Initialize rollout as an Identity matrix [N_tokens, N_tokens]
+    # N_tokens includes the CLS token (1 + H*W/patch^2)
+    attn_maps = []
+    for i in range(start_layer, len(blocks)):
+        attn = getattr(blocks[i].attn, "attention_maps", None)
+        if attn is None: continue
+        
+        # Fuse heads by averaging: [B, Heads, N, N] -> [B, N, N]
+        num_heads = blocks[i].attn.num_heads
         B = attn.shape[0] // num_heads
-        tgt = attn.shape[1]
-        attn = attn.view(B, num_heads, tgt, tgt)
-        attn = attn.mean(dim=1)  # fuse heads
-        eye = torch.eye(attn.shape[-1], device=attn.device).unsqueeze(0)
-        attn = attn + eye
-        attn = attn / attn.sum(dim=-1, keepdim=True)
-        attn_stack.append(attn)
+        N = attn.shape[1]
+        attn = attn.view(B, num_heads, N, N).mean(dim=1)
+        
+        # Add Identity to simulate residual connections
+        I = torch.eye(N).to(attn.device)
+        a_i = 0.5 * attn + 0.5 * I  # Mix attention with identity
+        a_i = a_i / a_i.sum(dim=-1, keepdim=True)
+        attn_maps.append(a_i)
 
-    if len(attn_stack) == 0:
-        raise RuntimeError("No attention maps found for rollout computation.")
+    # 3. Recursively multiply maps
+    # Result = A_n * A_{n-1} * ... * A_1
+    rollout = attn_maps[0]
+    for i in range(1, len(attn_maps)):
+        rollout = attn_maps[i] @ rollout
 
-    rollout = attn_stack[0]
-    for attn in attn_stack[1:]:
-        rollout = attn @ rollout
-
-    rollout = rollout[:, 0, 1:]  # CLS to patches
+    # 4. Extract CLS-to-Patches attention (discard CLS-to-CLS)
+    # The first row [0, 1:] represents CLS token attending to all spatial patches
+    cls_attn = rollout[:, 0, 1:] 
+    
+    # 5. Reshape to grid
     if hasattr(model.visual, "last_grid_size"):
-        w, h = model.visual.last_grid_size
+        gh, gw = model.visual.last_grid_size
     else:
-        tokens = rollout.shape[-1]
-        w = h = int(math.sqrt(tokens))
-    rollout = rollout.view(rollout.shape[0], 1, w, h)
+        grid_size = int(math.sqrt(cls_attn.shape[-1]))
+        gh = gw = grid_size
+        
+    heatmap = cls_attn.reshape(B, 1, gh, gw)
+    
+    # 6. Normalize to [0, 1] range for segmentation thresholding
+    heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
 
-    # Normalize to [0, 1]
-    rollout = rollout - rollout.amin(dim=(2, 3), keepdim=True)
-    denom = rollout.amax(dim=(2, 3), keepdim=True) + 1e-6
-    rollout = rollout / denom
-
-    rollout = F.interpolate(
-        rollout,
-        size=image.shape[-2:],
-        mode='bilinear',
-        align_corners=False
+    # 7. Upsample to match image dimensions
+    heatmap = F.interpolate(
+        heatmap, size=image.shape[-2:], mode='bilinear', align_corners=False
     )
-    return rollout[0, 0].detach().cpu()
+    return heatmap[0, 0].detach().cpu()
 
 # --- Sparse Encoding Logic Copies ---
 def omp_sparse_residual(
