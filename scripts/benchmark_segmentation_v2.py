@@ -1144,12 +1144,20 @@ def main():
             # --- Compute Metrics (Reference Protocol) ---
             for method in methods:
                 heatmap = heatmaps[method]
-                
-                # Normalize heatmap
-                heatmap_norm = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
-                
+
+                # For LeGrad (original), use the already normalized [0,1] values directly
+                # For other methods, normalize as per reference protocol
+                if method == 'original':
+                    heatmap_norm = heatmap  # Already in [0,1] from compute_legrad_for_embedding
+                else:
+                    # Normalize heatmap
+                    heatmap_norm = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
+
                 # Determine threshold
-                if args.threshold_mode == 'mean':
+                # LeGrad uses fixed 0.5 threshold as in the original implementation
+                if method == 'original':
+                    thr = 0.5
+                elif args.threshold_mode == 'mean':
                     thr = heatmap_norm.mean().item()
                 else:
                     thr = args.fixed_threshold
@@ -1189,11 +1197,16 @@ def main():
                 
                 for i, method in enumerate(methods):
                     heatmap = heatmaps[method].numpy()
-                    heatmap_norm = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
-                    if args.threshold_mode == 'mean':
-                        thr = heatmap_norm.mean()
+                    # For LeGrad (original), use the already normalized [0,1] values directly
+                    if method == 'original':
+                        heatmap_norm = heatmap  # Already in [0,1]
+                        thr = 0.5  # Fixed threshold for LeGrad
                     else:
-                        thr = args.fixed_threshold
+                        heatmap_norm = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
+                        if args.threshold_mode == 'mean':
+                            thr = heatmap_norm.mean()
+                        else:
+                            thr = args.fixed_threshold
                     binary = (heatmap_norm > thr).astype(np.uint8)
                     axes[2 + i].imshow(binary, cmap='gray')
                     axes[2 + i].set_title(f'{method.capitalize()}')
