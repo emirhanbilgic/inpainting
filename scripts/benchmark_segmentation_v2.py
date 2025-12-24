@@ -866,7 +866,7 @@ def main():
     # TextSpan settings
     parser.add_argument('--textspan_num_layers', type=int, default=4,
                         help='Number of last layers to aggregate for TextSpan (default 4 as in paper)')
-    parser.add_argument('--textspan_mode', type=str, default='spatial',
+    parser.add_argument('--textspan_mode', type=str, default='attention',
                         choices=['spatial', 'attention'],
                         help='TextSpan mode: spatial (direct projection) or attention (attention-weighted)')
     
