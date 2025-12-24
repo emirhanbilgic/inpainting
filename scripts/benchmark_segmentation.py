@@ -201,11 +201,28 @@ def compute_gradcam_for_embedding(model, image, text_emb_1x, layer_index: int = 
     return heatmap
 
 
+def compute_rollout_attention(all_layer_matrices, start_layer=0):
+    """
+    Compute rollout between attention layers.
+    Based on: https://github.com/antragoudaras/Transformer-XAI
+    """
+    # adding residual consideration- code adapted from https://github.com/samiraabnar/attention_flow
+    num_tokens = all_layer_matrices[0].shape[1]
+    batch_size = all_layer_matrices[0].shape[0]
+    eye = torch.eye(num_tokens).expand(batch_size, num_tokens, num_tokens).to(all_layer_matrices[0].device)
+    all_layer_matrices = [all_layer_matrices[i] + eye for i in range(len(all_layer_matrices))]
+    matrices_aug = [all_layer_matrices[i] / all_layer_matrices[i].sum(dim=-1, keepdim=True) for i in range(len(all_layer_matrices))]
+    joint_attention = matrices_aug[start_layer]
+    for i in range(start_layer+1, len(matrices_aug)):
+        joint_attention = matrices_aug[i].bmm(joint_attention)
+    return joint_attention
+
+
 def compute_attention_rollout(model, image):
     """
     Standard Attention Rollout (Abnar & Zuidema).
-    Computes a single cumulative flow map from input to the final layer.
-    Based on: https://github.com/samiraabnar/attention_flow
+    Based on Transformer-XAI implementation: https://github.com/antragoudaras/Transformer-XAI
+    Returns rollout attention as 1D tensor [num_patches] normalized to [0,1].
     """
     # 1. Forward pass to capture attention maps
     with torch.no_grad():
@@ -214,55 +231,38 @@ def compute_attention_rollout(model, image):
     # 2. Extract attention matrices from all transformer blocks
     blocks = list(dict(model.visual.transformer.resblocks.named_children()).values())
 
-    # Collect attention maps from all layers
-    attn_maps = []
-    for block in blocks:
+    # Collect attention maps from all layers (following Transformer-XAI approach)
+    all_layer_attentions = []
+    for blk in blocks:
         # Each block.attn should have captured 'attention_maps' via hooks in LeWrapper
-        attn = getattr(block.attn, "attention_maps", None)
+        attn = getattr(blk.attn, "attention_maps", None)
         if attn is None:
             continue
 
-        # attn shape: [batch, num_heads, seq_len, seq_len]
-        # Fuse heads by averaging: [batch, num_heads, seq_len, seq_len] -> [batch, seq_len, seq_len]
-        attn = attn.mean(dim=1)  # [batch, seq_len, seq_len]
-        attn_maps.append(attn[0])  # Take first batch, [seq_len, seq_len]
+        # attn shape: [num_heads, seq_len, seq_len] (already squeezed batch dim)
+        # Average heads: [num_heads, seq_len, seq_len] -> [seq_len, seq_len]
+        avg_heads = (attn.sum(dim=0) / attn.shape[0]).detach()
+        # Add batch dimension: [1, seq_len, seq_len]
+        avg_heads = avg_heads.unsqueeze(0)
+        all_layer_attentions.append(avg_heads)
 
-    if not attn_maps:
+    if not all_layer_attentions:
         raise RuntimeError("No attention maps found. Check LeWrapper hooks.")
 
-    # 3. Apply rollout algorithm
-    # Start with identity matrix for the rollout
-    rollout = torch.eye(attn_maps[0].size(-1), device=attn_maps[0].device)
-
-    # Apply attention matrices in reverse order (from last to first layer)
-    for attn in reversed(attn_maps):
-        # Add residual connection: A' = 0.5 * A + 0.5 * I
-        identity = torch.eye(attn.size(-1), device=attn.device)
-        attn_residual = 0.5 * attn + 0.5 * identity
-
-        # Normalize rows to sum to 1
-        attn_residual = attn_residual / attn_residual.sum(dim=-1, keepdim=True)
-
-        # Cumulative multiplication
-        rollout = torch.matmul(attn_residual, rollout)
+    # 3. Compute rollout using Transformer-XAI approach
+    rollout = compute_rollout_attention(all_layer_attentions, start_layer=0)
 
     # 4. Extract CLS-to-Patches attention
-    # The first row [0, 1:] represents the CLS token's attention to all patches
-    cls_attn = rollout[0, 1:]  # [num_patches] - skip CLS to CLS
+    # rollout shape: [batch, seq_len, seq_len], we want [batch, num_patches]
+    cls_attn = rollout[:, 0, 1:]  # [batch, num_patches]
 
-    # 5. Reshape to spatial grid
-    grid_size = int(math.sqrt(cls_attn.shape[-1]))
-    heatmap = cls_attn.view(1, 1, grid_size, grid_size)  # [1, 1, H, W]
+    # 5. Take first batch
+    cls_attn = cls_attn[0]  # [num_patches]
 
     # 6. Normalize [0, 1]
-    heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
+    cls_attn = (cls_attn - cls_attn.min()) / (cls_attn.max() - cls_attn.min() + 1e-8)
 
-    # 7. Upsample to image size
-    heatmap = F.interpolate(
-        heatmap, size=image.shape[-2:], mode='bilinear', align_corners=False
-    )
-
-    return heatmap[0, 0].detach().cpu()
+    return cls_attn.detach().cpu()
 
 # --- Sparse Encoding Logic Copies ---
 def omp_sparse_residual(
@@ -697,10 +697,15 @@ def main():
                     align_corners=False
                 ).squeeze().numpy()
             if 'rollout' in methods:
-                rollout_map = compute_attention_rollout(model, img_t)  # already at image resolution
-                # Resize to GT size (image_size) to match evaluation dimensions
+                rollout_attn = compute_attention_rollout(model, img_t)  # returns [num_patches] normalized
+                # Reshape to spatial grid
+                num_patches = rollout_attn.shape[-1]
+                grid_size = int(math.sqrt(num_patches))
+                rollout_map = rollout_attn.view(grid_size, grid_size)  # [grid_size, grid_size]
+
+                # Interpolate to GT size
                 heatmap_rollout_resized = F.interpolate(
-                    rollout_map.view(1, 1, rollout_map.shape[-2], rollout_map.shape[-1]),
+                    rollout_map.view(1, 1, grid_size, grid_size),
                     size=(H_gt, W_gt),
                     mode='bilinear',
                     align_corners=False
