@@ -205,6 +205,7 @@ def compute_attention_rollout(model, image):
     """
     Standard Attention Rollout (Abnar & Zuidema).
     Computes a single cumulative flow map from input to the final layer.
+    Based on: https://github.com/samiraabnar/attention_flow
     """
     # 1. Forward pass to capture attention maps
     with torch.no_grad():
@@ -212,52 +213,55 @@ def compute_attention_rollout(model, image):
 
     # 2. Extract attention matrices from all transformer blocks
     blocks = list(dict(model.visual.transformer.resblocks.named_children()).values())
-    
-    # Standard Rollout uses ALL layers, not a subset
+
+    # Collect attention maps from all layers
     attn_maps = []
     for block in blocks:
-        # Each block.attn must have captured 'attention_maps' via hooks in LeWrapper
+        # Each block.attn should have captured 'attention_maps' via hooks in LeWrapper
         attn = getattr(block.attn, "attention_maps", None)
         if attn is None:
             continue
-            
-        # Fuse heads by averaging: [Batch*Heads, N, N] -> [Batch, N, N]
-        num_heads = block.attn.num_heads
-        B = attn.shape[0] // num_heads
-        N = attn.shape[1]
-        attn = attn.view(B, num_heads, N, N).mean(dim=1)
-        
-        # Add Identity matrix to simulate residual connections
-        # Formula: A = 0.5 * Raw_Attn + 0.5 * I
-        I = torch.eye(N, device=attn.device)
-        a_i = 0.5 * attn + 0.5 * I
-        a_i = a_i / a_i.sum(dim=-1, keepdim=True)
-        attn_maps.append(a_i)
+
+        # attn shape: [batch, num_heads, seq_len, seq_len]
+        # Fuse heads by averaging: [batch, num_heads, seq_len, seq_len] -> [batch, seq_len, seq_len]
+        attn = attn.mean(dim=1)  # [batch, seq_len, seq_len]
+        attn_maps.append(attn[0])  # Take first batch, [seq_len, seq_len]
 
     if not attn_maps:
         raise RuntimeError("No attention maps found. Check LeWrapper hooks.")
 
-    # 3. Recursive matrix multiplication
-    # A_rollout = A_n * A_{n-1} * ... * A_1
-    rollout = attn_maps[0]
-    for i in range(1, len(attn_maps)):
-        rollout = attn_maps[i] @ rollout
+    # 3. Apply rollout algorithm
+    # Start with identity matrix for the rollout
+    rollout = torch.eye(attn_maps[0].size(-1), device=attn_maps[0].device)
+
+    # Apply attention matrices in reverse order (from last to first layer)
+    for attn in reversed(attn_maps):
+        # Add residual connection: A' = 0.5 * A + 0.5 * I
+        identity = torch.eye(attn.size(-1), device=attn.device)
+        attn_residual = 0.5 * attn + 0.5 * identity
+
+        # Normalize rows to sum to 1
+        attn_residual = attn_residual / attn_residual.sum(dim=-1, keepdim=True)
+
+        # Cumulative multiplication
+        rollout = torch.matmul(attn_residual, rollout)
 
     # 4. Extract CLS-to-Patches attention
     # The first row [0, 1:] represents the CLS token's attention to all patches
-    cls_attn = rollout[:, 0, 1:]
-    
-    # 5. Reshape to grid based on ViT resolution
+    cls_attn = rollout[0, 1:]  # [num_patches] - skip CLS to CLS
+
+    # 5. Reshape to spatial grid
     grid_size = int(math.sqrt(cls_attn.shape[-1]))
-    heatmap = cls_attn.view(B, 1, grid_size, grid_size)
-    
-    # 6. Normalize [0, 1] for fixed-threshold evaluation
+    heatmap = cls_attn.view(1, 1, grid_size, grid_size)  # [1, 1, H, W]
+
+    # 6. Normalize [0, 1]
     heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
 
     # 7. Upsample to image size
     heatmap = F.interpolate(
         heatmap, size=image.shape[-2:], mode='bilinear', align_corners=False
     )
+
     return heatmap[0, 0].detach().cpu()
 
 # --- Sparse Encoding Logic Copies ---
