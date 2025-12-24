@@ -58,6 +58,8 @@ except ImportError:
 from legrad import LeWrapper, LePreprocess
 import open_clip
 
+# TextSpan implementation - no external dependencies needed
+
 # Constants
 CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
 CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
@@ -268,51 +270,55 @@ def compute_textspan_spatial(model, image, text_embedding, num_last_layers=4):
         return heatmap[0, 0].detach().cpu()
 
 
-def compute_textspan_attention_decomposition(model, image, text_embedding, num_last_layers=4):
+def compute_textspan_attention_decomposition(model, image, text_embedding, num_last_layers=None):
     """
-    Alternative TextSpan implementation using attention-weighted decomposition.
-    
-    This version follows the paper more closely by:
-    1. Computing the attention from CLS to spatial tokens at each head
-    2. Weighting the value contributions by attention
-    3. Projecting onto text direction
-    
+    TextSpan implementation following the official approach.
+
+    Based on: https://github.com/yossigandelsman/clip_text_span/blob/main/demo.ipynb
+
+    The official implementation does:
+    attention_map = attentions[0, :, 1:, :].sum(axis=(0,2)) @ class_embedding.T
+
+    This means it:
+    1. Takes attention-weighted features from ALL layers
+    2. Sums across layers and heads
+    3. Multiplies by text embeddings
+
     Args:
         model: LeWrapper model
         image: Input image tensor [1, 3, H, W]
         text_embedding: Text embedding tensor [1, D] (normalized)
-        num_last_layers: Number of last layers to aggregate
-    
+        num_last_layers: IGNORED - uses ALL layers like official implementation
+
     Returns:
         Heatmap tensor [H, W] normalized to [0, 1]
     """
     device = image.device
     blocks = model.visual.transformer.resblocks
-    num_blocks = len(blocks)
     embed_dim = blocks[0].attn.embed_dim
     num_heads = blocks[0].attn.num_heads
     head_dim = embed_dim // num_heads
-    
+
     with torch.no_grad():
         # Get the input to the transformer
         x = model.visual.conv1(image)
         grid_h, grid_w = x.shape[2], x.shape[3]
         x = x.reshape(x.shape[0], x.shape[1], -1)
         x = x.permute(0, 2, 1)
-        
+
         # Add class token
         batch_size = x.shape[0]
         class_token = model.visual.class_embedding.unsqueeze(0).unsqueeze(0)
         class_token = class_token.expand(batch_size, -1, -1).to(x.dtype)
         x = torch.cat([class_token, x], dim=1)
-        
+
         # Add positional embedding
         num_patches = x.shape[1]
         if hasattr(model.visual, 'original_pos_embed'):
             pos_embed = model.visual.original_pos_embed
         else:
             pos_embed = model.visual.positional_embedding
-        
+
         if pos_embed.shape[0] != num_patches:
             cls_pos = pos_embed[:1]
             patch_pos = pos_embed[1:]
@@ -322,87 +328,80 @@ def compute_textspan_attention_decomposition(model, image, text_embedding, num_l
             patch_pos = F.interpolate(patch_pos, size=(new_size, new_size), mode='bilinear', align_corners=False)
             patch_pos = patch_pos.permute(0, 2, 3, 1).reshape(-1, embed_dim)
             pos_embed = torch.cat([cls_pos, patch_pos], dim=0)
-        
+
         x = x + pos_embed.unsqueeze(0).to(x.dtype)
-        
+
         if hasattr(model.visual, 'ln_pre'):
             x = model.visual.ln_pre(x)
-        
+
         x = x.permute(1, 0, 2)  # [N+1, B, embed_dim]
-        
-        # Collect attention contributions
-        attention_contributions = []
-        start_layer = max(0, num_blocks - num_last_layers)
-        
-        for layer_idx, block in enumerate(blocks):
+
+        # Collect attention-weighted features from ALL layers
+        all_attention_features = []
+
+        for block in blocks:
             attn_module = block.attn
             x_normed = block.ln_1(x)
-            
+
             qkv = F.linear(x_normed, attn_module.in_proj_weight, attn_module.in_proj_bias)
             q, k, v = qkv.chunk(3, dim=-1)
-            
+
             seq_len, bsz, _ = q.shape
             q = q.contiguous().view(seq_len, bsz * num_heads, head_dim).transpose(0, 1)
             k = k.contiguous().view(seq_len, bsz * num_heads, head_dim).transpose(0, 1)
             v = v.contiguous().view(seq_len, bsz * num_heads, head_dim).transpose(0, 1)
-            
+
             scale = float(head_dim) ** -0.5
             attn_weights = torch.bmm(q * scale, k.transpose(-2, -1))
-            attn_weights = F.softmax(attn_weights, dim=-1)  # [bsz*heads, seq_len, seq_len]
-            
-            if layer_idx >= start_layer:
-                # Get attention from CLS (position 0) to all spatial tokens
-                # attn_weights: [bsz*heads, seq_len, seq_len]
-                cls_attn = attn_weights[:, 0, 1:]  # [bsz*heads, N_patches]
-                
-                # Reshape to [bsz, heads, N_patches] and average over heads
-                cls_attn = cls_attn.view(bsz, num_heads, -1).mean(dim=1)  # [bsz, N_patches]
-                
-                attention_contributions.append(cls_attn)
-            
-            # Continue forward pass
+            attn_weights = F.softmax(attn_weights, dim=-1)
+
+            # Compute attention output (attention-weighted values)
             attn_output = torch.bmm(attn_weights, v)
             attn_output = attn_output.transpose(0, 1).contiguous().view(seq_len, bsz, embed_dim)
             attn_output = attn_module.out_proj(attn_output)
-            
+
+            # Store the attention-weighted features for spatial tokens
+            # attn_output shape: [seq_len, bsz, embed_dim]
+            spatial_features = attn_output[1:, :, :]  # Exclude CLS token
+            all_attention_features.append(spatial_features)
+
+            # Continue forward pass
             x = x + attn_output
             x = x + block.mlp(block.ln_2(x))
-        
-        # Now weight the final spatial features by aggregated attention
-        if len(attention_contributions) > 0:
-            # Sum attention contributions
-            attn_map = torch.stack(attention_contributions, dim=0).sum(dim=0)  # [B, N_patches]
-        else:
-            attn_map = torch.ones(batch_size, grid_h * grid_w, device=device)
-        
-        # Get final spatial features
-        spatial_tokens = x[1:, :, :].permute(1, 0, 2)  # [B, N_patches, embed_dim]
-        spatial_features = model.visual.ln_post(spatial_tokens)
+
+        # Stack features from all layers: [layers, spatial_tokens, bsz, embed_dim]
+        all_attention_features = torch.stack(all_attention_features, dim=0)
+
+        # Sum over layers as in official implementation
+        attention_sum = all_attention_features.sum(dim=0)  # [spatial_tokens, bsz, embed_dim]
+
+        # Apply final projection to match text embedding dimensionality
+        attention_sum = attention_sum.permute(1, 0, 2)  # [bsz, spatial_tokens, embed_dim]
+
+        # Apply visual projection if it exists (to match text embedding space)
         if model.visual.proj is not None:
-            spatial_features = spatial_features @ model.visual.proj
-        spatial_features = F.normalize(spatial_features, dim=-1)
-        
-        # Compute text similarity
-        text_sim = torch.einsum('bd,bnd->bn', text_embedding, spatial_features)  # [B, N_patches]
-        
-        # Combine attention and text similarity
-        # TextSpan uses attention to weight the contribution, then projects onto text
-        heatmap = attn_map * text_sim  # [B, N_patches]
-        
-        # Reshape to grid
-        heatmap = heatmap.reshape(1, 1, grid_h, grid_w)
-        
-        # Apply ReLU (only positive contributions)
-        heatmap = torch.clamp(heatmap, min=0)
-        
-        # Normalize to [0, 1]
-        heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
-        
-        # Upsample to image size
+            attention_sum = attention_sum @ model.visual.proj  # [bsz, spatial_tokens, proj_dim]
+
+        # Normalize like text embeddings
+        attention_sum = F.normalize(attention_sum, dim=-1)
+
+        # Multiply by text embedding: [bsz, spatial_tokens, proj_dim] @ [proj_dim] -> [bsz, spatial_tokens]
+        text_emb = text_embedding.squeeze(0)  # [proj_dim]
+        heatmap_flat = torch.matmul(attention_sum, text_emb)  # [bsz, spatial_tokens]
+
+        # Reshape to spatial grid
+        heatmap = heatmap_flat.view(bsz, grid_h, grid_w)
+
+        # Add channel dimension and upsample
+        heatmap = heatmap.unsqueeze(1).float()
         heatmap = F.interpolate(
             heatmap, size=image.shape[-2:], mode='bilinear', align_corners=False
         )
-        
+
+        # Apply ReLU and normalize
+        heatmap = torch.clamp(heatmap, min=0)
+        heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
+
         return heatmap[0, 0].detach().cpu()
 
 
