@@ -116,293 +116,322 @@ def compute_rollout_attention(all_layer_matrices, start_layer=0):
 # Based on: "Interpreting CLIP's Image Representation via Text-Based Decomposition"
 # Paper: https://openreview.net/forum?id=5Ca9sSzuDp
 # Reference: https://github.com/yossigandelsman/clip_text_span
+#
+# Key insight from official code (transformer.py forward_per_head):
+# - They apply out_proj.weight PER HEAD before summing, via:
+#   einsum("bnmhc,dhc->bnmhd", attn_v, out_proj_weight.reshape(embed_dim, heads, head_dim))
+# - This gives each head's contribution in embed_dim space (768), not head_dim (64)
+# - The result has shape [b, n, m, h, embed_dim]
+# - They take CLS query (n=0): [b, m, h, embed_dim]
+# - After normalizing through ln_post and projecting through visual.proj: [b, m, h, proj_dim]
+# - Sum over layers and heads, take patches only: [b, num_patches, proj_dim]
+# - Multiply by classifier and subtract mean across classes
 # =============================================================================
 
-def compute_textspan_spatial(model, image, text_embedding, num_last_layers=4):
+
+class TextSpanExtractor:
     """
-    Compute TextSpan spatial decomposition for segmentation.
+    Extracts per-head, per-spatial-position attention contributions from CLIP.
     
-    TextSpan decomposes CLIP's image representation by:
-    1. Extracting patch-level features from transformer layers
-    2. Projecting them onto the text embedding direction
-    3. Aggregating across layers
+    This replicates the PRSLogger from the official TextSpan implementation:
+    https://github.com/yossigandelsman/clip_text_span/blob/main/prs_hook.py
     
-    This follows the spatial decomposition approach from the paper
-    "Interpreting CLIP's Image Representation via Text-Based Decomposition"
-    
-    Args:
-        model: LeWrapper model
-        image: Input image tensor [1, 3, H, W]
-        text_embedding: Text embedding tensor [1, D] (normalized)
-        num_last_layers: Number of last layers to aggregate (default 4 as in paper)
-    
-    Returns:
-        Heatmap tensor [H, W] normalized to [0, 1]
+    CRITICAL: The official implementation applies out_proj.weight per-head, giving
+    each head's contribution in embed_dim space. This is different from standard
+    attention where heads are merged after computing attn @ v.
     """
-    device = image.device
-    blocks = model.visual.transformer.resblocks
-    num_blocks = len(blocks)
-    embed_dim = blocks[0].attn.embed_dim
-    num_heads = blocks[0].attn.num_heads
-    head_dim = embed_dim // num_heads
     
-    with torch.no_grad():
-        # Get the input to the transformer
-        x = model.visual.conv1(image)  # [B, embed_dim, H', W']
+    def __init__(self, model, device):
+        self.model = model
+        self.device = device
+        self.attentions = []  # Will store per-layer attention contributions
+        
+    def reinit(self):
+        self.attentions = []
+        
+    @torch.no_grad()
+    def extract_attention_contributions(self, image):
+        """
+        Extract per-head attention contributions for each spatial position.
+        
+        Following the official implementation (transformer.py forward_per_head):
+        - Compute attn @ v per head
+        - Apply out_proj.weight per head: einsum("bhnc,dhc->bhnd")
+        - This gives [batch, heads, seq, embed_dim] per layer
+        
+        Returns:
+            attentions: [batch, num_layers, num_positions, num_heads, embed_dim]
+            representation: [batch, proj_dim] - the final CLS representation
+            grid_size: (grid_h, grid_w) - spatial dimensions
+        """
+        self.reinit()
+        
+        visual = self.model.visual
+        blocks = visual.transformer.resblocks
+        
+        embed_dim = blocks[0].attn.embed_dim
+        num_heads = blocks[0].attn.num_heads
+        head_dim = embed_dim // num_heads
+        
+        # Reshape out_proj.weight for per-head application
+        # out_proj.weight: [embed_dim, embed_dim] -> [embed_dim, num_heads, head_dim]
+        
+        # Patch embedding
+        x = visual.conv1(image)  # [B, C, H', W']
         grid_h, grid_w = x.shape[2], x.shape[3]
-        x = x.reshape(x.shape[0], x.shape[1], -1)  # [B, embed_dim, N]
-        x = x.permute(0, 2, 1)  # [B, N, embed_dim]
+        x = x.reshape(x.shape[0], x.shape[1], -1).permute(0, 2, 1)  # [B, N, D]
+        
+        batch_size = x.shape[0]
+        num_patches = x.shape[1]
+        seq_len = num_patches + 1  # +1 for CLS
         
         # Add class token
-        batch_size = x.shape[0]
-        class_token = model.visual.class_embedding.unsqueeze(0).unsqueeze(0)
-        class_token = class_token.expand(batch_size, -1, -1).to(x.dtype)
-        x = torch.cat([class_token, x], dim=1)  # [B, N+1, embed_dim]
+        cls_token = visual.class_embedding.unsqueeze(0).expand(batch_size, -1, -1)
+        x = torch.cat([cls_token, x], dim=1)  # [B, N+1, D]
         
-        # Add positional embedding (handle dynamic size)
-        num_patches = x.shape[1]
-        if hasattr(model.visual, 'original_pos_embed'):
-            pos_embed = model.visual.original_pos_embed
-        else:
-            pos_embed = model.visual.positional_embedding
-        
-        # Resize positional embedding if needed
-        if pos_embed.shape[0] != num_patches:
-            cls_pos = pos_embed[:1]  # [1, embed_dim]
-            patch_pos = pos_embed[1:]  # [N_orig, embed_dim]
-            orig_size = int(math.sqrt(patch_pos.shape[0]))
-            new_size = int(math.sqrt(num_patches - 1))
-            patch_pos = patch_pos.reshape(1, orig_size, orig_size, -1).permute(0, 3, 1, 2)
-            patch_pos = F.interpolate(patch_pos, size=(new_size, new_size), mode='bilinear', align_corners=False)
-            patch_pos = patch_pos.permute(0, 2, 3, 1).reshape(-1, embed_dim)
-            pos_embed = torch.cat([cls_pos, patch_pos], dim=0)
-        
-        x = x + pos_embed.unsqueeze(0).to(x.dtype)
-        
-        # Pre-normalization (if exists)
-        if hasattr(model.visual, 'ln_pre'):
-            x = model.visual.ln_pre(x)
-        
-        # Process through transformer blocks
-        x = x.permute(1, 0, 2)  # [N+1, B, embed_dim] for transformer
-        
-        # Collect features from last N layers
-        spatial_contributions = []
-        start_layer = max(0, num_blocks - num_last_layers)
-        
-        for layer_idx, block in enumerate(blocks):
-            # Get attention weights and values for this block
-            attn_module = block.attn
-            
-            # Layer norm
-            x_normed = block.ln_1(x)
-            
-            # Compute Q, K, V
-            qkv = F.linear(x_normed, attn_module.in_proj_weight, attn_module.in_proj_bias)
-            q, k, v = qkv.chunk(3, dim=-1)
-            
-            seq_len, bsz, _ = q.shape
-            q = q.contiguous().view(seq_len, bsz * num_heads, head_dim).transpose(0, 1)
-            k = k.contiguous().view(seq_len, bsz * num_heads, head_dim).transpose(0, 1)
-            v = v.contiguous().view(seq_len, bsz * num_heads, head_dim).transpose(0, 1)
-            
-            # Compute attention weights
-            scale = float(head_dim) ** -0.5
-            attn_weights = torch.bmm(q * scale, k.transpose(-2, -1))
-            attn_weights = F.softmax(attn_weights, dim=-1)
-            
-            # Compute attention output
-            attn_output = torch.bmm(attn_weights, v)
-            attn_output = attn_output.transpose(0, 1).contiguous().view(seq_len, bsz, embed_dim)
-            attn_output = attn_module.out_proj(attn_output)
-            
-            # Residual connection
-            x = x + attn_output
-            
-            # MLP block
-            x = x + block.mlp(block.ln_2(x))
-            
-            # For last N layers, compute spatial contribution
-            if layer_idx >= start_layer:
-                # Get spatial tokens (exclude CLS)
-                spatial_tokens = x[1:, :, :]  # [N_patches, B, embed_dim]
-                spatial_tokens = spatial_tokens.permute(1, 0, 2)  # [B, N_patches, embed_dim]
-                
-                # Apply layer normalization and projection
-                spatial_features = model.visual.ln_post(spatial_tokens)  # [B, N_patches, embed_dim]
-                if model.visual.proj is not None:
-                    spatial_features = spatial_features @ model.visual.proj  # [B, N_patches, proj_dim]
-                
-                # Normalize features
-                spatial_features = F.normalize(spatial_features, dim=-1)
-                
-                # Compute similarity with text embedding at each position
-                # text_embedding: [1, D], spatial_features: [B, N_patches, D]
-                similarity = torch.einsum('bd,bnd->bn', text_embedding, spatial_features)  # [B, N_patches]
-                
-                spatial_contributions.append(similarity)
-        
-        # Aggregate contributions across layers
-        if len(spatial_contributions) > 0:
-            # Sum contributions from all layers
-            heatmap = torch.stack(spatial_contributions, dim=0).sum(dim=0)  # [B, N_patches]
-        else:
-            # Fallback: use final layer only
-            spatial_tokens = x[1:, :, :]
-            spatial_tokens = spatial_tokens.permute(1, 0, 2)
-            spatial_features = model.visual.ln_post(spatial_tokens)
-            if model.visual.proj is not None:
-                spatial_features = spatial_features @ model.visual.proj
-            spatial_features = F.normalize(spatial_features, dim=-1)
-            heatmap = torch.einsum('bd,bnd->bn', text_embedding, spatial_features)
-        
-        # Reshape to grid
-        heatmap = heatmap.reshape(1, 1, grid_h, grid_w)
-        
-        # Normalize to [0, 1]
-        heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
-        
-        # Upsample to image size
-        heatmap = F.interpolate(
-            heatmap, size=image.shape[-2:], mode='bilinear', align_corners=False
-        )
-        
-        return heatmap[0, 0].detach().cpu()
-
-
-def compute_textspan_attention_decomposition(model, image, text_embedding, num_last_layers=None):
-    """
-    TextSpan implementation following the official approach.
-
-    Based on: https://github.com/yossigandelsman/clip_text_span/blob/main/demo.ipynb
-
-    The official implementation does:
-    attention_map = attentions[0, :, 1:, :].sum(axis=(0,2)) @ class_embedding.T
-
-    This means it:
-    1. Takes attention-weighted features from ALL layers
-    2. Sums across layers and heads
-    3. Multiplies by text embeddings
-
-    Args:
-        model: LeWrapper model
-        image: Input image tensor [1, 3, H, W]
-        text_embedding: Text embedding tensor [1, D] (normalized)
-        num_last_layers: IGNORED - uses ALL layers like official implementation
-
-    Returns:
-        Heatmap tensor [H, W] normalized to [0, 1]
-    """
-    device = image.device
-    blocks = model.visual.transformer.resblocks
-    embed_dim = blocks[0].attn.embed_dim
-    num_heads = blocks[0].attn.num_heads
-    head_dim = embed_dim // num_heads
-
-    with torch.no_grad():
-        # Get the input to the transformer
-        x = model.visual.conv1(image)
-        grid_h, grid_w = x.shape[2], x.shape[3]
-        x = x.reshape(x.shape[0], x.shape[1], -1)
-        x = x.permute(0, 2, 1)
-
-        # Add class token
-        batch_size = x.shape[0]
-        class_token = model.visual.class_embedding.unsqueeze(0).unsqueeze(0)
-        class_token = class_token.expand(batch_size, -1, -1).to(x.dtype)
-        x = torch.cat([class_token, x], dim=1)
-
-        # Add positional embedding
-        num_patches = x.shape[1]
-        if hasattr(model.visual, 'original_pos_embed'):
-            pos_embed = model.visual.original_pos_embed
-        else:
-            pos_embed = model.visual.positional_embedding
-
-        if pos_embed.shape[0] != num_patches:
+        # Positional embedding (with interpolation if needed)
+        pos_embed = visual.positional_embedding
+        if pos_embed.shape[0] != x.shape[1]:
             cls_pos = pos_embed[:1]
             patch_pos = pos_embed[1:]
             orig_size = int(math.sqrt(patch_pos.shape[0]))
-            new_size = int(math.sqrt(num_patches - 1))
-            patch_pos = patch_pos.reshape(1, orig_size, orig_size, -1).permute(0, 3, 1, 2)
-            patch_pos = F.interpolate(patch_pos, size=(new_size, new_size), mode='bilinear', align_corners=False)
+            patch_pos = patch_pos.reshape(1, orig_size, orig_size, embed_dim).permute(0, 3, 1, 2)
+            patch_pos = F.interpolate(patch_pos, size=(grid_h, grid_w), mode="bilinear", align_corners=False)
             patch_pos = patch_pos.permute(0, 2, 3, 1).reshape(-1, embed_dim)
             pos_embed = torch.cat([cls_pos, patch_pos], dim=0)
-
+        
         x = x + pos_embed.unsqueeze(0).to(x.dtype)
-
-        if hasattr(model.visual, 'ln_pre'):
-            x = model.visual.ln_pre(x)
-
-        x = x.permute(1, 0, 2)  # [N+1, B, embed_dim]
-
-        # Collect attention-weighted features from ALL layers
-        all_attention_features = []
-
+        
+        if hasattr(visual, "ln_pre"):
+            x = visual.ln_pre(x)
+        
+        # Transformer expects [seq, batch, dim]
+        x = x.permute(1, 0, 2)
+        
+        # Process through transformer blocks and collect attention contributions
         for block in blocks:
-            attn_module = block.attn
-            x_normed = block.ln_1(x)
-
-            qkv = F.linear(x_normed, attn_module.in_proj_weight, attn_module.in_proj_bias)
+            x_norm = block.ln_1(x)
+            
+            # Compute Q, K, V
+            qkv = F.linear(x_norm, block.attn.in_proj_weight, block.attn.in_proj_bias)
             q, k, v = qkv.chunk(3, dim=-1)
-
-            seq_len, bsz, _ = q.shape
-            q = q.contiguous().view(seq_len, bsz * num_heads, head_dim).transpose(0, 1)
-            k = k.contiguous().view(seq_len, bsz * num_heads, head_dim).transpose(0, 1)
-            v = v.contiguous().view(seq_len, bsz * num_heads, head_dim).transpose(0, 1)
-
-            scale = float(head_dim) ** -0.5
-            attn_weights = torch.bmm(q * scale, k.transpose(-2, -1))
-            attn_weights = F.softmax(attn_weights, dim=-1)
-
-            # Compute attention output (attention-weighted values)
-            attn_output = torch.bmm(attn_weights, v)
-            attn_output = attn_output.transpose(0, 1).contiguous().view(seq_len, bsz, embed_dim)
-            attn_output = attn_module.out_proj(attn_output)
-
-            # Store the attention-weighted features for spatial tokens
-            # attn_output shape: [seq_len, bsz, embed_dim]
-            spatial_features = attn_output[1:, :, :]  # Exclude CLS token
-            all_attention_features.append(spatial_features)
-
-            # Continue forward pass
-            x = x + attn_output
+            
+            seq_len_curr, bsz, _ = q.shape
+            
+            # Reshape for multi-head attention: [bsz, num_heads, seq, head_dim]
+            q = q.view(seq_len_curr, bsz, num_heads, head_dim).permute(1, 2, 0, 3)
+            k = k.view(seq_len_curr, bsz, num_heads, head_dim).permute(1, 2, 0, 3)
+            v = v.view(seq_len_curr, bsz, num_heads, head_dim).permute(1, 2, 0, 3)
+            
+            # Compute attention weights: [bsz, num_heads, seq, seq]
+            attn = torch.matmul(q * (head_dim ** -0.5), k.transpose(-2, -1))
+            attn = F.softmax(attn, dim=-1)
+            
+            # Compute attn @ v per head: [bsz, num_heads, seq, head_dim]
+            attn_v = torch.matmul(attn, v)
+            
+            # KEY STEP: Apply out_proj.weight PER HEAD (as in official forward_per_head)
+            # out_proj.weight: [embed_dim, embed_dim] -> reshape to [embed_dim, num_heads, head_dim]
+            out_weight = block.attn.out_proj.weight  # [embed_dim, embed_dim]
+            out_weight_per_head = out_weight.view(embed_dim, num_heads, head_dim)
+            
+            # Apply per-head: einsum("bhnc,dhc->bhnd") 
+            # Input: attn_v [bsz, heads, seq, head_dim]
+            # Weight: [embed_dim, heads, head_dim]
+            # Output: [bsz, heads, seq, embed_dim]
+            contrib = torch.einsum("bhnc,dhc->bhnd", attn_v, out_weight_per_head)
+            
+            # Extract CLS query's attention output (what CLS receives from each position)
+            # contrib shape: [bsz, num_heads, seq, embed_dim]
+            # We want CLS query (position 0 in query dimension)... but actually this is attn @ v,
+            # which is what each query position receives. For CLS, this is already included.
+            # 
+            # Actually, re-reading the official code: they capture at "attn.out.post" which is
+            # the output after applying out_proj per head. The shape is [b, n, m, h, d] where
+            # n is query positions and m is key positions... but that's for extended_attn_v.
+            #
+            # Let me re-read: in forward_per_head, they do:
+            # x = torch.einsum("bhnm,bhmc->bnmhc", attn, v)  # [b, n, m, h, head_dim]
+            # Then apply out_proj per head:
+            # x = torch.einsum("bnmhc,dhc->bnmhd", x, out_proj_weight)  # [b, n, m, h, embed_dim]
+            #
+            # So it's not just attn @ v, but preserving the key dimension m!
+            # This means for each query position n and key position m, we have the contribution.
+            
+            # Let me redo this properly:
+            # attn: [bsz, heads, seq_n, seq_m] (query x key)
+            # v: [bsz, heads, seq_m, head_dim]
+            # We want: [bsz, seq_n, seq_m, heads, head_dim] via einsum("bhnm,bhmc->bnmhc", attn, v)
+            extended_attn_v = torch.einsum("bhnm,bhmc->bnmhc", attn, v)
+            
+            # Apply out_proj per head: [bsz, seq_n, seq_m, heads, embed_dim]
+            contrib = torch.einsum("bnmhc,dhc->bnmhd", extended_attn_v, out_weight_per_head)
+            
+            # Extract CLS query (n=0): [bsz, seq_m, heads, embed_dim]
+            cls_contrib = contrib[:, 0, :, :, :]
+            
+            # Add bias term distributed across positions and heads
+            bias_term = block.attn.out_proj.bias  # [embed_dim]
+            seq_m = cls_contrib.shape[1]
+            bias_distributed = bias_term.view(1, 1, 1, embed_dim) / (seq_m * num_heads)
+            cls_contrib = cls_contrib + bias_distributed
+            
+            # Store: [bsz, seq_m, num_heads, embed_dim]
+            self.attentions.append(cls_contrib.cpu())
+            
+            # Continue forward pass (standard attention output)
+            attn_out = torch.matmul(attn, v)  # [bsz, heads, seq, head_dim]
+            attn_out = attn_out.permute(2, 0, 1, 3).reshape(seq_len_curr, bsz, embed_dim)
+            attn_out = block.attn.out_proj(attn_out)
+            
+            x = x + attn_out
             x = x + block.mlp(block.ln_2(x))
+        
+        # Final representation (CLS token after ln_post and proj)
+        x = x.permute(1, 0, 2)  # [B, N+1, D]
+        x_cls = visual.ln_post(x[:, 0, :])  # [B, D]
+        
+        if visual.proj is not None:
+            representation = x_cls @ visual.proj
+        else:
+            representation = x_cls
+            
+        # Stack attentions: [bsz, num_layers, seq_m, num_heads, embed_dim]
+        attentions = torch.stack(self.attentions, dim=1)
+        
+        return attentions, representation, (grid_h, grid_w)
 
-        # Stack features from all layers: [layers, spatial_tokens, bsz, embed_dim]
-        all_attention_features = torch.stack(all_attention_features, dim=0)
 
-        # Sum over layers as in official implementation
-        attention_sum = all_attention_features.sum(dim=0)  # [spatial_tokens, bsz, embed_dim]
+def compute_textspan_with_classifier(
+    model,
+    image,
+    classifier,  # [proj_dim, num_classes] - text embeddings transposed
+    target_class_idx,
+    device,
+):
+    """
+    TextSpan segmentation following the official implementation.
+    
+    This is the key function that replicates:
+    https://github.com/yossigandelsman/clip_text_span/blob/main/compute_segmentations.py
+    
+    Args:
+        model: CLIP model (LeWrapper)
+        image: Input image tensor [1, 3, H, W]
+        classifier: Matrix of text embeddings [proj_dim, num_classes]
+        target_class_idx: Index of the target class
+        device: torch device
+        
+    Returns:
+        heatmap: [H, W] tensor normalized to [0, 1]
+    """
+    extractor = TextSpanExtractor(model, device)
+    visual = model.visual
+    
+    with torch.no_grad():
+        # Extract attention contributions
+        attentions, representation, (grid_h, grid_w) = extractor.extract_attention_contributions(image)
+        
+        # attentions: [bsz, num_layers, seq_m, num_heads, embed_dim]
+        bsz = attentions.shape[0]
+        num_layers = attentions.shape[1]
+        seq_m = attentions.shape[2]
+        num_heads = attentions.shape[3]
+        embed_dim = attentions.shape[4]
+        
+        num_patches = seq_m - 1  # Exclude CLS position
+        
+        # Move to device
+        attentions = attentions.to(device).float()
+        
+        # Take patch positions only (exclude CLS at position 0): [bsz, layers, patches, heads, embed_dim]
+        patch_attentions = attentions[:, :, 1:, :, :]
+        
+        # Sum over layers (dim=1) and heads (dim=3): [bsz, patches, embed_dim]
+        attentions_collapse = patch_attentions.sum(dim=(1, 3))
+        
+        # Project through ln_post and visual.proj
+        # Note: The official impl does more complex normalization accounting for
+        # contribution to the mean. Here we use the simpler approach.
+        attentions_projected = visual.ln_post(attentions_collapse)
+        if visual.proj is not None:
+            attentions_projected = attentions_projected @ visual.proj  # [bsz, patches, proj_dim]
+        
+        # Normalize by representation norm (as in official finalize())
+        rep_norm = representation.norm(dim=-1, keepdim=True)  # [bsz, 1]
+        attentions_projected = attentions_projected / rep_norm.unsqueeze(1)
+        
+        # Multiply by classifier to get class activations per patch
+        class_heatmap = attentions_projected @ classifier.float()  # [bsz, patches, num_classes]
+        class_heatmap = class_heatmap.cpu().numpy()
+        
+        # Key step: subtract mean across all classes
+        # This is what makes TextSpan work - relative activation
+        results = []
+        for i in range(bsz):
+            # Get activation for target class
+            target_activation = class_heatmap[i, :, target_class_idx]
+            # Subtract mean activation across all classes
+            mean_activation = np.mean(class_heatmap[i], axis=1)
+            normalized = target_activation - mean_activation
+            results.append(normalized)
+        
+        results = np.stack(results, axis=0)  # [bsz, num_patches]
+        results = torch.from_numpy(results).reshape(bsz, grid_h, grid_w)
+        
+        # Upsample to image size
+        patch_size = model.visual.conv1.kernel_size[0]
+        Res = F.interpolate(
+            results[:, None].float(),
+            scale_factor=patch_size,
+            mode="bilinear",
+            align_corners=False,
+        ).to(device)
+        
+        # Clip negative values (as in official impl)
+        Res = torch.clip(Res, 0, Res.max())
+        
+        # Normalize to [0, 1]
+        Res = (Res - Res.min()) / (Res.max() - Res.min() + 1e-8)
+        
+        return Res[0, 0].cpu()
 
-        # Apply final projection to match text embedding dimensionality
-        attention_sum = attention_sum.permute(1, 0, 2)  # [bsz, spatial_tokens, embed_dim]
 
-        # Apply visual projection if it exists (to match text embedding space)
-        if model.visual.proj is not None:
-            attention_sum = attention_sum @ model.visual.proj  # [bsz, spatial_tokens, proj_dim]
-
-        # Normalize like text embeddings
-        attention_sum = F.normalize(attention_sum, dim=-1)
-
-        # Multiply by text embedding: [bsz, spatial_tokens, proj_dim] @ [proj_dim] -> [bsz, spatial_tokens]
-        text_emb = text_embedding.squeeze(0)  # [proj_dim]
-        heatmap_flat = torch.matmul(attention_sum, text_emb)  # [bsz, spatial_tokens]
-
-        # Reshape to spatial grid
-        heatmap = heatmap_flat.view(bsz, grid_h, grid_w)
-
-        # Add channel dimension and upsample
-        heatmap = heatmap.unsqueeze(1).float()
-        heatmap = F.interpolate(
-            heatmap, size=image.shape[-2:], mode='bilinear', align_corners=False
-        )
-
-        # Apply ReLU and normalize
-        heatmap = torch.clamp(heatmap, min=0)
-        heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
-
-        return heatmap[0, 0].detach().cpu()
+def compute_textspan_simple(
+    model,
+    image,
+    text_embedding,
+    all_text_embeddings,
+    target_class_idx,
+):
+    """
+    Simplified TextSpan that uses the provided text embeddings as classifier.
+    
+    This is a convenience wrapper that builds the classifier from all_text_embeddings
+    and calls compute_textspan_with_classifier.
+    
+    Args:
+        model: CLIP model (LeWrapper)
+        image: Input image tensor [1, 3, H, W]
+        text_embedding: Target class embedding [1, embed_dim] (not used directly, for API compat)
+        all_text_embeddings: All class embeddings [num_classes, embed_dim]
+        target_class_idx: Index of the target class
+        
+    Returns:
+        heatmap: [H, W] tensor normalized to [0, 1]
+    """
+    device = image.device
+    
+    # Build classifier matrix: [embed_dim, num_classes]
+    classifier = all_text_embeddings.T  # [embed_dim, num_classes]
+    
+    return compute_textspan_with_classifier(
+        model=model,
+        image=image,
+        classifier=classifier,
+        target_class_idx=target_class_idx,
+        device=device,
+    )
 
 
 def compute_attention_rollout_reference(model, image, start_layer=1):
@@ -862,12 +891,6 @@ def main():
                         choices=['mean', 'max', 'min'],
                         help='How to fuse attention heads for rollout')
     
-    # TextSpan settings
-    parser.add_argument('--textspan_num_layers', type=int, default=4,
-                        help='Number of last layers to aggregate for TextSpan (default 4 as in paper)')
-    parser.add_argument('--textspan_mode', type=str, default='attention',
-                        choices=['spatial', 'attention'],
-                        help='TextSpan mode: spatial (direct projection) or attention (attention-weighted)')
     
     # Threshold settings
     parser.add_argument('--threshold_mode', type=str, default='mean',
@@ -1060,18 +1083,17 @@ def main():
                 heatmaps['rollout'] = heatmap_resized
             
             # --- TEXTSPAN (Text-Based Decomposition) ---
+            # Following official implementation: uses ALL class embeddings as classifier
+            # and subtracts mean activation across classes
             if 'textspan' in methods:
-                if args.textspan_mode == 'spatial':
-                    heatmap = compute_textspan_spatial(
-                        model, img_t, text_emb_1x, 
-                        num_last_layers=args.textspan_num_layers
-                    )
-                else:
-                    heatmap = compute_textspan_attention_decomposition(
-                        model, img_t, text_emb_1x,
-                        num_last_layers=args.textspan_num_layers
-                    )
-                # Already at image resolution, resize to GT size
+                heatmap = compute_textspan_simple(
+                    model=model,
+                    image=img_t,
+                    text_embedding=text_emb_1x,
+                    all_text_embeddings=all_text_embs,
+                    target_class_idx=cls_idx,
+                )
+                # Already at image resolution from interpolation, resize to GT size
                 heatmap_resized = F.interpolate(
                     heatmap.view(1, 1, heatmap.shape[-2], heatmap.shape[-1]),
                     size=(H_gt, W_gt),
