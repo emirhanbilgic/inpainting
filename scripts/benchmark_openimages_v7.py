@@ -616,19 +616,19 @@ def main():
                 print(f"Using Kaggle images directory: {images_dir}")
                 
                 # List what's in the directory to help debug
-            try:
-                dir_contents = os.listdir(images_dir)
-                print(f"Contents of {images_dir}: {dir_contents[:10]}... (showing first 10)")
-                
-                # Check for CSV files in the directory
-                csv_files = [f for f in dir_contents if f.endswith('.csv')]
-                if csv_files:
-                    print(f"Found CSV files in images directory: {csv_files}")
-                    # Use the first CSV file found (likely the metadata)
-                    images_metadata_csv = os.path.join(images_dir, csv_files[0])
-                    print(f"Using images metadata CSV: {images_metadata_csv}")
-            except Exception as e:
-                print(f"Warning: Could not list directory contents: {e}")
+                try:
+                    dir_contents = os.listdir(images_dir)
+                    print(f"Contents of {images_dir}: {dir_contents[:10]}... (showing first 10)")
+                    
+                    # Check for CSV files in the directory
+                    csv_files = [f for f in dir_contents if f.endswith('.csv')]
+                    if csv_files:
+                        print(f"Found CSV files in images directory: {csv_files}")
+                        # Use the first CSV file found (likely the metadata)
+                        images_metadata_csv = os.path.join(images_dir, csv_files[0])
+                        print(f"Using images metadata CSV: {images_metadata_csv}")
+                except Exception as e:
+                    print(f"Warning: Could not list directory contents: {e}")
         
         # If still no CSV found, search more broadly in /kaggle/input
         if images_metadata_csv is None:
@@ -638,29 +638,65 @@ def main():
                 "/kaggle/input/open-images-v7",
                 "/kaggle/input",
             ]
-            for search_dir in search_dirs:
-                if os.path.isdir(search_dir):
-                    try:
-                        for root, dirs, files in os.walk(search_dir):
-                            for fname in files:
-                                if fname.endswith('.csv'):
-                                    # Check if it looks like an images metadata file
-                                    fname_lower = fname.lower()
-                                    # Skip annotation files
-                                    if 'point-labels' in fname_lower or 'annotation' in fname_lower:
-                                        continue
-                                    # Look for image metadata files
-                                    if any(keyword in fname_lower for keyword in ['image', 'metadata', 'train', 'validation', 'test']):
-                                        potential_csv = os.path.join(root, fname)
-                                        images_metadata_csv = potential_csv
-                                        print(f"Found potential images metadata CSV: {images_metadata_csv}")
-                                        break
-                            if images_metadata_csv:
-                                break
-                    except Exception as e:
-                        print(f"Warning: Error searching {search_dir}: {e}")
-                if images_metadata_csv:
+            
+            # Also check if images path itself is a CSV in different locations
+            for base_dir in ["/kaggle/input/open-images", "/kaggle/input/open-images-v7"]:
+                potential_csv = os.path.join(base_dir, "images")
+                if os.path.isfile(potential_csv) and potential_csv.endswith('.csv'):
+                    images_metadata_csv = potential_csv
+                    print(f"Found images CSV at: {images_metadata_csv}")
                     break
+                # Or check if it's images.csv
+                potential_csv2 = os.path.join(base_dir, "images.csv")
+                if os.path.isfile(potential_csv2):
+                    images_metadata_csv = potential_csv2
+                    print(f"Found images.csv at: {images_metadata_csv}")
+                    break
+            
+            # If still not found, walk through directories
+            if images_metadata_csv is None:
+                for search_dir in search_dirs:
+                    if os.path.isdir(search_dir):
+                        try:
+                            # First, check direct files in the directory
+                            if os.path.isdir(search_dir):
+                                for fname in os.listdir(search_dir):
+                                    if fname.endswith('.csv'):
+                                        fname_lower = fname.lower()
+                                        # Skip annotation files
+                                        if 'point-labels' in fname_lower or 'annotation' in fname_lower:
+                                            continue
+                                        # Look for image metadata files
+                                        if any(keyword in fname_lower for keyword in ['image', 'metadata', 'train', 'validation', 'test']):
+                                            potential_csv = os.path.join(search_dir, fname)
+                                            images_metadata_csv = potential_csv
+                                            print(f"Found images metadata CSV: {images_metadata_csv}")
+                                            break
+                                if images_metadata_csv:
+                                    break
+                            
+                            # Then walk recursively
+                            if images_metadata_csv is None:
+                                for root, dirs, files in os.walk(search_dir):
+                                    for fname in files:
+                                        if fname.endswith('.csv'):
+                                            # Check if it looks like an images metadata file
+                                            fname_lower = fname.lower()
+                                            # Skip annotation files
+                                            if 'point-labels' in fname_lower or 'annotation' in fname_lower:
+                                                continue
+                                            # Look for image metadata files
+                                            if any(keyword in fname_lower for keyword in ['image', 'metadata', 'train', 'validation', 'test']):
+                                                potential_csv = os.path.join(root, fname)
+                                                images_metadata_csv = potential_csv
+                                                print(f"Found potential images metadata CSV: {images_metadata_csv}")
+                                                break
+                                    if images_metadata_csv:
+                                        break
+                        except Exception as e:
+                            print(f"Warning: Error searching {search_dir}: {e}")
+                    if images_metadata_csv:
+                        break
     else:
         if args.data_root is None:
             raise ValueError("--data_root is required when not using Kaggle dataset")
