@@ -652,74 +652,51 @@ def main():
         # If still no CSV found, search more broadly in /kaggle/input
         if images_metadata_csv is None:
             print("Searching for images metadata CSV in /kaggle/input...")
-            search_dirs = [
+            
+            # Define exact filenames to look for (including no extension)
+            target_filenames = ['images', 'images.csv', 'images.tsv']
+            
+            # specific directories to check
+            search_roots = [
                 "/kaggle/input/open-images",
                 "/kaggle/input/open-images-v7",
-                "/kaggle/input",
+                "/kaggle/input"
             ]
             
-            # Also check if images path itself is a CSV in different locations
-            for base_dir in ["/kaggle/input/open-images", "/kaggle/input/open-images-v7"]:
-                potential_csv = os.path.join(base_dir, "images")
-                if os.path.isfile(potential_csv) and potential_csv.endswith('.csv'):
-                    images_metadata_csv = potential_csv
-                    print(f"Found images CSV at: {images_metadata_csv}")
-                    break
-                # Or check if it's images.csv
-                potential_csv2 = os.path.join(base_dir, "images.csv")
-                if os.path.isfile(potential_csv2):
-                    images_metadata_csv = potential_csv2
-                    print(f"Found images.csv at: {images_metadata_csv}")
-                    break
-            
-            # If still not found, walk through directories
-            if images_metadata_csv is None:
-                for search_dir in search_dirs:
-                    if os.path.isdir(search_dir):
-                        try:
-                            # First, check direct files in the directory
-                            if os.path.isdir(search_dir):
-                                for fname in os.listdir(search_dir):
-                                    if fname.endswith('.csv'):
-                                        fname_lower = fname.lower()
-                                        # Skip annotation files
-                                        if 'point-labels' in fname_lower or 'annotation' in fname_lower:
-                                            continue
-                                        # Look for image metadata files
-                                        if any(keyword in fname_lower for keyword in ['image', 'metadata', 'train', 'validation', 'test']):
-                                            potential_csv = os.path.join(search_dir, fname)
-                                            images_metadata_csv = potential_csv
-                                            print(f"Found images metadata CSV: {images_metadata_csv}")
-                                            break
-                                if images_metadata_csv:
-                                    break
-                            
-                            # Then walk recursively
-                            if images_metadata_csv is None:
-                                for root, dirs, files in os.walk(search_dir):
-                                    for fname in files:
-                                        if fname.endswith('.csv'):
-                                            # Check if it looks like an images metadata file
-                                            fname_lower = fname.lower()
-                                            # Skip annotation files
-                                            if 'point-labels' in fname_lower or 'annotation' in fname_lower:
-                                                continue
-                                            # Look for image metadata files
-                                            if any(keyword in fname_lower for keyword in ['image', 'metadata', 'train', 'validation', 'test']):
-                                                potential_csv = os.path.join(root, fname)
-                                                images_metadata_csv = potential_csv
-                                                print(f"Found potential images metadata CSV: {images_metadata_csv}")
-                                                break
-                                    if images_metadata_csv:
-                                        break
-                        except Exception as e:
-                            print(f"Warning: Error searching {search_dir}: {e}")
-                    if images_metadata_csv:
+            for root_dir in search_roots:
+                if not os.path.exists(root_dir):
+                    continue
+                    
+                # 1. Check direct children of these directories
+                for target in target_filenames:
+                    potential_path = os.path.join(root_dir, target)
+                    if os.path.isfile(potential_path):
+                        images_metadata_csv = potential_path
+                        print(f"Found images metadata file: {images_metadata_csv}")
                         break
+                if images_metadata_csv: break
+                
+                # 2. Walk through subdirectories
+                if root_dir == "/kaggle/input": # Limit recursion depth/scope for root
+                    continue 
+                    
+                for root, dirs, files in os.walk(root_dir):
+                    for fname in files:
+                        if fname in target_filenames or (fname.endswith('.csv') and 'image' in fname.lower() and 'point' not in fname.lower()):
+                            potential_path = os.path.join(root, fname)
+                            # Verify it's not the annotation file
+                            if "point-labels" not in fname:
+                                images_metadata_csv = potential_path
+                                print(f"Found potential images metadata CSV: {images_metadata_csv}")
+                                break
+                    if images_metadata_csv: break
+                if images_metadata_csv: break
+
     else:
+        # ... [Keep existing local file logic lines 428-436] ...
         if args.data_root is None:
             raise ValueError("--data_root is required when not using Kaggle dataset")
-        if os.path.isfile(args.data_root) and args.data_root.endswith('.csv'):
+        if os.path.isfile(args.data_root): # Accept file even if no .csv extension
             images_metadata_csv = args.data_root
             print(f"Using images metadata CSV: {images_metadata_csv}")
         elif os.path.isdir(args.data_root):
@@ -734,26 +711,26 @@ def main():
         try:
             print(f"Loading image metadata from: {images_metadata_csv}")
             
-            # Try to detect if it's TSV (tab-separated) or CSV
-            # Check first line to see separator
-            with open(images_metadata_csv, 'r', encoding='utf-8') as f:
-                first_line = f.readline()
-                if '\t' in first_line:
-                    sep = '\t'
-                    print("Detected TSV format (tab-separated)")
-                else:
-                    sep = ','
-                    print("Detected CSV format (comma-separated)")
-            
-            # First read a sample to check structure
-            img_df_sample = pd.read_csv(images_metadata_csv, sep=sep, nrows=100)
-            print(f"CSV structure check - Loaded {len(img_df_sample)} sample rows")
-            print(f"Columns: {img_df_sample.columns.tolist()}")
-            
-            # Now read the full file
+            # Detect separator (CSV vs TSV)
+            sep = ',' # Default
+            try:
+                with open(images_metadata_csv, 'r', encoding='utf-8', errors='ignore') as f:
+                    first_line = f.readline()
+                    if '\t' in first_line and len(first_line.split('\t')) > len(first_line.split(',')):
+                        sep = '\t'
+                        print("Detected TSV format (tab-separated)")
+                    else:
+                        sep = ','
+                        print("Detected CSV format (comma-separated)")
+            except Exception as e:
+                print(f"Warning: Could not detect separator, defaulting to comma: {e}")
+
+            # Read the file using the detected separator
+            # Use 'python' engine for more robust handling of files without extensions
             print("Loading full metadata file (this may take a moment for large files)...")
-            img_df = pd.read_csv(images_metadata_csv, sep='\t')
+            img_df = pd.read_csv(images_metadata_csv, sep=sep, engine='python', on_bad_lines='skip')
             print(f"Loaded {len(img_df)} image metadata entries")
+        
             
             # Find image_id and url columns (case-insensitive, handle various formats)
             id_col = None
