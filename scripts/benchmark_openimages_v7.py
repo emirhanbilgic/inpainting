@@ -534,7 +534,7 @@ def main():
         if not TFDS_AVAILABLE:
             raise ImportError("tensorflow_datasets is required for --use_tfds. Install with: pip install tensorflow-datasets")
         print("Loading OpenImagesV7 validation set using TensorFlow Datasets...")
-        dataset = tfds.load(‘open_images/v7’, split='validation')
+        dataset = tfds.load('open_images/v7', split='validation')
         # Convert to dictionary for easy lookup
         tfds_dict = {ex['image/id'].numpy().decode('utf-8'): ex for ex in dataset}
         print(f"Loaded {len(tfds_dict)} images from tfds")
