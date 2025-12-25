@@ -612,10 +612,10 @@ def main():
                 else:
                     print(f"Warning: {KAGGLE_IMAGES_DIR} is a file but not CSV")
             elif os.path.isdir(KAGGLE_IMAGES_DIR):
-            images_dir = KAGGLE_IMAGES_DIR
-            print(f"Using Kaggle images directory: {images_dir}")
-            
-            # List what's in the directory to help debug
+                images_dir = KAGGLE_IMAGES_DIR
+                print(f"Using Kaggle images directory: {images_dir}")
+                
+                # List what's in the directory to help debug
             try:
                 dir_contents = os.listdir(images_dir)
                 print(f"Contents of {images_dir}: {dir_contents[:10]}... (showing first 10)")
