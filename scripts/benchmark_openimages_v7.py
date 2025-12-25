@@ -620,13 +620,33 @@ def main():
                     dir_contents = os.listdir(images_dir)
                     print(f"Contents of {images_dir}: {dir_contents[:10]}... (showing first 10)")
                     
-                    # Check for CSV files in the directory
-                    csv_files = [f for f in dir_contents if f.endswith('.csv')]
+                    # Check for CSV/TSV files in the directory
+                    csv_files = [f for f in dir_contents if f.endswith(('.csv', '.tsv'))]
                     if csv_files:
-                        print(f"Found CSV files in images directory: {csv_files}")
-                        # Use the first CSV file found (likely the metadata)
+                        print(f"Found CSV/TSV files in images directory: {csv_files}")
+                        # Use the first CSV/TSV file found (likely the metadata)
                         images_metadata_csv = os.path.join(images_dir, csv_files[0])
                         print(f"Using images metadata CSV: {images_metadata_csv}")
+                    else:
+                        # Check if there's a file without extension that might be the metadata
+                        # Sometimes the file is just named "images" or similar
+                        print("No CSV/TSV files found, checking for files without extension...")
+                        for fname in dir_contents:
+                            fpath = os.path.join(images_dir, fname)
+                            if os.path.isfile(fpath) and not fname.startswith('.'):
+                                # Try to read first line to see if it's CSV-like
+                                try:
+                                    with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
+                                        first_line = f.readline()
+                                        # Check if it contains expected column names
+                                        if 'image_id' in first_line.lower() or 'original_url' in first_line.lower():
+                                            images_metadata_csv = fpath
+                                            print(f"Found images metadata file (no extension): {images_metadata_csv}")
+                                            print(f"First line preview: {first_line[:100]}...")
+                                            break
+                                except Exception as e:
+                                    # Skip files that can't be read
+                                    continue
                 except Exception as e:
                     print(f"Warning: Could not list directory contents: {e}")
         
@@ -713,10 +733,28 @@ def main():
     image_id_to_url = {}
     if images_metadata_csv:
         try:
-            print("Loading image metadata...")
-            img_df = pd.read_csv(images_metadata_csv)
+            print(f"Loading image metadata from: {images_metadata_csv}")
+            
+            # Try to detect if it's TSV (tab-separated) or CSV
+            # Check first line to see separator
+            with open(images_metadata_csv, 'r', encoding='utf-8') as f:
+                first_line = f.readline()
+                if '\t' in first_line:
+                    sep = '\t'
+                    print("Detected TSV format (tab-separated)")
+                else:
+                    sep = ','
+                    print("Detected CSV format (comma-separated)")
+            
+            # First read a sample to check structure
+            img_df_sample = pd.read_csv(images_metadata_csv, sep=sep, nrows=100)
+            print(f"CSV structure check - Loaded {len(img_df_sample)} sample rows")
+            print(f"Columns: {img_df_sample.columns.tolist()}")
+            
+            # Now read the full file
+            print("Loading full metadata file (this may take a moment for large files)...")
+            img_df = pd.read_csv(images_metadata_csv, sep=sep)
             print(f"Loaded {len(img_df)} image metadata entries")
-            print(f"Columns: {img_df.columns.tolist()}")
             
             # Find image_id and url columns (case-insensitive, handle various formats)
             id_col = None
@@ -729,6 +767,7 @@ def main():
                     url_col = col
             
             if id_col and url_col:
+                print(f"Using columns: image_id='{id_col}', url='{url_col}'")
                 for _, row in img_df.iterrows():
                     img_id = str(row[id_col]).strip()
                     url_val = row[url_col]
@@ -737,12 +776,20 @@ def main():
                         if url and url != 'nan' and url.startswith('http'):
                             image_id_to_url[img_id] = url
                 print(f"Mapped {len(image_id_to_url)} image IDs to URLs")
+                
+                # Show sample
+                if len(image_id_to_url) > 0:
+                    sample_ids = list(image_id_to_url.keys())[:3]
+                    print(f"Sample image IDs from metadata: {sample_ids}")
             else:
-                print(f"Warning: Could not find image_id or url columns.")
+                print(f"ERROR: Could not find image_id or url columns.")
                 print(f"  Looking for columns with 'image_id'/'imageid' and 'original_url'")
                 print(f"  Found columns: {img_df.columns.tolist()}")
+                print(f"  Please check the file structure")
         except Exception as e:
-            print(f"Warning: Could not load image metadata: {e}")
+            print(f"ERROR: Could not load image metadata: {e}")
+            import traceback
+            traceback.print_exc()
     
     # Filter to images that exist (either as files or have URLs)
     valid_image_ids = []
