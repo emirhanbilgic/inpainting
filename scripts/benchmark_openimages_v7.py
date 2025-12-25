@@ -526,12 +526,24 @@ def main():
     # Find annotations CSV
     if args.annotations_csv is None:
         if use_kaggle:
-            # Try to find CSV in Kaggle dataset
+            # Try to find CSV in Kaggle dataset - search more thoroughly
             possible_csv_paths = [
                 "/kaggle/input/open-images/oidv7-val-annotations-point-labels.csv",
                 "/kaggle/input/oidv7-val-annotations-point-labels/oidv7-val-annotations-point-labels.csv",
+                "/kaggle/input/open-images/annotations_bbox/oidv7-val-annotations-point-labels.csv",
                 os.path.join(KAGGLE_ANNOTATIONS_DIR, "oidv7-val-annotations-point-labels.csv"),
             ]
+            
+            # Also search recursively in /kaggle/input for the CSV file
+            if not any(os.path.exists(p) for p in possible_csv_paths):
+                print("Searching for annotations CSV in /kaggle/input...")
+                for root, dirs, files in os.walk("/kaggle/input"):
+                    for file in files:
+                        if "point-labels" in file.lower() and file.endswith(".csv"):
+                            found_path = os.path.join(root, file)
+                            possible_csv_paths.append(found_path)
+                            print(f"Found potential CSV: {found_path}")
+            
             for path in possible_csv_paths:
                 if os.path.exists(path):
                     args.annotations_csv = path
@@ -539,20 +551,44 @@ def main():
                     break
         
         if args.annotations_csv is None:
+            print("\n" + "="*60)
+            print("ERROR: Could not find annotations CSV file")
+            print("="*60)
+            print("\nPlease provide the path using --annotations_csv")
+            print("\nTo find the file, try:")
+            print("  !find /kaggle/input -name '*point-labels*.csv'")
+            print("\nOr check common locations:")
+            print("  - /kaggle/input/open-images/oidv7-val-annotations-point-labels.csv")
+            print("  - /kaggle/input/oidv7-val-annotations-point-labels/oidv7-val-annotations-point-labels.csv")
+            print("\nExample usage:")
+            print("  --annotations_csv /kaggle/input/your-dataset-name/oidv7-val-annotations-point-labels.csv")
+            print("="*60)
             raise ValueError("--annotations_csv is required. Please provide path to oidv7-val-annotations-point-labels.csv")
     
-    # Find class descriptions CSV
+    # Find class descriptions CSV (optional)
     if args.class_descriptions_csv is None and use_kaggle:
         possible_desc_paths = [
             "/kaggle/input/open-images/oidv7-class-descriptions.csv",
             "/kaggle/input/oidv7-class-descriptions/oidv7-class-descriptions.csv",
+            "/kaggle/input/open-images/dict/oidv7-class-descriptions.csv",
             os.path.join(KAGGLE_DICT_DIR, "oidv7-class-descriptions.csv"),
         ]
+        
+        # Search recursively if not found
+        if not any(os.path.exists(p) for p in possible_desc_paths):
+            for root, dirs, files in os.walk("/kaggle/input"):
+                for file in files:
+                    if "class-descriptions" in file.lower() and file.endswith(".csv"):
+                        found_path = os.path.join(root, file)
+                        possible_desc_paths.append(found_path)
+        
         for path in possible_desc_paths:
             if os.path.exists(path):
                 args.class_descriptions_csv = path
                 print(f"Auto-detected class descriptions: {path}")
                 break
+        else:
+            print("Note: Class descriptions CSV not found (optional, will use TextLabel or label IDs)")
     
     # Load annotations
     image_annotations, label_to_name = load_openimages_annotations(
