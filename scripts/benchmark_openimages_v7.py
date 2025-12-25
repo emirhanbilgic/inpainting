@@ -521,49 +521,19 @@ def main():
     preprocess = LePreprocess(preprocess=preprocess, image_size=args.image_size)
     
     # Determine if using Kaggle dataset
-    use_kaggle = args.use_kaggle or os.path.exists(KAGGLE_IMAGES_DIR)
+    use_kaggle = args.use_kaggle or os.path.exists("/kaggle/input")
     
-    # Find annotations CSV
-    if args.annotations_csv is None:
-        if use_kaggle:
-            # Try to find CSV in Kaggle dataset - search more thoroughly
-            possible_csv_paths = [
-                "/kaggle/input/open-images/oidv7-val-annotations-point-labels.csv",
-                "/kaggle/input/oidv7-val-annotations-point-labels/oidv7-val-annotations-point-labels.csv",
-                "/kaggle/input/open-images/annotations_bbox/oidv7-val-annotations-point-labels.csv",
-                os.path.join(KAGGLE_ANNOTATIONS_DIR, "oidv7-val-annotations-point-labels.csv"),
-            ]
-            
-            # Also search recursively in /kaggle/input for the CSV file
-            if not any(os.path.exists(p) for p in possible_csv_paths):
-                print("Searching for annotations CSV in /kaggle/input...")
-                for root, dirs, files in os.walk("/kaggle/input"):
-                    for file in files:
-                        if "point-labels" in file.lower() and file.endswith(".csv"):
-                            found_path = os.path.join(root, file)
-                            possible_csv_paths.append(found_path)
-                            print(f"Found potential CSV: {found_path}")
-            
-            for path in possible_csv_paths:
-                if os.path.exists(path):
-                    args.annotations_csv = path
-                    print(f"Auto-detected annotations CSV: {path}")
+    # 1. BROAD SEARCH FOR ANNOTATIONS
+    if args.annotations_csv is None and use_kaggle:
+        for root, _, files in os.walk("/kaggle/input"):
+            for file in files:
+                if "point-labels" in file.lower() and file.endswith(".csv"):
+                    args.annotations_csv = os.path.join(root, file)
                     break
-        
-        if args.annotations_csv is None:
-            print("\n" + "="*60)
-            print("ERROR: Could not find annotations CSV file")
-            print("="*60)
-            print("\nPlease provide the path using --annotations_csv")
-            print("\nTo find the file, try:")
-            print("  !find /kaggle/input -name '*point-labels*.csv'")
-            print("\nOr check common locations:")
-            print("  - /kaggle/input/open-images/oidv7-val-annotations-point-labels.csv")
-            print("  - /kaggle/input/oidv7-val-annotations-point-labels/oidv7-val-annotations-point-labels.csv")
-            print("\nExample usage:")
-            print("  --annotations_csv /kaggle/input/your-dataset-name/oidv7-val-annotations-point-labels.csv")
-            print("="*60)
-            raise ValueError("--annotations_csv is required. Please provide path to oidv7-val-annotations-point-labels.csv")
+            if args.annotations_csv: break
+    
+    if args.annotations_csv is None:
+        raise ValueError("Could not find point-labels CSV. Please provide --annotations_csv")
     
     # Find class descriptions CSV (optional)
     if args.class_descriptions_csv is None and use_kaggle:
@@ -595,361 +565,83 @@ def main():
         args.annotations_csv, 
         class_descriptions_csv=args.class_descriptions_csv
     )
-    
-    # =========================================================================
-    # REPLACEMENT: Content-Based Metadata Scanner
-    # =========================================================================
-    
-    images_metadata_csv = None
-    images_dir = None
-    sep = ','  # Default separator, will be detected when file is found
-    
-    print(f"Scanning /kaggle/input for image metadata (looking for 'original_url' column)...")
-    
-    # Walk through the entire input directory
-    if os.path.exists("/kaggle/input"):
-        checked_files = 0
-        skipped_files = 0
-        
-        for root, dirs, files in os.walk("/kaggle/input"):
-            # Stop if we already found it
-            if images_metadata_csv: 
-                break
-                
+
+    # 2. INDEX ALL LOCAL IMAGES (The "Fast Scan" Fix)
+    # OpenImages on Kaggle is often nested like /images/0/a/f/0af...jpg
+    print("Building local image index (this may take a minute)...")
+    image_path_map = {}
+    if use_kaggle:
+        search_root = "/kaggle/input"
+        for root, _, files in os.walk(search_root):
             for file in files:
-                # Skip obvious non-metadata files to save time
-                if file.endswith(('.jpg', '.png', '.jpeg', '.json', '.zip', '.tar', '.gz')):
-                    skipped_files += 1
-                    continue
-                    
-                file_path = os.path.join(root, file)
-                checked_files += 1
-                
-                # Print progress every 100 files
-                if checked_files % 100 == 0:
-                    print(f"  Checked {checked_files} files, skipped {skipped_files}...")
-                
-                try:
-                    # Try to read just the first line to check headers
-                    # Use binary mode first to avoid encoding issues, then decode
-                    with open(file_path, 'rb') as f:
-                        first_bytes = f.read(1024)  # Read first 1KB
-                        if len(first_bytes) == 0:
-                            continue
-                        
-                        # Try to decode as text
-                        try:
-                            first_line = first_bytes.decode('utf-8', errors='ignore').split('\n')[0]
-                        except:
-                            first_line = first_bytes.decode('latin-1', errors='ignore').split('\n')[0]
-                    
-                    first_line_lower = first_line.lower()
-                    
-                    # Check for the specific column signature of the OpenImages 'images' table
-                    # Look for 'original_url' (or variations) and 'image_id'
-                    has_url = 'original_url' in first_line_lower or 'url' in first_line_lower
-                    has_id = 'image_id' in first_line_lower or 'imageid' in first_line_lower
-                    
-                    # Also check if it looks like a CSV/TSV header (not just random text)
-                    looks_like_header = ('\t' in first_line or ',' in first_line) and len(first_line.split()) > 2
-                    
-                    if has_url and has_id and looks_like_header:
-                        images_metadata_csv = file_path
-                        print(f"SUCCESS: Found metadata file at: {images_metadata_csv}")
-                        print(f"  File size: {os.path.getsize(file_path) / (1024*1024):.2f} MB")
-                        print(f"  First line preview: {first_line[:200]}...")
-                        
-                        # Detect separator (comma vs tab) based on this first line
-                        if '\t' in first_line and first_line.count('\t') > first_line.count(','):
-                            sep = '\t'
-                            print("Detected format: TSV (Tab-Separated)")
-                        else:
-                            sep = ','
-                            print("Detected format: CSV (Comma-Separated)")
-                        break
-                except Exception as e:
-                    # Ignore permission errors or unreadable binary files
-                    skipped_files += 1
-                    continue
-        
-        print(f"Scan complete. Checked {checked_files} files, skipped {skipped_files} files.")
-        if not images_metadata_csv:
-            print("WARNING: No metadata file found matching criteria (must contain 'original_url' and 'image_id' columns)")
-            print("\nListing sample files found in /kaggle/input (first 20 non-image files):")
-            sample_count = 0
-            for root, dirs, files in os.walk("/kaggle/input"):
-                for file in files:
-                    if not file.endswith(('.jpg', '.png', '.jpeg', '.zip', '.tar', '.gz')):
-                        file_path = os.path.join(root, file)
-                        rel_path = os.path.relpath(file_path, "/kaggle/input")
-                        print(f"  {rel_path}")
-                        sample_count += 1
-                        if sample_count >= 20:
-                            break
-                if sample_count >= 20:
-                    break
-
-    # 4. Handle Local Directory (Fallback) - Look for image directories
-    if not images_metadata_csv:
-        # First check args.data_root
-        if args.data_root:
-            if os.path.isfile(args.data_root):
-                images_metadata_csv = args.data_root
-                print(f"Using images metadata CSV from --data_root: {images_metadata_csv}")
-                # Detect separator for this file too
-                try:
-                    with open(images_metadata_csv, 'r', encoding='utf-8', errors='ignore') as f:
-                        first_line = f.readline()
-                        if '\t' in first_line and first_line.count('\t') > first_line.count(','):
-                            sep = '\t'
-                        else:
-                            sep = ','
-                except: pass
-            elif os.path.isdir(args.data_root):
-                images_dir = args.data_root
-                print(f"Using local images directory: {images_dir}")
-        # If not found, search for common image directory patterns in /kaggle/input
-        elif os.path.exists("/kaggle/input"):
-            print("Searching for image directories in /kaggle/input...")
-            potential_dirs = [
-                "/kaggle/input/open-images/images",
-                "/kaggle/input/open-images-v7/images",
-                "/kaggle/input/open-images/validation",
-                "/kaggle/input/open-images-v7/validation",
-            ]
-            
-            # First check the predefined paths
-            for potential_dir in potential_dirs:
-                if os.path.isdir(potential_dir):
-                    # Verify it actually has image files
-                    try:
-                        files = os.listdir(potential_dir)
-                        image_files = [f for f in files if f.endswith(('.jpg', '.jpeg', '.png'))]
-                        if len(image_files) > 0:
-                            images_dir = potential_dir
-                            print(f"Using Kaggle images directory: {images_dir} (found {len(image_files)} image files)")
-                            break
-                    except:
-                        continue
-            
-            # If still not found, do a limited search for directories with many image files
-            if not images_dir:
-                print("  Searching for directories containing image files...")
-                search_depth = 0
-                max_depth = 2  # Limit search depth to avoid long scans
-                for root, dirs, files in os.walk("/kaggle/input"):
-                    # Limit depth
-                    depth = root.replace("/kaggle/input", "").count(os.sep)
-                    if depth > max_depth:
-                        dirs[:] = []  # Don't recurse deeper
-                        continue
-                    
-                    # Check if this directory has image files
-                    image_files = [f for f in files if f.endswith(('.jpg', '.jpeg', '.png'))]
-                    if len(image_files) > 10:  # If it has a reasonable number of images
-                        images_dir = root
-                        print(f"Found image directory with {len(image_files)} image files: {images_dir}")
-                        break
+                if file.lower().endswith(('.jpg', '.jpeg', '.png')):
+                    img_id = os.path.splitext(file)[0]
+                    image_path_map[img_id] = os.path.join(root, file)
+    elif args.data_root and os.path.isdir(args.data_root):
+        for root, _, files in os.walk(args.data_root):
+            for file in files:
+                if file.lower().endswith(('.jpg', '.jpeg', '.png')):
+                    img_id = os.path.splitext(file)[0]
+                    image_path_map[img_id] = os.path.join(root, file)
     
-    # Handle case where --data_root is required but not provided (non-Kaggle)
-    if not images_metadata_csv and not images_dir and not use_kaggle:
-        if args.data_root is None:
-            raise ValueError("--data_root is required when not using Kaggle dataset")
-        else:
-            raise ValueError(f"--data_root must be a directory or CSV file, got: {args.data_root}")
+    print(f"Indexed {len(image_path_map)} local images.")
 
-    # 5. Load the Metadata
+    # 3. SEARCH FOR METADATA CSV (To download missing images)
     image_id_to_url = {}
-    if images_metadata_csv:
-        try:
-            print(f"Loading metadata from: {images_metadata_csv}")
-            
-            # Use 'python' engine to handle files without extensions or bad lines
-            # Pass the 'sep' we detected earlier
-            img_df = pd.read_csv(
-                images_metadata_csv, 
-                sep=sep, 
-                engine='python', 
-                on_bad_lines='skip'
-            )
-            
-            # Normalize column names
-            img_df.columns = [c.strip().lower() for c in img_df.columns]
-            
-            # Find the ID and URL columns
-            id_col = next((c for c in img_df.columns if c in ['image_id', 'imageid']), None)
-            url_col = next((c for c in img_df.columns if 'original_url' in c), None)
-            
-            if id_col and url_col:
-                print(f"Mapping ID '{id_col}' to URL '{url_col}'...")
-                valid_rows = img_df.dropna(subset=[id_col, url_col])
-                image_id_to_url = dict(zip(valid_rows[id_col].astype(str), valid_rows[url_col]))
-                print(f"Successfully mapped {len(image_id_to_url)} image URLs")
-            else:
-                print(f"ERROR: Found file but missing columns. Available: {img_df.columns}")
-                
-        except Exception as e:
-            print(f"ERROR loading metadata: {e}")
-            import traceback
-            traceback.print_exc()
-            
-    # =========================================================================
-    # END REPLACEMENT
-    # =========================================================================
-    
-    # Filter to images that exist (either as files or have URLs)
+    print("Scanning for image metadata CSV...")
+    metadata_file = None
+    if use_kaggle:
+        for root, _, files in os.walk("/kaggle/input"):
+            for file in files:
+                if file.endswith('.csv') and 'images' in file.lower():
+                    # Check if this CSV has URLs
+                    try:
+                        sample_df = pd.read_csv(os.path.join(root, file), nrows=5)
+                        cols = [c.lower() for c in sample_df.columns]
+                        if any('url' in c for c in cols) and any('id' in c for c in cols):
+                            metadata_file = os.path.join(root, file)
+                            print(f"Found metadata: {metadata_file}")
+                            
+                            # Load only necessary columns to save memory
+                            id_col = next(c for c in cols if 'id' in c)
+                            url_col = next(c for c in cols if 'url' in c)
+                            # Find original column names (case-sensitive)
+                            original_cols = {c.lower(): c for c in sample_df.columns}
+                            id_col_orig = original_cols[id_col]
+                            url_col_orig = original_cols[url_col]
+                            
+                            full_meta = pd.read_csv(metadata_file, usecols=[id_col_orig, url_col_orig])
+                            image_id_to_url = dict(zip(full_meta[id_col_orig].astype(str), full_meta[url_col_orig]))
+                            break
+                    except: continue
+            if metadata_file: break
+
+    # 4. VALIDATE DATA OVERLAP
     valid_image_ids = []
-    
-    # If we have images_dir, do a diagnostic check first
-    if images_dir and os.path.isdir(images_dir):
-        print(f"Scanning image directory: {images_dir}")
-        # Sample a few image IDs to check what format they use
-        sample_ids = list(image_annotations.keys())[:10]
-        found_sample = []
-        for sample_id in sample_ids:
-            possible_paths = [
-                os.path.join(images_dir, f"{sample_id}.jpg"),
-                os.path.join(images_dir, f"{sample_id}.png"),
-                os.path.join(images_dir, "validation", f"{sample_id}.jpg"),
-                os.path.join(images_dir, "validation", f"{sample_id}.png"),
-                # Kaggle structure might have subdirectories (first 2-3 chars of image_id)
-                os.path.join(images_dir, f"{sample_id[:2]}", f"{sample_id}.jpg"),
-                os.path.join(images_dir, f"{sample_id[:2]}", f"{sample_id}.png"),
-                os.path.join(images_dir, f"{sample_id[:3]}", f"{sample_id}.jpg"),
-                os.path.join(images_dir, f"{sample_id[:3]}", f"{sample_id}.png"),
-            ]
-            for path in possible_paths:
-                if os.path.exists(path):
-                    found_sample.append(path)
-                    print(f"  Found sample image: {os.path.relpath(path, images_dir)}")
-                    break
-        
-        if not found_sample:
-            print(f"  WARNING: No sample images found. Listing directory structure...")
-            try:
-                dir_contents = os.listdir(images_dir)
-                print(f"  Directory contains {len(dir_contents)} items (showing first 20): {dir_contents[:20]}")
-                # Check if there are subdirectories
-                subdirs = [d for d in dir_contents if os.path.isdir(os.path.join(images_dir, d))]
-                if subdirs:
-                    print(f"  Subdirectories found: {subdirs[:10]}")
-            except Exception as e:
-                print(f"  Could not list directory: {e}")
-    
     for image_id in image_annotations.keys():
-        found = False
-        
-        # Try to find as file if images_dir exists
-        if images_dir:
-            possible_paths = [
-                os.path.join(images_dir, f"{image_id}.jpg"),
-                os.path.join(images_dir, f"{image_id}.png"),
-                os.path.join(images_dir, "validation", f"{image_id}.jpg"),
-                os.path.join(images_dir, "validation", f"{image_id}.png"),
-                # Kaggle structure might have subdirectories (first 2-3 chars of image_id)
-                os.path.join(images_dir, f"{image_id[:2]}", f"{image_id}.jpg"),
-                os.path.join(images_dir, f"{image_id[:2]}", f"{image_id}.png"),
-                os.path.join(images_dir, f"{image_id[:3]}", f"{image_id}.jpg"),
-                os.path.join(images_dir, f"{image_id[:3]}", f"{image_id}.png"),
-            ]
-            if any(os.path.exists(p) for p in possible_paths):
-                found = True
-        
-        # Or if we have a URL for it (we'll download on-the-fly)
-        if not found and image_id in image_id_to_url:
-            found = True
-        
-        if found:
+        if image_id in image_path_map or image_id in image_id_to_url:
             valid_image_ids.append(image_id)
+
+    print(f"Found {len(valid_image_ids)} processable images ({len(image_path_map)} local, {len(image_id_to_url)} via URL).")
+
+    if not valid_image_ids:
+        print("CRITICAL: No images found. Check if your Kaggle Dataset is fully attached.")
+        return
     
-    print(f"Found {len(valid_image_ids)} valid images out of {len(image_annotations)} with annotations")
-    
-    if len(valid_image_ids) == 0:
-        print("\n" + "="*60)
-        print("WARNING: No valid images found!")
-        print("="*60)
-        print(f"Total annotations: {len(image_annotations)}")
-        print(f"Image metadata loaded: {len(image_id_to_url)} URLs")
-        print(f"Images directory: {images_dir}")
-        print(f"Images metadata CSV: {images_metadata_csv}")
-        
-        # Show sample annotation IDs
-        sample_ann_ids = list(image_annotations.keys())[:5]
-        print(f"\nSample annotation image IDs: {sample_ann_ids}")
-        
-        # Show sample metadata IDs
-        if image_id_to_url:
-            sample_meta_ids = list(image_id_to_url.keys())[:5]
-            print(f"Sample metadata image IDs: {sample_meta_ids}")
-            
-            # Check if there's any overlap
-            overlap = set(image_annotations.keys()) & set(image_id_to_url.keys())
-            print(f"\nOverlapping IDs: {len(overlap)} out of {len(image_annotations)}")
-            if len(overlap) == 0 and len(image_id_to_url) > 0:
-                print("  ERROR: No overlap between annotation IDs and metadata IDs!")
-                print("  This suggests the image_id format might be different.")
-                if sample_ann_ids and sample_meta_ids:
-                    print(f"  Annotation ID format: {sample_ann_ids[0]}")
-                    print(f"  Metadata ID format: {sample_meta_ids[0]}")
-        else:
-            print("\nNo image metadata was loaded. Cannot download images from URLs.")
-            print("  Please check if images CSV exists in /kaggle/input/open-images/")
-        print("="*60)
-    elif image_id_to_url:
-        url_count = sum(1 for img_id in valid_image_ids if img_id in image_id_to_url)
-        file_count = len(valid_image_ids) - url_count
-        print(f"  - {url_count} images available via URL (will download on-the-fly)")
-        print(f"  - {file_count} images available as files")
-    
+    # 5. PROCESSING LOOP
     limit = args.limit if args.limit > 0 else len(valid_image_ids)
-    limit = min(limit, len(valid_image_ids))
-    print(f"Processing {limit} images...")
-    
-    # Results accumulator
-    # For each method, store list of p-mIoU scores per image-class pair
     results = {m: [] for m in methods}
-    
-    # Process images
+
     for idx, image_id in enumerate(tqdm(valid_image_ids[:limit])):
         try:
-            # Try to find image file first
-            image_path = None
-            possible_paths = [
-                os.path.join(images_dir, f"{image_id}.jpg"),
-                os.path.join(images_dir, f"{image_id}.png"),
-                os.path.join(images_dir, "validation", f"{image_id}.jpg"),
-                os.path.join(images_dir, "validation", f"{image_id}.png"),
-                # Kaggle structure might have subdirectories (first 2-3 chars)
-                os.path.join(images_dir, f"{image_id[:2]}", f"{image_id}.jpg"),
-                os.path.join(images_dir, f"{image_id[:2]}", f"{image_id}.png"),
-                os.path.join(images_dir, f"{image_id[:3]}", f"{image_id}.jpg"),
-                os.path.join(images_dir, f"{image_id[:3]}", f"{image_id}.png"),
-            ]
-            
-            for path in possible_paths:
-                if os.path.exists(path):
-                    image_path = path
-                    break
-            
-            # If not found as file, try to download from URL
-            if image_path is None and image_id in image_id_to_url:
-                try:
-                    import requests
-                    from io import BytesIO
-                    url = image_id_to_url[image_id]
-                    print(f"Downloading {image_id} from {url[:50]}...")
-                    response = requests.get(url, timeout=10)
-                    response.raise_for_status()
-                    image = Image.open(BytesIO(response.content)).convert('RGB')
-                except Exception as e:
-                    print(f"Warning: Could not download {image_id}: {e}")
-                    continue
-            elif image_path is None:
-                # No file and no URL - skip
-                continue
+            # Get Image
+            if image_id in image_path_map:
+                image = Image.open(image_path_map[image_id]).convert('RGB')
             else:
-                # Load image from file
-                image = Image.open(image_path).convert('RGB')
+                import requests
+                from io import BytesIO
+                response = requests.get(image_id_to_url[image_id], timeout=10)
+                image = Image.open(BytesIO(response.content)).convert('RGB')
             img_t = preprocess(image).unsqueeze(0).to(args.device)
             H_img, W_img = img_t.shape[-2:]
             
