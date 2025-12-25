@@ -597,104 +597,104 @@ def main():
     )
     
     # =========================================================================
-    # REPLACEMENT CODE: Robust Metadata Detection & Loading
+    # REPLACEMENT: Aggressive Metadata Search & Load
     # =========================================================================
     
-    # 1. Define potential paths for the images metadata file
-    # We look for 'images' (no extension) and 'images.csv' in likely directories
-    potential_metadata_paths = [
-        "/kaggle/input/open-images/images",              # Standard path (no extension)
-        "/kaggle/input/open-images-v7/images",           # v7 path (no extension)
-        "/kaggle/input/open-images/images.csv",          # Standard path (.csv)
-        "/kaggle/input/open-images-v7/images.csv",       # v7 path (.csv)
-        os.path.join(args.data_root if args.data_root else "", "images.csv"),
-        os.path.join(args.data_root if args.data_root else "", "images")
-    ]
-
     images_metadata_csv = None
     images_dir = None
-
-    # 2. Search for the metadata file
-    print("Searching for images metadata file...")
-    for path in potential_metadata_paths:
-        if path and os.path.exists(path) and os.path.isfile(path):
-            images_metadata_csv = path
-            print(f"Found images metadata file at: {path}")
-            break
+    
+    # 1. SEARCH: Walk through /kaggle/input to find the 'images' file
+    # Prioritize locations based on user input
+    search_paths = []
+    if os.path.exists("/kaggle/input"):
+        search_paths.append("/kaggle/input")
+        print("Scanning /kaggle/input for 'images' metadata file...")
+    
+    for search_root in search_paths:
+        if images_metadata_csv: break
+        
+        for root, dirs, files in os.walk(search_root):
+            # Check for file named exactly "images" (no extension)
+            # OR "images.csv"
+            candidates = [f for f in files if f == "images" or f == "images.csv"]
             
-    # 3. If not found, try a broader search in /kaggle/input
-    if images_metadata_csv is None and use_kaggle:
-        print("Metadata not found in standard paths. Searching /kaggle/input...")
-        for root, dirs, files in os.walk("/kaggle/input"):
-            if "images" in files:
-                images_metadata_csv = os.path.join(root, "images")
-                print(f"Found 'images' file at: {images_metadata_csv}")
-                break
-            if "images.csv" in files:
-                images_metadata_csv = os.path.join(root, "images.csv")
-                print(f"Found 'images.csv' file at: {images_metadata_csv}")
-                break
+            for cand in candidates:
+                cand_path = os.path.join(root, cand)
+                try:
+                    # quick check: is it a text file with expected headers?
+                    with open(cand_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        header = f.readline().lower()
+                        # Check for key columns to confirm this is the metadata file
+                        if 'image_id' in header or 'original_url' in header or 'imageid' in header:
+                            images_metadata_csv = cand_path
+                            print(f"SUCCESS: Found metadata file at: {images_metadata_csv}")
+                            break
+                except Exception:
+                    continue
+            
+            if images_metadata_csv: break
     
-    # 4. Handle Local Directory (if not using metadata file)
-    if images_metadata_csv is None and args.data_root and os.path.isdir(args.data_root):
-        images_dir = args.data_root
-        print(f"Using local images directory: {images_dir}")
+    # 2. FALLBACK: Check if we have a directory of images instead
+    if not images_metadata_csv:
+        if args.data_root:
+            if os.path.isfile(args.data_root):
+                images_metadata_csv = args.data_root
+                print(f"Using images metadata CSV from --data_root: {images_metadata_csv}")
+            elif os.path.isdir(args.data_root):
+                images_dir = args.data_root
+                print(f"Using local images directory: {images_dir}")
+        elif os.path.isdir("/kaggle/input/open-images/images"):
+            # rare case where 'images' is actually a folder
+            images_dir = "/kaggle/input/open-images/images"
+            print(f"Using Kaggle images directory: {images_dir}")
     
-    # 5. Handle case where --data_root is required but not provided (non-Kaggle)
-    if images_metadata_csv is None and images_dir is None and not use_kaggle:
+    # Handle case where --data_root is required but not provided (non-Kaggle)
+    if not images_metadata_csv and not images_dir and not use_kaggle:
         if args.data_root is None:
             raise ValueError("--data_root is required when not using Kaggle dataset")
-        if os.path.isfile(args.data_root):
-            images_metadata_csv = args.data_root
-            print(f"Using images metadata CSV: {images_metadata_csv}")
-        elif os.path.isdir(args.data_root):
-            images_dir = args.data_root
-            print(f"Using local images directory: {images_dir}")
         else:
             raise ValueError(f"--data_root must be a directory or CSV file, got: {args.data_root}")
 
-    # 6. Load the Metadata
+    # 3. LOAD: Read the file with robust error handling
     image_id_to_url = {}
+    
     if images_metadata_csv:
         try:
-            print(f"Loading image metadata from: {images_metadata_csv}")
+            print(f"Loading metadata from {images_metadata_csv}...")
             
-            # Read first few lines to detect separator and format
-            with open(images_metadata_csv, 'r', encoding='utf-8', errors='ignore') as f:
-                head = [next(f) for _ in range(5)]
+            # Detect separator
+            sep = ','
+            try:
+                with open(images_metadata_csv, 'r', encoding='utf-8', errors='ignore') as f:
+                    line = f.readline()
+                    if '\t' in line and line.count('\t') > line.count(','):
+                        sep = '\t'
+            except: pass
             
-            # Simple sniffer: count commas vs tabs
-            first_line = head[0]
-            if first_line.count('\t') > first_line.count(','):
-                sep = '\t'
-                print("Detected format: TSV (Tab-Separated)")
-            else:
-                sep = ','
-                print("Detected format: CSV (Comma-Separated)")
-                
-            # Load dataframe
-            # on_bad_lines='skip' helps if some rows are malformed
-            img_df = pd.read_csv(images_metadata_csv, sep=sep, on_bad_lines='skip', engine='python')
-            print(f"Loaded {len(img_df)} rows. Columns: {list(img_df.columns)}")
+            print(f"detected separator: '{'tab' if sep=='\t' else 'comma'}'")
             
-            # Normalize column names (strip whitespace, lowercase)
+            # Load with python engine to handle extension-less files
+            img_df = pd.read_csv(images_metadata_csv, sep=sep, engine='python', on_bad_lines='skip')
+            
+            # Normalize columns
             img_df.columns = [c.strip().lower() for c in img_df.columns]
+            print(f"Columns found: {list(img_df.columns)}")
             
-            # Identify ID and URL columns
-            id_col = next((c for c in img_df.columns if 'image_id' in c or 'imageid' == c), None)
+            # Find the ID and URL columns
+            id_col = next((c for c in img_df.columns if c in ['image_id', 'imageid']), None)
             url_col = next((c for c in img_df.columns if 'original_url' in c), None)
             
             if id_col and url_col:
-                print(f"Mapping ID '{id_col}' to URL '{url_col}'...")
-                # vectorizing the dictionary creation for speed
+                # Create the map
+                # Filter out rows with missing URLs
                 valid_rows = img_df.dropna(subset=[id_col, url_col])
                 image_id_to_url = dict(zip(valid_rows[id_col].astype(str), valid_rows[url_col]))
-                print(f"Successfully mapped {len(image_id_to_url)} image URLs")
+                print(f"Loaded URLs for {len(image_id_to_url)} images")
             else:
-                print(f"ERROR: Could not find required columns. Available: {img_df.columns}")
+                print("ERROR: Could not find 'image_id' or 'original_url' columns.")
                 
         except Exception as e:
-            print(f"ERROR loading metadata: {e}")
+            print(f"CRITICAL ERROR loading metadata: {e}")
             import traceback
             traceback.print_exc()
 
