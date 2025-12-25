@@ -596,33 +596,129 @@ def main():
         class_descriptions_csv=args.class_descriptions_csv
     )
     
-    # Determine image directory
+    # Determine image directory or metadata CSV
+    images_dir = None
+    images_metadata_csv = None
+    
     if use_kaggle:
-        images_dir = KAGGLE_IMAGES_DIR
-        print(f"Using Kaggle dataset: {images_dir}")
+        # Check if KAGGLE_IMAGES_DIR is actually a CSV file
+        if os.path.isfile(KAGGLE_IMAGES_DIR) and KAGGLE_IMAGES_DIR.endswith('.csv'):
+            images_metadata_csv = KAGGLE_IMAGES_DIR
+            print(f"Images path is a CSV file: {images_metadata_csv}")
+        elif os.path.isdir(KAGGLE_IMAGES_DIR):
+            images_dir = KAGGLE_IMAGES_DIR
+            print(f"Using Kaggle images directory: {images_dir}")
+            
+            # Check for metadata CSV in the directory
+            possible_metadata = [
+                os.path.join(images_dir, "images.csv"),
+                os.path.join(images_dir, "metadata.csv"),
+                os.path.join(images_dir, "train-images.csv"),
+                os.path.join(images_dir, "validation-images.csv"),
+            ]
+            for path in possible_metadata:
+                if os.path.exists(path):
+                    images_metadata_csv = path
+                    print(f"Found images metadata CSV: {path}")
+                    break
+            
+            # Also check if there's a CSV file with the same name as the directory
+            parent_dir = os.path.dirname(images_dir) if images_dir != "/kaggle/input/open-images" else "/kaggle/input/open-images"
+            for fname in os.listdir(parent_dir) if os.path.isdir(parent_dir) else []:
+                if fname.endswith('.csv') and ('image' in fname.lower() or 'metadata' in fname.lower()):
+                    potential_csv = os.path.join(parent_dir, fname)
+                    if potential_csv != images_metadata_csv:
+                        images_metadata_csv = potential_csv
+                        print(f"Found images metadata CSV in parent: {images_metadata_csv}")
+                        break
+        else:
+            # Try to find any CSV in the parent directory
+            parent_dir = "/kaggle/input/open-images"
+            if os.path.isdir(parent_dir):
+                for fname in os.listdir(parent_dir):
+                    if fname.endswith('.csv') and ('image' in fname.lower()):
+                        images_metadata_csv = os.path.join(parent_dir, fname)
+                        print(f"Found images metadata CSV: {images_metadata_csv}")
+                        break
     else:
         if args.data_root is None:
             raise ValueError("--data_root is required when not using Kaggle dataset")
-        images_dir = args.data_root
-        print(f"Using local images: {images_dir}")
+        if os.path.isfile(args.data_root) and args.data_root.endswith('.csv'):
+            images_metadata_csv = args.data_root
+            print(f"Using images metadata CSV: {images_metadata_csv}")
+        elif os.path.isdir(args.data_root):
+            images_dir = args.data_root
+            print(f"Using local images directory: {images_dir}")
+        else:
+            raise ValueError(f"--data_root must be a directory or CSV file, got: {args.data_root}")
     
-    # Filter to images that exist
+    # Load image metadata if available (for URL-based loading)
+    image_id_to_url = {}
+    if images_metadata_csv:
+        try:
+            print("Loading image metadata...")
+            img_df = pd.read_csv(images_metadata_csv)
+            print(f"Loaded {len(img_df)} image metadata entries")
+            print(f"Columns: {img_df.columns.tolist()}")
+            
+            # Find image_id and url columns (case-insensitive, handle various formats)
+            id_col = None
+            url_col = None
+            for col in img_df.columns:
+                col_lower = col.lower()
+                if ('image_id' in col_lower or col_lower == 'imageid') and id_col is None:
+                    id_col = col
+                if ('url' in col_lower and 'original' in col_lower) or col_lower == 'original_url':
+                    url_col = col
+            
+            if id_col and url_col:
+                for _, row in img_df.iterrows():
+                    img_id = str(row[id_col]).strip()
+                    url_val = row[url_col]
+                    if pd.notna(url_val):
+                        url = str(url_val).strip()
+                        if url and url != 'nan' and url.startswith('http'):
+                            image_id_to_url[img_id] = url
+                print(f"Mapped {len(image_id_to_url)} image IDs to URLs")
+            else:
+                print(f"Warning: Could not find image_id or url columns.")
+                print(f"  Looking for columns with 'image_id'/'imageid' and 'original_url'")
+                print(f"  Found columns: {img_df.columns.tolist()}")
+        except Exception as e:
+            print(f"Warning: Could not load image metadata: {e}")
+    
+    # Filter to images that exist (either as files or have URLs)
     valid_image_ids = []
     for image_id in image_annotations.keys():
-        # Try common image paths
-        possible_paths = [
-            os.path.join(images_dir, f"{image_id}.jpg"),
-            os.path.join(images_dir, f"{image_id}.png"),
-            os.path.join(images_dir, "validation", f"{image_id}.jpg"),
-            os.path.join(images_dir, "validation", f"{image_id}.png"),
-            # Kaggle structure might have subdirectories
-            os.path.join(images_dir, f"{image_id[:2]}", f"{image_id}.jpg"),
-            os.path.join(images_dir, f"{image_id[:2]}", f"{image_id}.png"),
-        ]
-        if any(os.path.exists(p) for p in possible_paths):
+        found = False
+        
+        # Try to find as file if images_dir exists
+        if images_dir:
+            possible_paths = [
+                os.path.join(images_dir, f"{image_id}.jpg"),
+                os.path.join(images_dir, f"{image_id}.png"),
+                os.path.join(images_dir, "validation", f"{image_id}.jpg"),
+                os.path.join(images_dir, "validation", f"{image_id}.png"),
+                # Kaggle structure might have subdirectories (first 2-3 chars of image_id)
+                os.path.join(images_dir, f"{image_id[:2]}", f"{image_id}.jpg"),
+                os.path.join(images_dir, f"{image_id[:2]}", f"{image_id}.png"),
+                os.path.join(images_dir, f"{image_id[:3]}", f"{image_id}.jpg"),
+                os.path.join(images_dir, f"{image_id[:3]}", f"{image_id}.png"),
+            ]
+            if any(os.path.exists(p) for p in possible_paths):
+                found = True
+        
+        # Or if we have a URL for it (we'll download on-the-fly)
+        if not found and image_id in image_id_to_url:
+            found = True
+        
+        if found:
             valid_image_ids.append(image_id)
     
     print(f"Found {len(valid_image_ids)} valid images out of {len(image_annotations)} with annotations")
+    if image_id_to_url:
+        print(f"  - {sum(1 for img_id in valid_image_ids if img_id in image_id_to_url)} images available via URL")
+        print(f"  - {sum(1 for img_id in valid_image_ids if img_id not in image_id_to_url)} images available as files")
     
     limit = args.limit if args.limit > 0 else len(valid_image_ids)
     limit = min(limit, len(valid_image_ids))
@@ -635,16 +731,18 @@ def main():
     # Process images
     for idx, image_id in enumerate(tqdm(valid_image_ids[:limit])):
         try:
-            # Find image path
+            # Try to find image file first
             image_path = None
             possible_paths = [
                 os.path.join(images_dir, f"{image_id}.jpg"),
                 os.path.join(images_dir, f"{image_id}.png"),
                 os.path.join(images_dir, "validation", f"{image_id}.jpg"),
                 os.path.join(images_dir, "validation", f"{image_id}.png"),
-                # Kaggle structure might have subdirectories (first 2 chars)
+                # Kaggle structure might have subdirectories (first 2-3 chars)
                 os.path.join(images_dir, f"{image_id[:2]}", f"{image_id}.jpg"),
                 os.path.join(images_dir, f"{image_id[:2]}", f"{image_id}.png"),
+                os.path.join(images_dir, f"{image_id[:3]}", f"{image_id}.jpg"),
+                os.path.join(images_dir, f"{image_id[:3]}", f"{image_id}.png"),
             ]
             
             for path in possible_paths:
@@ -652,11 +750,25 @@ def main():
                     image_path = path
                     break
             
-            if image_path is None:
+            # If not found as file, try to download from URL
+            if image_path is None and image_id in image_id_to_url:
+                try:
+                    import requests
+                    from io import BytesIO
+                    url = image_id_to_url[image_id]
+                    print(f"Downloading {image_id} from {url[:50]}...")
+                    response = requests.get(url, timeout=10)
+                    response.raise_for_status()
+                    image = Image.open(BytesIO(response.content)).convert('RGB')
+                except Exception as e:
+                    print(f"Warning: Could not download {image_id}: {e}")
+                    continue
+            elif image_path is None:
+                # No file and no URL - skip
                 continue
-            
-            # Load image
-            image = Image.open(image_path).convert('RGB')
+            else:
+                # Load image from file
+                image = Image.open(image_path).convert('RGB')
             img_t = preprocess(image).unsqueeze(0).to(args.device)
             H_img, W_img = img_t.shape[-2:]
             
