@@ -14,10 +14,9 @@ The evaluation focuses exclusively on classes that are actually depicted in each
 Dataset:
   OpenImagesV7 validation set contains 36,702 images with 5,827 unique class labels.
   
-  Option 1: Use TensorFlow Datasets (recommended):
-    - Install: pip install tensorflow-datasets
-    - The script will automatically download and load images using tfds
-    - Usage: --use_tfds flag
+  Option 1: Use Kaggle dataset (recommended for Kaggle):
+    - Images are in /kaggle/input/open-images/images/
+    - Use --use_kaggle flag (auto-detects if path exists)
   
   Option 2: Use local images:
     - Download images to --data_root directory
@@ -32,10 +31,10 @@ Dataset:
   
   Optional: class-descriptions.csv for better label names
 
-Usage with tfds:
+Usage on Kaggle:
   python scripts/benchmark_openimages_v7.py \
-    --annotations_csv ~/Downloads/oidv7-val-annotations-point-labels.csv \
-    --use_tfds \
+    --annotations_csv /kaggle/input/open-images/oidv7-val-annotations-point-labels.csv \
+    --use_kaggle \
     --methods rollout \
     --model_name ViT-B-16 \
     --pretrained laion2b_s34b_b88k
@@ -66,13 +65,11 @@ import torchvision.transforms as transforms
 import pandas as pd
 from collections import defaultdict
 
-# Optional: TensorFlow Datasets for loading images
-try:
-    import tensorflow_datasets as tfds
-    TFDS_AVAILABLE = True
-except ImportError:
-    TFDS_AVAILABLE = False
-    print("Warning: tensorflow_datasets not available. Install with: pip install tensorflow-datasets")
+# Kaggle dataset paths
+KAGGLE_IMAGES_DIR = "/kaggle/input/open-images/images"
+KAGGLE_ANNOTATIONS_DIR = "/kaggle/input/open-images/annotations_bbox"
+KAGGLE_LABELS_DIR = "/kaggle/input/open-images/labels"
+KAGGLE_DICT_DIR = "/kaggle/input/open-images/dict"
 
 # Add project root to path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -470,13 +467,13 @@ def main():
         description='OpenImagesV7 Point-wise Segmentation Benchmark'
     )
     parser.add_argument('--data_root', type=str, default=None,
-                        help='Root directory containing OpenImagesV7 validation images (optional if using tfds)')
-    parser.add_argument('--annotations_csv', type=str, required=True,
-                        help='Path to OpenImagesV7 validation point annotations CSV (oidv7-val-annotations-point-labels.csv)')
+                        help='Root directory containing OpenImagesV7 validation images (optional if using Kaggle)')
+    parser.add_argument('--annotations_csv', type=str, default=None,
+                        help='Path to OpenImagesV7 validation point annotations CSV. If not provided, will try to find in Kaggle dataset.')
     parser.add_argument('--class_descriptions_csv', type=str, default=None,
                         help='Optional path to class-descriptions.csv for label name mapping')
-    parser.add_argument('--use_tfds', action='store_true',
-                        help='Load images using TensorFlow Datasets (tfds) instead of local files')
+    parser.add_argument('--use_kaggle', action='store_true',
+                        help='Use Kaggle dataset structure (/kaggle/input/open-images). Auto-detected if path exists.')
     parser.add_argument('--limit', type=int, default=0,
                         help='Limit number of images (0 for all)')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
@@ -523,39 +520,73 @@ def main():
     model = LeWrapper(model, layer_index=-2)
     preprocess = LePreprocess(preprocess=preprocess, image_size=args.image_size)
     
+    # Determine if using Kaggle dataset
+    use_kaggle = args.use_kaggle or os.path.exists(KAGGLE_IMAGES_DIR)
+    
+    # Find annotations CSV
+    if args.annotations_csv is None:
+        if use_kaggle:
+            # Try to find CSV in Kaggle dataset
+            possible_csv_paths = [
+                "/kaggle/input/open-images/oidv7-val-annotations-point-labels.csv",
+                "/kaggle/input/oidv7-val-annotations-point-labels/oidv7-val-annotations-point-labels.csv",
+                os.path.join(KAGGLE_ANNOTATIONS_DIR, "oidv7-val-annotations-point-labels.csv"),
+            ]
+            for path in possible_csv_paths:
+                if os.path.exists(path):
+                    args.annotations_csv = path
+                    print(f"Auto-detected annotations CSV: {path}")
+                    break
+        
+        if args.annotations_csv is None:
+            raise ValueError("--annotations_csv is required. Please provide path to oidv7-val-annotations-point-labels.csv")
+    
+    # Find class descriptions CSV
+    if args.class_descriptions_csv is None and use_kaggle:
+        possible_desc_paths = [
+            "/kaggle/input/open-images/oidv7-class-descriptions.csv",
+            "/kaggle/input/oidv7-class-descriptions/oidv7-class-descriptions.csv",
+            os.path.join(KAGGLE_DICT_DIR, "oidv7-class-descriptions.csv"),
+        ]
+        for path in possible_desc_paths:
+            if os.path.exists(path):
+                args.class_descriptions_csv = path
+                print(f"Auto-detected class descriptions: {path}")
+                break
+    
     # Load annotations
     image_annotations, label_to_name = load_openimages_annotations(
         args.annotations_csv, 
         class_descriptions_csv=args.class_descriptions_csv
     )
     
-    # Load dataset
-    if args.use_tfds:
-        if not TFDS_AVAILABLE:
-            raise ImportError("tensorflow_datasets is required for --use_tfds. Install with: pip install tensorflow-datasets")
-        print("Loading OpenImagesV7 validation set using TensorFlow Datasets...")
-        dataset = tfds.load('open_images/v7', split='validation')
-        # Convert to dictionary for easy lookup
-        tfds_dict = {ex['image/id'].numpy().decode('utf-8'): ex for ex in dataset}
-        print(f"Loaded {len(tfds_dict)} images from tfds")
-        valid_image_ids = [img_id for img_id in image_annotations.keys() if img_id in tfds_dict]
-        print(f"Found {len(valid_image_ids)} images with annotations")
+    # Determine image directory
+    if use_kaggle:
+        images_dir = KAGGLE_IMAGES_DIR
+        print(f"Using Kaggle dataset: {images_dir}")
     else:
         if args.data_root is None:
-            raise ValueError("--data_root is required when not using --use_tfds")
-        # Filter to images that exist
-        valid_image_ids = []
-        for image_id in image_annotations.keys():
-            # Try common image paths
-            possible_paths = [
-                os.path.join(args.data_root, f"{image_id}.jpg"),
-                os.path.join(args.data_root, f"{image_id}.png"),
-                os.path.join(args.data_root, "validation", f"{image_id}.jpg"),
-                os.path.join(args.data_root, "validation", f"{image_id}.png"),
-            ]
-            if any(os.path.exists(p) for p in possible_paths):
-                valid_image_ids.append(image_id)
-        print(f"Found {len(valid_image_ids)} valid images")
+            raise ValueError("--data_root is required when not using Kaggle dataset")
+        images_dir = args.data_root
+        print(f"Using local images: {images_dir}")
+    
+    # Filter to images that exist
+    valid_image_ids = []
+    for image_id in image_annotations.keys():
+        # Try common image paths
+        possible_paths = [
+            os.path.join(images_dir, f"{image_id}.jpg"),
+            os.path.join(images_dir, f"{image_id}.png"),
+            os.path.join(images_dir, "validation", f"{image_id}.jpg"),
+            os.path.join(images_dir, "validation", f"{image_id}.png"),
+            # Kaggle structure might have subdirectories
+            os.path.join(images_dir, f"{image_id[:2]}", f"{image_id}.jpg"),
+            os.path.join(images_dir, f"{image_id[:2]}", f"{image_id}.png"),
+        ]
+        if any(os.path.exists(p) for p in possible_paths):
+            valid_image_ids.append(image_id)
+    
+    print(f"Found {len(valid_image_ids)} valid images out of {len(image_annotations)} with annotations")
     
     limit = args.limit if args.limit > 0 else len(valid_image_ids)
     limit = min(limit, len(valid_image_ids))
@@ -568,38 +599,28 @@ def main():
     # Process images
     for idx, image_id in enumerate(tqdm(valid_image_ids[:limit])):
         try:
+            # Find image path
+            image_path = None
+            possible_paths = [
+                os.path.join(images_dir, f"{image_id}.jpg"),
+                os.path.join(images_dir, f"{image_id}.png"),
+                os.path.join(images_dir, "validation", f"{image_id}.jpg"),
+                os.path.join(images_dir, "validation", f"{image_id}.png"),
+                # Kaggle structure might have subdirectories (first 2 chars)
+                os.path.join(images_dir, f"{image_id[:2]}", f"{image_id}.jpg"),
+                os.path.join(images_dir, f"{image_id[:2]}", f"{image_id}.png"),
+            ]
+            
+            for path in possible_paths:
+                if os.path.exists(path):
+                    image_path = path
+                    break
+            
+            if image_path is None:
+                continue
+            
             # Load image
-            if args.use_tfds:
-                # Load from tfds
-                ex = tfds_dict[image_id]
-                # Convert tfds image to PIL
-                # tfds returns images as uint8 arrays
-                image_array = ex['image'].numpy()
-                if image_array.dtype != np.uint8:
-                    image_array = (image_array * 255).astype(np.uint8)
-                # Handle RGB vs other formats
-                if len(image_array.shape) == 3 and image_array.shape[2] == 3:
-                    image = Image.fromarray(image_array, 'RGB')
-                else:
-                    image = Image.fromarray(image_array)
-            else:
-                # Find image path
-                image_path = None
-                for path in [
-                    os.path.join(args.data_root, f"{image_id}.jpg"),
-                    os.path.join(args.data_root, f"{image_id}.png"),
-                    os.path.join(args.data_root, "validation", f"{image_id}.jpg"),
-                    os.path.join(args.data_root, "validation", f"{image_id}.png"),
-                ]:
-                    if os.path.exists(path):
-                        image_path = path
-                        break
-                
-                if image_path is None:
-                    continue
-                
-                # Load image
-                image = Image.open(image_path).convert('RGB')
+            image = Image.open(image_path).convert('RGB')
             img_t = preprocess(image).unsqueeze(0).to(args.device)
             H_img, W_img = img_t.shape[-2:]
             

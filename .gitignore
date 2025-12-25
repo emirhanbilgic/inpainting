@@ -185,3 +185,4 @@ scripts/visualize_omp_color.py
 comparison_outputs/
 external/Transformer-Explainability
 Transformer-Explainability
+scripts/KAGGLE_COMMANDS.md
