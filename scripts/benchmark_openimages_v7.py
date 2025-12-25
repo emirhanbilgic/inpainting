@@ -597,49 +597,67 @@ def main():
     )
     
     # =========================================================================
-    # REPLACEMENT: Aggressive Metadata Search & Load
+    # REPLACEMENT: Content-Based Metadata Scanner
     # =========================================================================
     
     images_metadata_csv = None
     images_dir = None
+    sep = ','  # Default separator, will be detected when file is found
     
-    # 1. SEARCH: Walk through /kaggle/input to find the 'images' file
-    # Prioritize locations based on user input
-    search_paths = []
+    print(f"Scanning /kaggle/input for image metadata (looking for 'original_url' column)...")
+    
+    # Walk through the entire input directory
     if os.path.exists("/kaggle/input"):
-        search_paths.append("/kaggle/input")
-        print("Scanning /kaggle/input for 'images' metadata file...")
-    
-    for search_root in search_paths:
-        if images_metadata_csv: break
-        
-        for root, dirs, files in os.walk(search_root):
-            # Check for file named exactly "images" (no extension)
-            # OR "images.csv"
-            candidates = [f for f in files if f == "images" or f == "images.csv"]
-            
-            for cand in candidates:
-                cand_path = os.path.join(root, cand)
-                try:
-                    # quick check: is it a text file with expected headers?
-                    with open(cand_path, 'r', encoding='utf-8', errors='ignore') as f:
-                        header = f.readline().lower()
-                        # Check for key columns to confirm this is the metadata file
-                        if 'image_id' in header or 'original_url' in header or 'imageid' in header:
-                            images_metadata_csv = cand_path
-                            print(f"SUCCESS: Found metadata file at: {images_metadata_csv}")
-                            break
-                except Exception:
+        for root, dirs, files in os.walk("/kaggle/input"):
+            # Stop if we already found it
+            if images_metadata_csv: 
+                break
+                
+            for file in files:
+                # Skip obvious non-metadata files to save time
+                if file.endswith(('.jpg', '.png', '.jpeg', '.json')):
                     continue
-            
-            if images_metadata_csv: break
-    
-    # 2. FALLBACK: Check if we have a directory of images instead
+                    
+                file_path = os.path.join(root, file)
+                
+                try:
+                    # Read just the first line to check headers
+                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        first_line = f.readline()
+                    
+                    # Check for the specific column signature of the OpenImages 'images' table
+                    # We look for 'original_url' because annotation files don't have this
+                    if 'original_url' in first_line.lower() and 'image_id' in first_line.lower():
+                        images_metadata_csv = file_path
+                        print(f"SUCCESS: Found metadata file at: {images_metadata_csv}")
+                        
+                        # Detect separator (comma vs tab) based on this first line
+                        if '\t' in first_line and first_line.count('\t') > first_line.count(','):
+                            sep = '\t'
+                            print("Detected format: TSV (Tab-Separated)")
+                        else:
+                            sep = ','
+                            print("Detected format: CSV (Comma-Separated)")
+                        break
+                except Exception:
+                    # Ignore permission errors or unreadable binary files
+                    continue
+
+    # 4. Handle Local Directory (Fallback)
     if not images_metadata_csv:
         if args.data_root:
             if os.path.isfile(args.data_root):
                 images_metadata_csv = args.data_root
                 print(f"Using images metadata CSV from --data_root: {images_metadata_csv}")
+                # Detect separator for this file too
+                try:
+                    with open(images_metadata_csv, 'r', encoding='utf-8', errors='ignore') as f:
+                        first_line = f.readline()
+                        if '\t' in first_line and first_line.count('\t') > first_line.count(','):
+                            sep = '\t'
+                        else:
+                            sep = ','
+                except: pass
             elif os.path.isdir(args.data_root):
                 images_dir = args.data_root
                 print(f"Using local images directory: {images_dir}")
@@ -655,49 +673,41 @@ def main():
         else:
             raise ValueError(f"--data_root must be a directory or CSV file, got: {args.data_root}")
 
-    # 3. LOAD: Read the file with robust error handling
+    # 5. Load the Metadata
     image_id_to_url = {}
-    
     if images_metadata_csv:
         try:
-            print(f"Loading metadata from {images_metadata_csv}...")
+            print(f"Loading metadata from: {images_metadata_csv}")
             
-            # Detect separator
-            sep = ','
-            try:
-                with open(images_metadata_csv, 'r', encoding='utf-8', errors='ignore') as f:
-                    line = f.readline()
-                    if '\t' in line and line.count('\t') > line.count(','):
-                        sep = '\t'
-            except: pass
+            # Use 'python' engine to handle files without extensions or bad lines
+            # Pass the 'sep' we detected earlier
+            img_df = pd.read_csv(
+                images_metadata_csv, 
+                sep=sep, 
+                engine='python', 
+                on_bad_lines='skip'
+            )
             
-            print(f"detected separator: '{'tab' if sep=='\t' else 'comma'}'")
-            
-            # Load with python engine to handle extension-less files
-            img_df = pd.read_csv(images_metadata_csv, sep=sep, engine='python', on_bad_lines='skip')
-            
-            # Normalize columns
+            # Normalize column names
             img_df.columns = [c.strip().lower() for c in img_df.columns]
-            print(f"Columns found: {list(img_df.columns)}")
             
             # Find the ID and URL columns
             id_col = next((c for c in img_df.columns if c in ['image_id', 'imageid']), None)
             url_col = next((c for c in img_df.columns if 'original_url' in c), None)
             
             if id_col and url_col:
-                # Create the map
-                # Filter out rows with missing URLs
+                print(f"Mapping ID '{id_col}' to URL '{url_col}'...")
                 valid_rows = img_df.dropna(subset=[id_col, url_col])
                 image_id_to_url = dict(zip(valid_rows[id_col].astype(str), valid_rows[url_col]))
-                print(f"Loaded URLs for {len(image_id_to_url)} images")
+                print(f"Successfully mapped {len(image_id_to_url)} image URLs")
             else:
-                print("ERROR: Could not find 'image_id' or 'original_url' columns.")
+                print(f"ERROR: Found file but missing columns. Available: {img_df.columns}")
                 
         except Exception as e:
-            print(f"CRITICAL ERROR loading metadata: {e}")
+            print(f"ERROR loading metadata: {e}")
             import traceback
             traceback.print_exc()
-
+            
     # =========================================================================
     # END REPLACEMENT
     # =========================================================================
