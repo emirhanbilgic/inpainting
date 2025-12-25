@@ -605,10 +605,9 @@ def main():
         # Note: In some Kaggle datasets, /kaggle/input/open-images/images is a CSV file, not a directory
         if os.path.exists(KAGGLE_IMAGES_DIR):
             if os.path.isfile(KAGGLE_IMAGES_DIR):
-                # It's a file - check if it's CSV
-                if KAGGLE_IMAGES_DIR.endswith('.csv'):
+                if os.path.isfile(KAGGLE_IMAGES_DIR):
                     images_metadata_csv = KAGGLE_IMAGES_DIR
-                    print(f"Images path is a CSV file: {images_metadata_csv}")
+                    print(f"Using images metadata file (no extension): {images_metadata_csv}")
                 else:
                     print(f"Warning: {KAGGLE_IMAGES_DIR} is a file but not CSV")
             elif os.path.isdir(KAGGLE_IMAGES_DIR):
@@ -753,7 +752,7 @@ def main():
             
             # Now read the full file
             print("Loading full metadata file (this may take a moment for large files)...")
-            img_df = pd.read_csv(images_metadata_csv, sep=sep)
+            img_df = pd.read_csv(images_metadata_csv, sep='\t')
             print(f"Loaded {len(img_df)} image metadata entries")
             
             # Find image_id and url columns (case-insensitive, handle various formats)
