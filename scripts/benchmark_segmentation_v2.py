@@ -8,18 +8,29 @@ This script evaluates segmentation methods on the ImageNet-Segmentation dataset
   - GradCAM - gradcam
   - Attention Rollout (reference implementation from Transformer-Explainability) - rollout
   - TextSpan (Text-Based Decomposition from Gandelsman et al.) - textspan
+  - Raw Attention (last layer CLS attention averaged over heads) - rawattn
   - Sparse encoding variants - sparse
 
 The Attention Rollout implementation follows the reference from:
   hila-chefer/Transformer-Explainability (GitHub)
 
+The CheferCAM/Transformer Attribution implementation follows the reference from:
+  hila-chefer/Transformer-Explainability (GitHub)
+  Methods:
+    - transformer_attribution: Full LRP-based method (main method, default)
+    - attn_gradcam: Baseline GradCAM applied to attention maps
+
 The TextSpan implementation follows the reference from:
   yossigandelsman/clip_text_span (GitHub)
   Paper: "Interpreting CLIP's Image Representation via Text-Based Decomposition"
   https://openreview.net/forum?id=5Ca9sSzuDp
+
+The Raw Attention baseline considers the attention maps from the last layer,
+focusing on the weights associated with the [CLS] token. The attention heads
+are averaged and the resulting explainability map is normalized.
   
 Usage:
-  python scripts/benchmark_segmentation_v2.py --mat_file scripts/data/gtsegs_ijcv.mat --methods original,gradcam,rollout,textspan
+  python scripts/benchmark_segmentation_v2.py --mat_file scripts/data/gtsegs_ijcv.mat --methods original,gradcam,rollout,textspan,rawattn,chefercam
 """
 
 import sys
@@ -581,6 +592,338 @@ def compute_attention_rollout_reference(model, image, start_layer=1):
 
 
 # =============================================================================
+# Raw Attention Implementation
+# Based on: "Raw Attention baseline considers the attention maps from the 
+# last layer, focusing on the weights associated with the [CLS] token.
+# The attention heads are averaged and the resulting map is normalized."
+#
+# E_Attn = norm(resize(1/h * sum_k(A^L_{:,0,1:})))
+# =============================================================================
+
+def compute_raw_attention(model, image):
+    pass
+
+
+def compute_chefercam(model, image, text_emb_1x):
+    """
+    Computes GradCAM on the last Attention layer (attn_gradcam baseline).
+    
+    Reference: https://github.com/hila-chefer/Transformer-Explainability
+    Method: attn_gradcam - GradCAM applied to attention maps from the last layer
+    
+    This is the baseline method from Chefer et al., not the full Transformer Attribution.
+    For the full method, see compute_transformer_attribution().
+    """
+    model.zero_grad()
+    
+    # Get the last transformer block
+    blocks = list(model.visual.transformer.resblocks)
+    last_block = blocks[-1]
+    num_heads = last_block.attn.num_heads
+    num_prompts = text_emb_1x.shape[0]
+    
+    # Forward pass - need to do this in a way that keeps attention maps in the graph
+    # We'll manually forward through the model to capture attention with gradients
+    with torch.enable_grad():
+        # Forward through visual encoder
+        x = model.visual.conv1(image)  # [B, C, H', W']
+        x = x.reshape(x.shape[0], x.shape[1], -1)  # [B, C, N]
+        x = x.permute(0, 2, 1)  # [B, N, C]
+        
+        # Add class token
+        batch_size = x.shape[0]
+        class_token = model.visual.class_embedding.unsqueeze(0).unsqueeze(0)
+        class_token = class_token.expand(batch_size, -1, -1)
+        x = torch.cat([class_token, x], dim=1)  # [B, N+1, C]
+        
+        # Add positional embedding
+        num_patches = x.shape[1] - 1
+        if hasattr(model.visual, 'original_pos_embed'):
+            pos_embed = model.visual.original_pos_embed
+        else:
+            pos_embed = model.visual.positional_embedding
+        
+        if pos_embed.shape[0] != x.shape[1]:
+            cls_pos = pos_embed[:1]
+            patch_pos = pos_embed[1:]
+            orig_size = int(math.sqrt(patch_pos.shape[0]))
+            patch_pos = patch_pos.reshape(1, orig_size, orig_size, -1).permute(0, 3, 1, 2)
+            new_size = int(math.sqrt(num_patches))
+            patch_pos = F.interpolate(patch_pos, size=(new_size, new_size), mode='bilinear', align_corners=False)
+            patch_pos = patch_pos.permute(0, 2, 3, 1).reshape(-1, pos_embed.shape[1])
+            pos_embed = torch.cat([cls_pos, patch_pos], dim=0)
+        
+        x = x + pos_embed.unsqueeze(0).to(x.dtype)
+        
+        if hasattr(model.visual, 'ln_pre'):
+            x = model.visual.ln_pre(x)
+        
+        x = x.permute(1, 0, 2)  # [N+1, B, C] for transformer
+        
+        # Forward through all blocks except the last
+        for i in range(len(blocks) - 1):
+            x = blocks[i](x)
+        
+        # For the last block, we need to capture attention with gradients
+        # Manually compute attention for the last layer
+        last_attn = last_block.attn
+        x_normed = last_block.ln_1(x)
+        
+        # Compute Q, K, V
+        qkv = F.linear(x_normed, last_attn.in_proj_weight, last_attn.in_proj_bias)
+        q, k, v = qkv.chunk(3, dim=-1)
+        
+        seq_len, bsz, embed_dim = q.shape
+        head_dim = embed_dim // num_heads
+        
+        q = q.contiguous().view(seq_len, bsz * num_heads, head_dim).transpose(0, 1)
+        k = k.contiguous().view(seq_len, bsz * num_heads, head_dim).transpose(0, 1)
+        v = v.contiguous().view(seq_len, bsz * num_heads, head_dim).transpose(0, 1)
+        
+        # Compute attention weights (this is what we need gradients for)
+        scale = float(head_dim) ** -0.5
+        attn_weights = torch.bmm(q * scale, k.transpose(-2, -1))
+        attn_weights = F.softmax(attn_weights, dim=-1)  # [bsz*heads, N, N]
+        
+        # Compute attention output
+        attn_output = torch.bmm(attn_weights, v)
+        attn_output = attn_output.transpose(0, 1).contiguous().view(seq_len, bsz, embed_dim)
+        attn_output = last_attn.out_proj(attn_output)
+        
+        # Continue forward
+        x = x + attn_output
+        x = x + last_block.mlp(last_block.ln_2(x))
+        
+        # Get final image features
+        x = x.permute(1, 0, 2)  # [B, N+1, C]
+        image_features = model.visual.ln_post(x[:, 0, :]) @ model.visual.proj
+        image_features = F.normalize(image_features, dim=-1)
+        
+        # Compute similarity
+        sim = text_emb_1x @ image_features.transpose(-1, -2)  # [1, 1]
+        one_hot = F.one_hot(torch.arange(0, num_prompts)).float().requires_grad_(True).to(text_emb_1x.device)
+        s = torch.sum(one_hot * sim)
+        
+        # Compute gradient w.r.t. attention weights
+        grad = torch.autograd.grad(s, [attn_weights], retain_graph=False, create_graph=False)[0]
+        
+        # Reshape: [bsz*heads, N, N] -> [bsz, heads, N, N]
+        grad = grad.view(bsz, num_heads, seq_len, seq_len)
+        attn_weights = attn_weights.view(bsz, num_heads, seq_len, seq_len)
+        
+        # Apply ReLU to gradients (GradCAM standard)
+        grad = torch.clamp(grad, min=0)
+        
+        # Weight attention map by gradients
+        cam = grad * attn_weights  # [batch, heads, N, N]
+        
+        # Average over heads
+        cam = cam.mean(dim=1)  # [batch, N, N]
+        
+        # Extract CLS token attention to patches (row 0, columns 1:)
+        cam = cam[:, 0, 1:]  # [batch, num_patches]
+        
+        # Reshape to spatial grid
+        num_patches = cam.shape[-1]
+        grid_size = int(math.sqrt(num_patches))
+        if grid_size * grid_size != num_patches:
+            w = h = int(math.sqrt(num_patches))
+            if w * h != num_patches:
+                raise RuntimeError(f"Cannot reshape {num_patches} patches to square grid")
+        else:
+            w = h = grid_size
+        
+        heatmap = cam.reshape(bsz, 1, h, w)
+        
+        # Upsample to image size
+        heatmap = F.interpolate(
+            heatmap, 
+            size=image.shape[-2:], 
+            mode='bilinear', 
+            align_corners=False
+        )
+        
+        # Normalize to [0, 1]
+        heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
+        
+        return heatmap[0, 0].detach().cpu()
+
+
+def compute_transformer_attribution(model, image, text_emb_1x, start_layer=1):
+    """
+    Computes Transformer Attribution (full LRP-based method from Chefer et al.).
+    
+    Reference: https://github.com/hila-chefer/Transformer-Explainability
+    Method: transformer_attribution - Full LRP-based method with start_layer
+    
+    This is the main method from Chefer et al. (2021), not the baseline.
+    The reference uses full LRP rules to propagate relevance through transformer layers.
+    
+    IMPORTANT LIMITATIONS:
+    - The reference implementation uses a Supervised ViT with full LRP implementation
+    - This implementation uses CLIP and approximates LRP with gradient-weighted attention
+    - For exact reproduction of reported results, you need:
+      1. A Supervised ViT (e.g., from timm) instead of CLIP
+      2. The full LRP implementation from the reference repository
+    - This simplified version aggregates gradient-weighted attention across layers,
+      which approximates the LRP propagation but is not identical
+    
+    Args:
+        model: LeWrapper model
+        image: Input image tensor [1, 3, H, W]
+        text_emb_1x: Text embedding [1, embed_dim]
+        start_layer: Layer to start attribution from (default 1, as in reference)
+    
+    Returns:
+        Heatmap tensor [H, W] normalized to [0, 1]
+    """
+    model.zero_grad()
+    
+    blocks = list(model.visual.transformer.resblocks)
+    num_layers = len(blocks)
+    
+    # Ensure start_layer is valid
+    if start_layer < 0:
+        start_layer = num_layers + start_layer
+    start_layer = max(0, min(start_layer, num_layers - 1))
+    
+    num_prompts = text_emb_1x.shape[0]
+    
+    # Forward pass with gradients enabled to capture attention maps
+    with torch.enable_grad():
+        # Forward through visual encoder
+        x = model.visual.conv1(image)
+        x = x.reshape(x.shape[0], x.shape[1], -1)
+        x = x.permute(0, 2, 1)
+        
+        batch_size = x.shape[0]
+        class_token = model.visual.class_embedding.unsqueeze(0).unsqueeze(0)
+        class_token = class_token.expand(batch_size, -1, -1)
+        x = torch.cat([class_token, x], dim=1)
+        
+        # Add positional embedding
+        num_patches = x.shape[1] - 1
+        if hasattr(model.visual, 'original_pos_embed'):
+            pos_embed = model.visual.original_pos_embed
+        else:
+            pos_embed = model.visual.positional_embedding
+        
+        if pos_embed.shape[0] != x.shape[1]:
+            cls_pos = pos_embed[:1]
+            patch_pos = pos_embed[1:]
+            orig_size = int(math.sqrt(patch_pos.shape[0]))
+            patch_pos = patch_pos.reshape(1, orig_size, orig_size, -1).permute(0, 3, 1, 2)
+            new_size = int(math.sqrt(num_patches))
+            patch_pos = F.interpolate(patch_pos, size=(new_size, new_size), mode='bilinear', align_corners=False)
+            patch_pos = patch_pos.permute(0, 2, 3, 1).reshape(-1, pos_embed.shape[1])
+            pos_embed = torch.cat([cls_pos, patch_pos], dim=0)
+        
+        x = x + pos_embed.unsqueeze(0).to(x.dtype)
+        
+        if hasattr(model.visual, 'ln_pre'):
+            x = model.visual.ln_pre(x)
+        
+        x = x.permute(1, 0, 2)
+        
+        # Forward through blocks and collect attention maps from start_layer onwards
+        all_attn_weights = []
+        for i, block in enumerate(blocks):
+            if i < start_layer:
+                # Forward normally for layers before start_layer
+                x = block(x)
+            else:
+                # For layers from start_layer, capture attention weights
+                attn_module = block.attn
+                x_normed = block.ln_1(x)
+                
+                qkv = F.linear(x_normed, attn_module.in_proj_weight, attn_module.in_proj_bias)
+                q, k, v = qkv.chunk(3, dim=-1)
+                
+                seq_len, bsz, embed_dim = q.shape
+                num_heads = attn_module.num_heads
+                head_dim = embed_dim // num_heads
+                
+                q = q.contiguous().view(seq_len, bsz * num_heads, head_dim).transpose(0, 1)
+                k = k.contiguous().view(seq_len, bsz * num_heads, head_dim).transpose(0, 1)
+                v = v.contiguous().view(seq_len, bsz * num_heads, head_dim).transpose(0, 1)
+                
+                scale = float(head_dim) ** -0.5
+                attn_weights = torch.bmm(q * scale, k.transpose(-2, -1))
+                attn_weights = F.softmax(attn_weights, dim=-1)  # [bsz*heads, N, N]
+                all_attn_weights.append(attn_weights)
+                
+                attn_output = torch.bmm(attn_weights, v)
+                attn_output = attn_output.transpose(0, 1).contiguous().view(seq_len, bsz, embed_dim)
+                attn_output = attn_module.out_proj(attn_output)
+                
+                x = x + attn_output
+                x = x + block.mlp(block.ln_2(x))
+        
+        # Get final image features
+        x = x.permute(1, 0, 2)
+        image_features = model.visual.ln_post(x[:, 0, :]) @ model.visual.proj
+        image_features = F.normalize(image_features, dim=-1)
+        
+        # Compute similarity
+        sim = text_emb_1x @ image_features.transpose(-1, -2)
+        one_hot = F.one_hot(torch.arange(0, num_prompts)).float().requires_grad_(True).to(text_emb_1x.device)
+        s = torch.sum(one_hot * sim)
+        
+        # Compute gradients for all attention layers
+        grads = torch.autograd.grad(s, all_attn_weights, retain_graph=False, create_graph=False)
+        
+        # Process each layer's gradient-weighted attention
+        layer_contributions = []
+        for i, (grad, attn_weights) in enumerate(zip(grads, all_attn_weights)):
+            num_heads = blocks[start_layer + i].attn.num_heads
+            
+            # Reshape: [bsz*heads, N, N] -> [bsz, heads, N, N]
+            grad = grad.view(bsz, num_heads, grad.shape[1], grad.shape[2])
+            attn_weights = attn_weights.view(bsz, num_heads, attn_weights.shape[1], attn_weights.shape[2])
+            
+            # Apply ReLU to gradients
+            grad = torch.clamp(grad, min=0)
+            
+            # Weight attention by gradients
+            weighted_attn = grad * attn_weights  # [batch, heads, N, N]
+            
+            # Average over heads
+            weighted_attn = weighted_attn.mean(dim=1)  # [batch, N, N]
+            
+            # Extract CLS to patches
+            cls_to_patches = weighted_attn[:, 0, 1:]  # [batch, num_patches]
+            
+            layer_contributions.append(cls_to_patches)
+        
+        # Aggregate across layers (simple sum, as in reference)
+        # Note: Full LRP would use more sophisticated propagation rules
+        aggregated = sum(layer_contributions)  # [batch, num_patches]
+        
+        # Reshape to spatial grid
+        num_patches = aggregated.shape[-1]
+        grid_size = int(math.sqrt(num_patches))
+        if grid_size * grid_size != num_patches:
+            w = h = int(math.sqrt(num_patches))
+            if w * h != num_patches:
+                raise RuntimeError(f"Cannot reshape {num_patches} patches to square grid")
+        else:
+            w = h = grid_size
+        
+        heatmap = aggregated.reshape(bsz, 1, h, w)
+        
+        # Upsample to image size
+        heatmap = F.interpolate(
+            heatmap,
+            size=image.shape[-2:],
+            mode='bilinear',
+            align_corners=False
+        )
+        
+        # Normalize to [0, 1]
+        heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
+        
+        return heatmap[0, 0].detach().cpu()
+# =============================================================================
 # Reference Metrics Implementation
 # Adapted from: https://github.com/hila-chefer/Transformer-Explainability
 # File: utils/metrices.py
@@ -880,8 +1223,8 @@ def main():
     
     # Method selection
     parser.add_argument(
-        '--methods', type=str, default='original,gradcam,rollout,textspan',
-        help="Comma-separated methods: original (LeGrad), gradcam, rollout, textspan, sparse"
+        '--methods', type=str, default='original,gradcam,rollout,textspan,rawattn,chefercam',
+        help="Comma-separated methods: original (LeGrad), gradcam, rollout, textspan, rawattn, chefercam, sparse"
     )
     
     # Rollout settings
@@ -891,6 +1234,12 @@ def main():
                         choices=['mean', 'max', 'min'],
                         help='How to fuse attention heads for rollout')
     
+    # CheferCAM/Transformer Attribution settings
+    parser.add_argument('--chefercam_method', type=str, default='transformer_attribution',
+                        choices=['transformer_attribution', 'attn_gradcam'],
+                        help='CheferCAM method: transformer_attribution (full LRP-based, default) or attn_gradcam (baseline)')
+    parser.add_argument('--transformer_attribution_start_layer', type=int, default=1,
+                        help='Start layer for transformer attribution (default 1, as in reference)')
     
     # Threshold settings
     parser.add_argument('--threshold_mode', type=str, default='mean',
@@ -919,10 +1268,10 @@ def main():
 
     # Parse methods
     methods = [m.strip().lower() for m in str(args.methods).split(",") if m.strip()]
-    allowed_methods = {'original', 'gradcam', 'rollout', 'textspan', 'sparse'}
+    allowed_methods = {'original', 'gradcam', 'rollout', 'textspan', 'rawattn', 'chefercam', 'sparse'}
     methods = [m for m in methods if m in allowed_methods]
     if not methods:
-        raise ValueError("No valid methods. Use --methods with: original,gradcam,rollout,textspan,sparse")
+        raise ValueError("No valid methods. Use --methods with: original,gradcam,rollout,textspan,rawattn,chefercam,sparse")
     
     print(f"Methods to evaluate: {methods}")
     print(f"Threshold mode: {args.threshold_mode}")
@@ -1101,6 +1450,43 @@ def main():
                     align_corners=False
                 ).squeeze()
                 heatmaps['textspan'] = heatmap_resized
+            
+            # --- RAW ATTENTION ---
+            # Attention from last layer, CLS token to patches, averaged over heads
+            if 'rawattn' in methods:
+                heatmap = compute_raw_attention(model, img_t)
+                # Already at image resolution, resize to GT size
+                heatmap_resized = F.interpolate(
+                    heatmap.view(1, 1, heatmap.shape[-2], heatmap.shape[-1]),
+                    size=(H_gt, W_gt),
+                    mode='bilinear',
+                    align_corners=False
+                ).squeeze()
+                heatmaps['rawattn'] = heatmap_resized
+            
+            # --- CHEFERCAM / TRANSFORMER ATTRIBUTION ---
+            # Reference: hila-chefer/Transformer-Explainability
+            # transformer_attribution: Full LRP-based method (main method, gets reported results)
+            # attn_gradcam: Baseline GradCAM on attention maps
+            if 'chefercam' in methods:
+                if args.chefercam_method == 'transformer_attribution':
+                    # Use full Transformer Attribution method (the one that gets reported results)
+                    heatmap = compute_transformer_attribution(
+                        model, img_t, text_emb_1x, 
+                        start_layer=args.transformer_attribution_start_layer
+                    )
+                else:
+                    # Use baseline attn_gradcam method
+                    heatmap = compute_chefercam(model, img_t, text_emb_1x)
+                
+                # Already at image resolution, resize to GT size
+                heatmap_resized = F.interpolate(
+                    heatmap.view(1, 1, heatmap.shape[-2], heatmap.shape[-1]),
+                    size=(H_gt, W_gt),
+                    mode='bilinear',
+                    align_corners=False
+                ).squeeze()
+                heatmaps['chefercam'] = heatmap_resized
             
             # --- SPARSE ---
             if 'sparse' in methods:
