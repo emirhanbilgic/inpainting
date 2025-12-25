@@ -601,45 +601,66 @@ def main():
     images_metadata_csv = None
     
     if use_kaggle:
-        # Check if KAGGLE_IMAGES_DIR is actually a CSV file
-        if os.path.isfile(KAGGLE_IMAGES_DIR) and KAGGLE_IMAGES_DIR.endswith('.csv'):
-            images_metadata_csv = KAGGLE_IMAGES_DIR
-            print(f"Images path is a CSV file: {images_metadata_csv}")
-        elif os.path.isdir(KAGGLE_IMAGES_DIR):
+        # First, check if KAGGLE_IMAGES_DIR is actually a CSV file
+        # Note: In some Kaggle datasets, /kaggle/input/open-images/images is a CSV file, not a directory
+        if os.path.exists(KAGGLE_IMAGES_DIR):
+            if os.path.isfile(KAGGLE_IMAGES_DIR):
+                # It's a file - check if it's CSV
+                if KAGGLE_IMAGES_DIR.endswith('.csv'):
+                    images_metadata_csv = KAGGLE_IMAGES_DIR
+                    print(f"Images path is a CSV file: {images_metadata_csv}")
+                else:
+                    print(f"Warning: {KAGGLE_IMAGES_DIR} is a file but not CSV")
+            elif os.path.isdir(KAGGLE_IMAGES_DIR):
             images_dir = KAGGLE_IMAGES_DIR
             print(f"Using Kaggle images directory: {images_dir}")
             
-            # Check for metadata CSV in the directory
-            possible_metadata = [
-                os.path.join(images_dir, "images.csv"),
-                os.path.join(images_dir, "metadata.csv"),
-                os.path.join(images_dir, "train-images.csv"),
-                os.path.join(images_dir, "validation-images.csv"),
+            # List what's in the directory to help debug
+            try:
+                dir_contents = os.listdir(images_dir)
+                print(f"Contents of {images_dir}: {dir_contents[:10]}... (showing first 10)")
+                
+                # Check for CSV files in the directory
+                csv_files = [f for f in dir_contents if f.endswith('.csv')]
+                if csv_files:
+                    print(f"Found CSV files in images directory: {csv_files}")
+                    # Use the first CSV file found (likely the metadata)
+                    images_metadata_csv = os.path.join(images_dir, csv_files[0])
+                    print(f"Using images metadata CSV: {images_metadata_csv}")
+            except Exception as e:
+                print(f"Warning: Could not list directory contents: {e}")
+        
+        # If still no CSV found, search more broadly in /kaggle/input
+        if images_metadata_csv is None:
+            print("Searching for images metadata CSV in /kaggle/input...")
+            search_dirs = [
+                "/kaggle/input/open-images",
+                "/kaggle/input/open-images-v7",
+                "/kaggle/input",
             ]
-            for path in possible_metadata:
-                if os.path.exists(path):
-                    images_metadata_csv = path
-                    print(f"Found images metadata CSV: {path}")
+            for search_dir in search_dirs:
+                if os.path.isdir(search_dir):
+                    try:
+                        for root, dirs, files in os.walk(search_dir):
+                            for fname in files:
+                                if fname.endswith('.csv'):
+                                    # Check if it looks like an images metadata file
+                                    fname_lower = fname.lower()
+                                    # Skip annotation files
+                                    if 'point-labels' in fname_lower or 'annotation' in fname_lower:
+                                        continue
+                                    # Look for image metadata files
+                                    if any(keyword in fname_lower for keyword in ['image', 'metadata', 'train', 'validation', 'test']):
+                                        potential_csv = os.path.join(root, fname)
+                                        images_metadata_csv = potential_csv
+                                        print(f"Found potential images metadata CSV: {images_metadata_csv}")
+                                        break
+                            if images_metadata_csv:
+                                break
+                    except Exception as e:
+                        print(f"Warning: Error searching {search_dir}: {e}")
+                if images_metadata_csv:
                     break
-            
-            # Also check if there's a CSV file with the same name as the directory
-            parent_dir = os.path.dirname(images_dir) if images_dir != "/kaggle/input/open-images" else "/kaggle/input/open-images"
-            for fname in os.listdir(parent_dir) if os.path.isdir(parent_dir) else []:
-                if fname.endswith('.csv') and ('image' in fname.lower() or 'metadata' in fname.lower()):
-                    potential_csv = os.path.join(parent_dir, fname)
-                    if potential_csv != images_metadata_csv:
-                        images_metadata_csv = potential_csv
-                        print(f"Found images metadata CSV in parent: {images_metadata_csv}")
-                        break
-        else:
-            # Try to find any CSV in the parent directory
-            parent_dir = "/kaggle/input/open-images"
-            if os.path.isdir(parent_dir):
-                for fname in os.listdir(parent_dir):
-                    if fname.endswith('.csv') and ('image' in fname.lower()):
-                        images_metadata_csv = os.path.join(parent_dir, fname)
-                        print(f"Found images metadata CSV: {images_metadata_csv}")
-                        break
     else:
         if args.data_root is None:
             raise ValueError("--data_root is required when not using Kaggle dataset")
@@ -716,9 +737,43 @@ def main():
             valid_image_ids.append(image_id)
     
     print(f"Found {len(valid_image_ids)} valid images out of {len(image_annotations)} with annotations")
-    if image_id_to_url:
-        print(f"  - {sum(1 for img_id in valid_image_ids if img_id in image_id_to_url)} images available via URL")
-        print(f"  - {sum(1 for img_id in valid_image_ids if img_id not in image_id_to_url)} images available as files")
+    
+    if len(valid_image_ids) == 0:
+        print("\n" + "="*60)
+        print("WARNING: No valid images found!")
+        print("="*60)
+        print(f"Total annotations: {len(image_annotations)}")
+        print(f"Image metadata loaded: {len(image_id_to_url)} URLs")
+        print(f"Images directory: {images_dir}")
+        print(f"Images metadata CSV: {images_metadata_csv}")
+        
+        # Show sample annotation IDs
+        sample_ann_ids = list(image_annotations.keys())[:5]
+        print(f"\nSample annotation image IDs: {sample_ann_ids}")
+        
+        # Show sample metadata IDs
+        if image_id_to_url:
+            sample_meta_ids = list(image_id_to_url.keys())[:5]
+            print(f"Sample metadata image IDs: {sample_meta_ids}")
+            
+            # Check if there's any overlap
+            overlap = set(image_annotations.keys()) & set(image_id_to_url.keys())
+            print(f"\nOverlapping IDs: {len(overlap)} out of {len(image_annotations)}")
+            if len(overlap) == 0 and len(image_id_to_url) > 0:
+                print("  ERROR: No overlap between annotation IDs and metadata IDs!")
+                print("  This suggests the image_id format might be different.")
+                if sample_ann_ids and sample_meta_ids:
+                    print(f"  Annotation ID format: {sample_ann_ids[0]}")
+                    print(f"  Metadata ID format: {sample_meta_ids[0]}")
+        else:
+            print("\nNo image metadata was loaded. Cannot download images from URLs.")
+            print("  Please check if images CSV exists in /kaggle/input/open-images/")
+        print("="*60)
+    elif image_id_to_url:
+        url_count = sum(1 for img_id in valid_image_ids if img_id in image_id_to_url)
+        file_count = len(valid_image_ids) - url_count
+        print(f"  - {url_count} images available via URL (will download on-the-fly)")
+        print(f"  - {file_count} images available as files")
     
     limit = args.limit if args.limit > 0 else len(valid_image_ids)
     limit = min(limit, len(valid_image_ids))
