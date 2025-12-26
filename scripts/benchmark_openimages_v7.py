@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-OpenImagesV7 Point-wise Segmentation Benchmark (Fixed for BigQuery/Kaggle URL Data)
+OpenImagesV7 Point-wise Segmentation Benchmark (Fixed for BigQuery Directory Structure)
 
 This script evaluates explainability methods on the OpenImagesV7 validation set.
-It handles the Kaggle BigQuery dataset structure where images are provided as 
-URLs in a CSV table rather than physical files.
+It handles Kaggle BigQuery datasets where metadata is often split across multiple 
+files inside an 'images' directory.
 
 Fixes applied:
-- Auto-detection of CSV separators (comma vs tab) for metadata files.
-- Debug prints to show exactly what columns are found in the BigQuery tables.
-- Robust parsing to handle files without extensions.
+- Recursively scans directories named 'images' (common in BigQuery exports).
+- Content-based detection: looks for files containing "http" and "flickr" if headers fail.
+- Robust separator detection (handles comma, tab, or complex encodings).
 """
 
 import sys
@@ -25,18 +25,19 @@ import pandas as pd
 from collections import defaultdict
 import requests
 from io import BytesIO
+import re
 
 # Add project root to path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-# Import model components (try/except to allow running data checks without dependencies)
+# Import model components
 try:
     from legrad import LeWrapper, LePreprocess
     import open_clip
 except ImportError:
-    pass # Will fail later if needed, but allows data loading debug
+    pass
 
 # =============================================================================
 # Attention Rollout Implementation
@@ -201,91 +202,106 @@ def load_openimages_annotations(annotations_csv_path):
             
     return dict(image_annotations)
 
-def get_bigquery_metadata_robust(search_path="/kaggle/input"):
+def get_bigquery_metadata_deep_scan(search_path="/kaggle/input"):
     """
-    Robustly finds and parses Open Images metadata to map ImageID -> OriginalURL.
+    Deep scan for metadata. 
+    1. Looks specifically for folders named 'images'.
+    2. Scans files inside them.
+    3. Uses content detection (looking for URLs) if headers are missing.
     """
-    print(f"\nScanning {search_path} for metadata tables...")
+    print(f"\nDeep Scanning {search_path} for metadata...")
     id_to_url = {}
     candidate_files = []
 
-    # 1. Find candidate files (tables)
-    for root, _, files in os.walk(search_path):
+    # 1. Build list of all potential files
+    for root, dirs, files in os.walk(search_path):
+        # If we are in a folder named 'images', ALL files are candidates
+        in_images_dir = 'images' in os.path.basename(root).lower()
+        
         for file in files:
             path = os.path.join(root, file)
-            # Skip media and binary files
             if file.lower().endswith(('.jpg', '.jpeg', '.png', '.zip', '.tar', '.gz')):
                 continue
-            # Heuristic: the file we want is often called 'images' (no extension) or 'images.csv'
-            if 'images' in file.lower():
-                candidate_files.append(path)
-    
-    if not candidate_files:
-        print("No file with 'images' in name found. checking all text-like files...")
-        for root, _, files in os.walk(search_path):
-            for file in files:
-                if not file.lower().endswith(('.jpg', '.png', '.zip')):
-                    candidate_files.append(os.path.join(root, file))
+            
+            # Prioritize files in 'images' folder or with 'images' in name
+            if in_images_dir or 'images' in file.lower():
+                candidate_files.insert(0, path) # High priority
+            else:
+                candidate_files.append(path) # Low priority
 
-    print(f"Found {len(candidate_files)} candidates: {candidate_files}")
+    print(f"Found {len(candidate_files)} files to check. Top 3: {candidate_files[:3]}")
 
     for file_path in candidate_files:
         try:
-            print(f"\nInspecting {file_path}...")
+            # Quick check: read first 1KB to see if it looks like the right file
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                snippet = f.read(1024)
             
-            # 2. Sniff separator (comma vs tab)
-            sep = ','
-            try:
-                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                    first_line = f.readline()
-                    if first_line:
-                        # Simple heuristic: counts
-                        if first_line.count('\t') > first_line.count(','):
-                            sep = '\t'
-                        print(f"  First line snippet: {first_line[:50]}...")
-                        print(f"  Guessed separator: '{sep}' (Tabs: {first_line.count('\t')}, Commas: {first_line.count(',')})")
-            except Exception as e:
-                print(f"  Could not read file head: {e}")
+            # Heuristic: Must contain 'http' and 'flickr' to be the images metadata
+            if 'http' not in snippet or 'flickr' not in snippet:
                 continue
 
-            # 3. Load Headers
-            # Use 'python' engine for more robust separator handling if needed, but 'c' is faster
-            df_head = pd.read_csv(file_path, nrows=5, sep=sep, dtype=str, on_bad_lines='skip')
-            cols = {c.lower().strip(): c for c in df_head.columns}
+            print(f"\nScanning candidate: {file_path}")
             
-            print(f"  Columns found: {list(cols.keys())}")
-            
-            # 4. Check for required columns
-            # We need ID and a URL. 
-            # Pattern matching: 'imageid' or 'image_id' AND 'originalurl' or 'original_url'
-            id_col = next((c for c in cols if 'imageid' in c or 'image_id' in c), None)
-            url_col = next((c for c in cols if 'originalurl' in c or 'original_url' in c), None)
-            
-            # Fallback URL columns
+            # Try parsing with pandas 'python' engine to auto-detect separators
+            # We assume if headers fail, we might need to rely on column index
+            try:
+                chunk_iter = pd.read_csv(file_path, sep=None, engine='python', chunksize=10000, dtype=str, on_bad_lines='skip')
+                first_chunk = next(chunk_iter)
+            except Exception:
+                continue
+
+            cols = [c.lower() for c in first_chunk.columns]
+            print(f"  Columns detected: {cols}")
+
+            # Strategy A: Columns exist and are named correctly
+            id_col = next((c for c in first_chunk.columns if 'imageid' in c.lower() or 'image_id' in c.lower()), None)
+            url_col = next((c for c in first_chunk.columns if 'originalurl' in c.lower() or 'original_url' in c.lower()), None)
             if not url_col:
-                url_col = next((c for c in cols if 'thumbnail' in c and 'url' in c), None)
+                url_col = next((c for c in first_chunk.columns if 'thumbnail' in c.lower() and 'url' in c.lower()), None)
+
+            # Strategy B: No valid headers, but data looks right (User's case)
+            # If headers are garbage (e.g. one long string) or missing, we inspect the data in the first row
+            if not (id_col and url_col):
+                print("  Headers unclear. Inspecting data content...")
+                # Check first row values
+                row0 = first_chunk.iloc[0]
+                
+                # Find column index that looks like an ID (16 hex chars)
+                id_idx = -1
+                url_idx = -1
+                
+                for i, val in enumerate(row0):
+                    val = str(val)
+                    if len(val) == 16 and all(c in '0123456789abcdefABCDEF' for c in val):
+                        id_idx = i
+                    if val.startswith('http'):
+                        url_idx = i
+                
+                if id_idx != -1 and url_idx != -1:
+                    print(f"  Found data pattern! ID at col {id_idx}, URL at col {url_idx}")
+                    id_col = first_chunk.columns[id_idx]
+                    url_col = first_chunk.columns[url_idx]
 
             if id_col and url_col:
-                print(f"  >>> MATCH! Reading URLs from {file_path} using ID='{cols[id_col]}' and URL='{cols[url_col]}'")
+                print(f"  >>> SUCCESS. Extraction started from {file_path}")
                 
-                # 5. Read Full File
-                chunk_iter = pd.read_csv(file_path, sep=sep, chunksize=50000, dtype=str, on_bad_lines='skip')
+                # Process first chunk
+                for _, row in first_chunk.iterrows():
+                    if pd.notna(row[id_col]) and pd.notna(row[url_col]):
+                        id_to_url[row[id_col]] = row[url_col]
+
+                # Process remaining
                 for chunk in chunk_iter:
-                    chunk = chunk.dropna(subset=[cols[id_col], cols[url_col]])
-                    # Update dictionary
-                    id_to_url.update(zip(chunk[cols[id_col]], chunk[cols[url_col]]))
+                    for _, row in chunk.iterrows():
+                        if pd.notna(row[id_col]) and pd.notna(row[url_col]):
+                            id_to_url[row[id_col]] = row[url_col]
                 
                 print(f"  Loaded {len(id_to_url)} URLs.")
-                # We stop after finding the first valid 'images' table to save time
-                if len(id_to_url) > 0:
-                    break
-            else:
-                print("  Failed to find required columns (ImageID + URL). Skipping.")
-                
+                return id_to_url
+
         except Exception as e:
-            print(f"  Error parsing {file_path}: {e}")
-            import traceback
-            traceback.print_exc()
+            # print(f"  Skipping {file_path}: {e}")
             continue
 
     return id_to_url
@@ -308,7 +324,6 @@ def main():
     
     # 1. Load Annotations
     if not args.annotations_csv:
-        # Auto-detect on Kaggle
         for root, _, files in os.walk("/kaggle/input"):
             for file in files:
                 if "point-labels" in file.lower() and file.endswith(".csv"):
@@ -322,14 +337,14 @@ def main():
     image_annotations = load_openimages_annotations(args.annotations_csv)
     print(f"Loaded annotations for {len(image_annotations)} images.")
     
-    # 2. Load Metadata (URLs)
-    image_id_to_url = get_bigquery_metadata_robust("/kaggle/input")
+    # 2. Load Metadata (URLs) - DEEP SCAN
+    image_id_to_url = get_bigquery_metadata_deep_scan("/kaggle/input")
     
     if not image_id_to_url:
         print("\n" + "!"*60)
         print("CRITICAL ERROR: Could not find any URL metadata.")
-        print("Please check the 'Columns found' debug output above.")
-        print("It implies the file separator was guessed incorrectly or headers are missing.")
+        print("This means the script could not find a file containing 'http' and 'flickr'.")
+        print("Please check if the 'images' table is present in your Kaggle dataset.")
         print("!"*60)
         return
 
@@ -368,15 +383,12 @@ def main():
     
     for image_id in tqdm(process_ids):
         try:
-            # Download Image
             url = image_id_to_url[image_id]
             try:
-                # 5 second timeout to keep it fast
                 resp = requests.get(url, timeout=5)
                 resp.raise_for_status()
                 image = Image.open(BytesIO(resp.content)).convert('RGB')
-            except Exception as e:
-                # print(f"Download failed for {image_id}: {e}")
+            except Exception:
                 continue
                 
             img_t = preprocess(image).unsqueeze(0).to(device)
@@ -389,10 +401,8 @@ def main():
                 pos_pts = [(int(y*H_img), int(x*W_img)) for y, x in ann['positive'][class_name]]
                 neg_pts = [(int(y*H_img), int(x*W_img)) for y, x in ann['negative'].get(class_name, [])]
                 
-                # Rollout
                 heatmap = compute_attention_rollout_reference(model, img_t)
                 
-                # Resize and Evaluate
                 heatmap = F.interpolate(
                     heatmap.view(1, 1, heatmap.shape[-2], heatmap.shape[-1]),
                     size=(H_img, W_img),
