@@ -54,6 +54,7 @@ import argparse
 import math
 import json
 import time
+import re
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -462,65 +463,36 @@ def load_openimages_annotations(annotations_csv_path, class_descriptions_csv=Non
 # BigQuery Metadata Scanner
 # =============================================================================
 
-def find_metadata_and_map_urls(search_path="/kaggle/input"):
+def get_bigquery_metadata(search_path="/kaggle/input"):
     """
-    Scans all files for the specific pattern: image_id followed by a URL.
-    This handles files that look like BigQuery table exports.
+    Aggressively scans every file for the BigQuery table pattern.
+    Matches: [16-char hex ID] [subset] [URL]
     
-    BigQuery exports don't have CSV headers, they're raw text files with
-    space/tab/comma-separated values. Pattern: hex ID + subset + Flickr URL
-    
-    Delimiter agnostic: handles space, tab, and comma separators
+    Uses regex pattern matching to avoid delimiter issues.
+    Processes line-by-line to handle massive files without OOM.
     """
     id_to_url = {}
-    print(f"Scanning {search_path} for BigQuery-style table data...")
+    # Regex to find: 16 hex chars, whitespace, a word (subset), then a URL
+    pattern = re.compile(r'([0-9a-f]{16})\s+\w+\s+(https?://\S+)')
+    
+    print(f"Aggressively scanning {search_path} for BigQuery data...")
     
     for root, _, files in os.walk(search_path):
         for file in files:
             file_path = os.path.join(root, file)
-            # Skip images or known non-data files
-            if file.endswith(('.jpg', '.png', '.jpeg', '.zip', '.ipynb', '.json')):
+            # Skip large binary blobs or images if any exist
+            if file.endswith(('.jpg', '.png', '.jpeg', '.zip', '.ipynb')):
                 continue
                 
             try:
                 with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                    # Read a chunk to check if it matches the pattern
-                    chunk = f.read(10000)
-                    # The pattern: ID followed by subset and a flickr URL
-                    if 'http' in chunk and ('staticflickr.com' in chunk or 'farm' in chunk or 'flickr' in chunk.lower()):
-                        print(f"  Target data pattern found in: {file}")
-                        f.seek(0)
-                        for line in f:
-                            line = line.strip()
-                            if not line:
-                                continue
-                            
-                            # Try different delimiters (space/tab/comma)
-                            # BigQuery exports can use any of these
-                            if '\t' in line:
-                                parts = line.split('\t')
-                            elif ',' in line and line.count(',') > 2:
-                                parts = line.split(',')
-                            else:
-                                parts = line.split()  # Space-separated
-                            
-                            if len(parts) >= 2:
-                                # Find the URL (first part containing 'http')
-                                url_idx = None
-                                for i, p in enumerate(parts):
-                                    if 'http' in p:
-                                        url_idx = i
-                                        break
-                                
-                                if url_idx is not None:
-                                    url = parts[url_idx].strip()
-                                    # ID is typically the first column (index 0)
-                                    if url_idx > 0:
-                                        img_id = parts[0].strip()
-                                        # Accept IDs that look like hex (alphanumeric, typical length 8-16 chars)
-                                        if img_id and 8 <= len(img_id) <= 32 and all(c.isalnum() for c in img_id):
-                                            id_to_url[img_id] = url
-            except Exception as e:
+                    # Scan line by line to handle massive BigQuery files without OOM
+                    for line in f:
+                        match = pattern.search(line)
+                        if match:
+                            img_id, url = match.groups()
+                            id_to_url[img_id] = url
+            except Exception:
                 continue
     
     return id_to_url
@@ -594,13 +566,13 @@ def main():
     # 1. BROAD SEARCH FOR ANNOTATIONS
     if args.annotations_csv is None and use_kaggle:
         for root, _, files in os.walk("/kaggle/input"):
-            for file in files:
-                if "point-labels" in file.lower() and file.endswith(".csv"):
+                    for file in files:
+                        if "point-labels" in file.lower() and file.endswith(".csv"):
                     args.annotations_csv = os.path.join(root, file)
                     break
             if args.annotations_csv: break
-    
-    if args.annotations_csv is None:
+        
+        if args.annotations_csv is None:
         raise ValueError("Could not find point-labels CSV. Please provide --annotations_csv")
     
     # Find class descriptions CSV (optional)
@@ -633,7 +605,7 @@ def main():
         args.annotations_csv, 
         class_descriptions_csv=args.class_descriptions_csv
     )
-
+    
     # 2. INDEX ALL LOCAL IMAGES (The "Fast Scan" Fix)
     # OpenImages on Kaggle is often nested like /images/0/a/f/0af...jpg
     print("Building local image index (this may take a minute)...")
@@ -657,12 +629,12 @@ def main():
     # 3. SEARCH FOR METADATA (BigQuery-style or CSV)
     image_id_to_url = {}
     if use_kaggle:
-        # Try BigQuery-style table files first (more common in Kaggle datasets)
-        image_id_to_url = find_metadata_and_map_urls("/kaggle/input/open-images")
+        # Map URLs directly from the BigQuery text data
+        image_id_to_url = get_bigquery_metadata("/kaggle/input/open-images")
         
+        # Fallback to the root if the specific folder is empty
         if not image_id_to_url:
-            # Fallback: check the parent directory if the specific one failed
-            image_id_to_url = find_metadata_and_map_urls("/kaggle/input")
+            image_id_to_url = get_bigquery_metadata("/kaggle/input")
         
         # If still no URLs found, try traditional CSV approach
         if not image_id_to_url:
@@ -685,7 +657,7 @@ def main():
                                 
                                 full_meta = pd.read_csv(metadata_file, usecols=[id_col_orig, url_col_orig])
                                 image_id_to_url = dict(zip(full_meta[id_col_orig].astype(str), full_meta[url_col_orig]))
-                                break
+                        break
                         except: continue
                 if image_id_to_url: break
 
@@ -694,35 +666,42 @@ def main():
     for image_id in image_annotations.keys():
         if image_id in image_path_map or image_id in image_id_to_url:
             valid_image_ids.append(image_id)
-
-    print(f"Mapped {len(image_id_to_url)} URLs from metadata tables.")
-    print(f"Found {len(valid_image_ids)} processable images ({len(image_path_map)} local, {len(image_id_to_url)} via URL).")
+    
+    print(f"\n--- Data Sync Status ---")
+    print(f"Total BigQuery URLs Found: {len(image_id_to_url)}")
+    print(f"Total Annotations Loaded: {len(image_annotations)}")
+    print(f"Overlap (Valid Images): {len(valid_image_ids)}")
+    print(f"Local Images Indexed: {len(image_path_map)}")
 
     if not valid_image_ids:
-        print("ERROR: Still no overlap. Sample ID from Annotations:", list(image_annotations.keys())[:3])
+        print("\n[DIAGNOSTIC] Sampling IDs to find the mismatch:")
+        if image_annotations:
+            print(f"  Annotation ID Sample: {list(image_annotations.keys())[:3]}")
         if image_id_to_url:
-            print("Sample ID from Metadata:", list(image_id_to_url.keys())[:3])
+            print(f"  BigQuery ID Sample:   {list(image_id_to_url.keys())[:3]}")
         print("CRITICAL: No images found. Check if your Kaggle Dataset is fully attached.")
         return
     
     # 5. PROCESSING LOOP
     limit = args.limit if args.limit > 0 else len(valid_image_ids)
     results = {m: [] for m in methods}
-
+    
+    print(f"Processing {min(limit, len(valid_image_ids))} images...")
     for idx, image_id in enumerate(tqdm(valid_image_ids[:limit])):
         try:
+            import requests
+            from io import BytesIO
+            
             # Get Image - prioritize local files, fallback to URL download
             if image_id in image_path_map:
                 image = Image.open(image_path_map[image_id]).convert('RGB')
             elif image_id in image_id_to_url:
-                import requests
-                from io import BytesIO
                 try:
                     url = image_id_to_url[image_id]
-                    # Use timeout 15 for BigQuery/Flickr URLs (often slower)
-                    response = requests.get(url, timeout=15)
-                    response.raise_for_status()
-                    image = Image.open(BytesIO(response.content)).convert('RGB')
+                    # Download image
+                    resp = requests.get(url, timeout=15)
+                    resp.raise_for_status()
+                    image = Image.open(BytesIO(resp.content)).convert('RGB')
                 except Exception as e:
                     # Skip failed downloads/loads
                     continue
