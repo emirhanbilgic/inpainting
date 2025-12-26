@@ -657,7 +657,7 @@ def main():
                                 
                                 full_meta = pd.read_csv(metadata_file, usecols=[id_col_orig, url_col_orig])
                                 image_id_to_url = dict(zip(full_meta[id_col_orig].astype(str), full_meta[url_col_orig]))
-                        break
+                                break
                         except: continue
                 if image_id_to_url: break
 
