@@ -566,13 +566,13 @@ def main():
     # 1. BROAD SEARCH FOR ANNOTATIONS
     if args.annotations_csv is None and use_kaggle:
         for root, _, files in os.walk("/kaggle/input"):
-                    for file in files:
-                        if "point-labels" in file.lower() and file.endswith(".csv"):
+            for file in files:
+                if "point-labels" in file.lower() and file.endswith(".csv"):
                     args.annotations_csv = os.path.join(root, file)
                     break
             if args.annotations_csv: break
-        
-        if args.annotations_csv is None:
+    
+    if args.annotations_csv is None:
         raise ValueError("Could not find point-labels CSV. Please provide --annotations_csv")
     
     # Find class descriptions CSV (optional)
