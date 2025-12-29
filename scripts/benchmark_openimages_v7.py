@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """
-OpenImagesV7 Point-wise Segmentation Benchmark (Fixed with BigQuery)
+OpenImagesV7 Segmentation Benchmark (Detailed Breakdown)
 
-This script evaluates explainability methods on the OpenImagesV7 validation set.
-It uses Google BigQuery to fetch image URLs dynamically, solving directory detection issues.
+Evaluates:
+1. Foreground IoU (Target class)
+2. Background IoU (Everything else)
+3. Mean IoU (Average of FG and BG)
+
+This will help verify if the ~8.75 benchmark refers to FG only or mIoU.
 """
 
 import sys
@@ -28,7 +32,7 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-# Import model components (Graceful fail if libraries missing)
+# Import model components
 try:
     from legrad import LeWrapper, LePreprocess
     import open_clip
@@ -36,21 +40,20 @@ except ImportError:
     pass
 
 # =============================================================================
-# Attention Rollout Implementation
+# Attention Rollout (Reference)
 # =============================================================================
 
-def compute_rollout_attention(all_layer_matrices, start_layer=0):
+def compute_rollout_attention(all_layer_matrices, start_layer=1):
     num_tokens = all_layer_matrices[0].shape[1]
     batch_size = all_layer_matrices[0].shape[0]
     device = all_layer_matrices[0].device
     
     eye = torch.eye(num_tokens).expand(batch_size, num_tokens, num_tokens).to(device)
-    all_layer_matrices = [all_layer_matrices[i] + eye for i in range(len(all_layer_matrices))]
-    
-    matrices_aug = [
-        all_layer_matrices[i] / all_layer_matrices[i].sum(dim=-1, keepdim=True)
-        for i in range(len(all_layer_matrices))
-    ]
+    matrices_aug = []
+    for mat in all_layer_matrices:
+        mat_aug = mat + eye
+        mat_aug = mat_aug / mat_aug.sum(dim=-1, keepdim=True)
+        matrices_aug.append(mat_aug)
     
     joint_attention = matrices_aug[start_layer]
     for i in range(start_layer + 1, len(matrices_aug)):
@@ -58,7 +61,7 @@ def compute_rollout_attention(all_layer_matrices, start_layer=0):
     
     return joint_attention
 
-def compute_attention_rollout_reference(model, image, start_layer=0):
+def compute_attention_rollout_reference(model, image, start_layer=1):
     blocks = model.visual.transformer.resblocks
     num_heads = blocks[0].attn.num_heads
     embed_dim = blocks[0].attn.embed_dim
@@ -79,7 +82,7 @@ def compute_attention_rollout_reference(model, image, start_layer=0):
             pos_embed = model.visual.original_pos_embed
         else:
             pos_embed = model.visual.positional_embedding
-        
+            
         if pos_embed.shape[0] != x.shape[1]:
             cls_pos = pos_embed[:1]
             patch_pos = pos_embed[1:]
@@ -119,7 +122,7 @@ def compute_attention_rollout_reference(model, image, start_layer=0):
             attn_output = attn_module.out_proj(attn_output)
             x = x + attn_output
             x = x + block.mlp(block.ln_2(x))
-    
+
     rollout = compute_rollout_attention(all_attentions, start_layer=start_layer)
     cls_attn = rollout[:, 0, 1:]
     
@@ -132,45 +135,70 @@ def compute_attention_rollout_reference(model, image, start_layer=0):
     return heatmap[0, 0].detach().cpu()
 
 # =============================================================================
-# Point-wise mIoU Evaluation
+# DETAILED METRIC EVALUATION
 # =============================================================================
 
-def compute_pointwise_miou(heatmap, positive_points, negative_points, threshold=0.5):
+def compute_detailed_miou(heatmap, positive_points, negative_points, threshold=0.5):
+    """
+    Returns a dictionary with:
+    - 'fg_iou': Foreground IoU (Positive Class)
+    - 'bg_iou': Background IoU (Negative Class)
+    - 'm_iou':  Mean IoU
+    """
     heatmap_np = heatmap.numpy() if isinstance(heatmap, torch.Tensor) else heatmap
     H, W = heatmap_np.shape
+    
+    # Prediction Masks
+    # 1 = Foreground, 0 = Background
     pred_mask = (heatmap_np > threshold).astype(np.int32)
     
-    tp_fg = 0
-    fp_fg = 0
-    fn_fg = 0
-    tn_fg = 0
+    # Counters
+    # TP: Pos point in FG mask
+    # FN: Pos point in BG mask
+    # FP: Neg point in FG mask
+    # TN: Neg point in BG mask
+    tp = 0
+    fn = 0
+    fp = 0
+    tn = 0
     
     for y, x in positive_points:
-        y = int(np.clip(y, 0, H - 1))
-        x = int(np.clip(x, 0, W - 1))
+        y, x = int(np.clip(y, 0, H-1)), int(np.clip(x, 0, W-1))
         if pred_mask[y, x] == 1:
-            tp_fg += 1
+            tp += 1
         else:
-            fn_fg += 1
-    
+            fn += 1
+            
     for y, x in negative_points:
-        y = int(np.clip(y, 0, H - 1))
-        x = int(np.clip(x, 0, W - 1))
+        y, x = int(np.clip(y, 0, H-1)), int(np.clip(x, 0, W-1))
         if pred_mask[y, x] == 1:
-            fp_fg += 1
+            fp += 1
         else:
-            tn_fg += 1
+            tn += 1
+            
+    # --- Foreground IoU ---
+    # Intersection = TP
+    # Union = TP + FP + FN (All Pos Points + Neg Points predicted as Pos)
+    union_fg = tp + fp + fn
+    iou_fg = (tp / union_fg) if union_fg > 0 else 0.0
     
-    union_fg = tp_fg + fp_fg + fn_fg
-    iou_fg = tp_fg / (union_fg + 1e-8)
+    # --- Background IoU ---
+    # Intersection = TN
+    # Union = TN + FN + FP (All Neg Points + Pos Points predicted as Neg)
+    union_bg = tn + fn + fp
+    iou_bg = (tn / union_bg) if union_bg > 0 else 0.0
     
-    union_bg = tn_fg + fp_fg + fn_fg
-    iou_bg = tn_fg / (union_bg + 1e-8)
+    # --- Mean IoU ---
+    m_iou = (iou_fg + iou_bg) / 2.0
     
-    return (iou_fg + iou_bg) / 2.0
+    return {
+        'fg_iou': iou_fg * 100.0,
+        'bg_iou': iou_bg * 100.0,
+        'm_iou': m_iou * 100.0
+    }
 
 # =============================================================================
-# Data Loading & Parsing
+# Data Loading
 # =============================================================================
 
 def load_openimages_annotations(annotations_csv_path):
@@ -178,27 +206,16 @@ def load_openimages_annotations(annotations_csv_path):
     try:
         df = pd.read_csv(annotations_csv_path)
     except Exception as e:
-        print(f"Error reading annotation CSV: {e}")
+        print(f"Error reading CSV: {e}")
         return {}
     
     image_annotations = defaultdict(lambda: {'positive': defaultdict(list), 'negative': defaultdict(list)})
     
-    # Check if necessary columns exist
-    required_cols = ['ImageId', 'Label', 'X', 'Y']
-    if not all(col in df.columns for col in required_cols):
-        print(f"Error: CSV missing columns. Found: {df.columns}")
-        return {}
-
     for _, row in df.iterrows():
         image_id = str(row['ImageId'])
         label_id = str(row['Label'])
+        class_name = str(row.get('TextLabel', label_id)).strip() if pd.notna(row.get('TextLabel')) else label_id
         
-        # Use TextLabel if available, else Label ID
-        if 'TextLabel' in row and pd.notna(row['TextLabel']):
-            class_name = str(row['TextLabel']).strip()
-        else:
-            class_name = label_id
-            
         x, y = float(row['X']), float(row['Y'])
         estimated = str(row.get('EstimatedYesNo', 'yes')).lower()
         
@@ -210,173 +227,117 @@ def load_openimages_annotations(annotations_csv_path):
     return dict(image_annotations)
 
 def fetch_image_urls_from_bigquery(subset='validation', limit=None):
-    """
-    Fetches image URLs directly from the BigQuery public dataset.
-    """
-    print(f"\nConnecting to BigQuery to fetch image URLs (subset='{subset}')...")
-    
+    print(f"\nConnecting to BigQuery (subset='{subset}')...")
     try:
         client = bigquery.Client()
-        
-        # Construct Query
-        # If limit is None, we fetch all (approx 41k for validation)
-        # We only need ImageID and the URL
         limit_clause = f"LIMIT {limit}" if limit else ""
-        
         query = f"""
             SELECT image_id, original_url
             FROM `bigquery-public-data.open_images.images`
             WHERE subset = '{subset}'
             {limit_clause}
         """
-        
         df = client.query(query).to_dataframe()
-        
-        if df.empty:
-            print("Warning: BigQuery returned no results.")
-            return {}
-
-        print(f"Successfully retrieved {len(df)} URLs from BigQuery.")
-        
-        # Convert to dictionary {image_id: url}
         return dict(zip(df.image_id, df.original_url))
-
     except Exception as e:
         print(f"BigQuery Error: {e}")
-        print("Ensure 'Internet' is enabled in Kaggle Notebook settings.")
         return {}
 
 # =============================================================================
-# Main Evaluation
+# Main
 # =============================================================================
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--annotations_csv', type=str, default=None, help="Path to point-labels CSV")
-    parser.add_argument('--limit', type=int, default=100, help="Number of images to process")
+    parser.add_argument('--annotations_csv', type=str, default=None)
+    parser.add_argument('--limit', type=int, default=100)
     parser.add_argument('--model_name', type=str, default='ViT-B-16')
     parser.add_argument('--pretrained', type=str, default='laion2b_s34b_b88k')
-    parser.add_argument('--image_size', type=int, default=224)
-    parser.add_argument('--threshold', type=float, default=0.5)
-    parser.add_argument('--subset', type=str, default='validation', help="OpenImages subset (validation/test/train)")
-    
+    parser.add_argument('--subset', type=str, default='validation')
     args = parser.parse_args()
+    
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    
-    # 1. Load Annotations
-    # Auto-detect annotation file if not provided
+
+    # 1. Locate Annotations
     if not args.annotations_csv:
-        search_paths = ["/kaggle/input", "."]
-        for path in search_paths:
-            for root, _, files in os.walk(path):
-                for file in files:
-                    if "point_labels" in file.lower() and file.endswith(".csv"):
-                        args.annotations_csv = os.path.join(root, file)
-                        break
-                if args.annotations_csv: break
+        for root, _, files in os.walk("/kaggle/input"):
+            for file in files:
+                if "point" in file.lower() and file.endswith(".csv"):
+                    args.annotations_csv = os.path.join(root, file)
+                    break
     
     if not args.annotations_csv:
-        print("Error: Annotation CSV not found. Please specify --annotations_csv")
-        # For testing without CSV, one might comment this return out, but benchmarks need labels.
+        print("Error: No annotation CSV found.")
         return
-        
+
+    # 2. Load Data
     image_annotations = load_openimages_annotations(args.annotations_csv)
-    print(f"Loaded annotations for {len(image_annotations)} images.")
+    fetch_limit = 5000 if args.limit < 1000 else args.limit * 2 
+    image_id_to_url = fetch_image_urls_from_bigquery(args.subset, fetch_limit)
     
-    # 2. Load Metadata (URLs) via BigQuery
-    # We fetch enough URLs to cover the limit, or all validation URLs to ensure intersection
-    fetch_limit = None if args.limit > 1000 else 5000 # Optimization: fetch more than limit to ensure intersection
-    image_id_to_url = fetch_image_urls_from_bigquery(subset=args.subset, limit=fetch_limit)
-    
-    if not image_id_to_url:
-        print("Critical Error: Failed to fetch URLs. Exiting.")
-        return
-
-    # 3. Model Setup
-    print(f"\nLoading model {args.model_name}...")
-    try:
-        model, _, preprocess = open_clip.create_model_and_transforms(
-            model_name=args.model_name,
-            pretrained=args.pretrained,
-            device=device
-        )
-        tokenizer = open_clip.get_tokenizer(args.model_name)
-        model.eval()
-        # Initialize LeGrad wrapper
-        model = LeWrapper(model, layer_index=-2)
-        preprocess = LePreprocess(preprocess=preprocess, image_size=args.image_size)
-    except NameError:
-        print("Error: 'open_clip' or 'legrad' not imported. Check dependencies.")
-        return
-    except Exception as e:
-        print(f"Error loading model: {e}")
-        return
-    
-    # 4. Filter images (Intersection of Annotations and Available URLs)
     valid_ids = [i for i in image_annotations.keys() if i in image_id_to_url]
-    print(f"\nOverlap Analysis:")
-    print(f"  Annotation IDs: {len(image_annotations)}")
-    print(f"  URL IDs:        {len(image_id_to_url)}")
-    print(f"  Valid Intersection: {len(valid_ids)}")
+    print(f"Images to process: {len(valid_ids)} (limit: {args.limit})")
     
-    if len(valid_ids) == 0:
-        print("No valid images found for processing (Intersection is 0).")
-        print("Try increasing the BigQuery limit or checking if 'subset' matches annotation file.")
-        return
+    # 3. Model
+    print(f"Loading {args.model_name}...")
+    model, _, preprocess = open_clip.create_model_and_transforms(args.model_name, pretrained=args.pretrained, device=device)
+    model.eval()
+    if 'LePreprocess' in globals(): preprocess = LePreprocess(preprocess, image_size=224)
 
-    # 5. Process Loop
-    results = []
-    # If args.limit is smaller than valid_ids, slice it
-    process_ids = valid_ids[:args.limit] if args.limit > 0 else valid_ids
+    # 4. Evaluate
+    results = {'fg': [], 'bg': [], 'mean': []}
+    process_ids = valid_ids[:args.limit]
     
-    print(f"Processing {len(process_ids)} images...")
-    
-    for image_id in tqdm(process_ids):
+    print("Running evaluation...")
+    for idx, image_id in enumerate(tqdm(process_ids)):
         try:
             url = image_id_to_url[image_id]
+            resp = requests.get(url, timeout=3)
+            if resp.status_code != 200: continue
             
-            # Download Image on the fly
-            try:
-                resp = requests.get(url, timeout=5)
-                if resp.status_code != 200:
-                    continue
-                image = Image.open(BytesIO(resp.content)).convert('RGB')
-            except Exception:
-                # Silent fail for network issues
-                continue
-                
+            image = Image.open(BytesIO(resp.content)).convert('RGB')
             img_t = preprocess(image).unsqueeze(0).to(device)
             H_img, W_img = img_t.shape[-2:]
             
             ann = image_annotations[image_id]
-            classes = list(ann['positive'].keys())
             
-            for class_name in classes:
-                # Convert normalized coordinates to pixel coordinates
+            # Rollout Calculation
+            heatmap = compute_attention_rollout_reference(model, img_t, start_layer=1)
+            heatmap = F.interpolate(heatmap.view(1,1,heatmap.shape[0],heatmap.shape[1]), size=(H_img, W_img), mode='bilinear').squeeze()
+            
+            # Evaluate against all classes in this image
+            for class_name in ann['positive']:
                 pos_pts = [(int(y*H_img), int(x*W_img)) for y, x in ann['positive'][class_name]]
                 neg_pts = [(int(y*H_img), int(x*W_img)) for y, x in ann['negative'].get(class_name, [])]
                 
-                # Compute Heatmap
-                heatmap = compute_attention_rollout_reference(model, img_t)
+                metrics = compute_detailed_miou(heatmap, pos_pts, neg_pts)
                 
-                heatmap = F.interpolate(
-                    heatmap.view(1, 1, heatmap.shape[-2], heatmap.shape[-1]),
-                    size=(H_img, W_img),
-                    mode='bilinear',
-                    align_corners=False
-                ).squeeze()
-                
-                miou = compute_pointwise_miou(heatmap, pos_pts, neg_pts, threshold=args.threshold)
-                results.append(miou)
-                
-        except Exception as e:
-            # print(f"Error processing {image_id}: {e}")
+                results['fg'].append(metrics['fg_iou'])
+                results['bg'].append(metrics['bg_iou'])
+                results['mean'].append(metrics['m_iou'])
+        
+            # Periodic print
+            if (idx + 1) % 10 == 0 and len(results['fg']) > 0:
+                print(f"  [Interim {idx+1}] FG: {np.mean(results['fg']):.2f} | BG: {np.mean(results['bg']):.2f} | Mean: {np.mean(results['mean']):.2f}")
+
+        except Exception:
             continue
 
-    if results:
-        print(f"\nFinal Point-wise mIoU: {np.mean(results):.4f} (N={len(results)})")
+    print("\n" + "="*50)
+    print("FINAL RESULTS")
+    print("="*50)
+    if results['fg']:
+        fg = np.mean(results['fg'])
+        bg = np.mean(results['bg'])
+        m = np.mean(results['mean'])
+        
+        print(f"Foreground IoU (FG): {fg:.4f}")
+        print(f"Background IoU (BG): {bg:.4f}")
+        print(f"Mean IoU (mIoU):     {m:.4f}")
+        print("-" * 30)
+        print("Note: If the paper reports ~8.75, it likely refers to 'Foreground IoU'.")
     else:
-        print("No successful evaluations. (Check internet connection or URL validity)")
+        print("No results computed.")
 
 if __name__ == "__main__":
     main()
