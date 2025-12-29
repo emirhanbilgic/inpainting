@@ -40,6 +40,18 @@ except ImportError:
     pass
 
 # =============================================================================
+# LeGrad Implementation
+# =============================================================================
+
+def compute_legrad_for_embedding(model, image, text_emb_1x):
+    """Compute LeGrad heatmap for a single text embedding."""
+    with torch.enable_grad():
+        logits = model.compute_legrad(image=image, text_embedding=text_emb_1x)
+    logits = logits[0, 0]
+    logits = logits.clamp(0, 1).detach().cpu()
+    return logits
+
+# =============================================================================
 # Attention Rollout (Reference)
 # =============================================================================
 
@@ -254,6 +266,10 @@ def main():
     parser.add_argument('--model_name', type=str, default='ViT-B-16')
     parser.add_argument('--pretrained', type=str, default='laion2b_s34b_b88k')
     parser.add_argument('--subset', type=str, default='validation')
+    parser.add_argument('--method', type=str, default='rollout', choices=['rollout', 'legrad'],
+                        help='Method to use: rollout (attention rollout) or legrad (LeGrad)')
+    parser.add_argument('--rollout_start_layer', type=int, default=1,
+                        help='Start layer for attention rollout (only used when method=rollout)')
     args = parser.parse_args()
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -282,13 +298,29 @@ def main():
     print(f"Loading {args.model_name}...")
     model, _, preprocess = open_clip.create_model_and_transforms(args.model_name, pretrained=args.pretrained, device=device)
     model.eval()
-    if 'LePreprocess' in globals(): preprocess = LePreprocess(preprocess, image_size=224)
+    
+    # For LeGrad, wrap model with LeWrapper
+    if args.method == 'legrad':
+        if 'LeWrapper' not in globals():
+            print("Error: LeWrapper not available. Cannot use legrad method.")
+            return
+        model = LeWrapper(model, layer_index=-2)
+        print("Wrapped model with LeWrapper for LeGrad")
+    
+    if 'LePreprocess' in globals(): 
+        preprocess = LePreprocess(preprocess, image_size=224)
+    
+    # For LeGrad, we need tokenizer for text encoding
+    tokenizer = None
+    if args.method == 'legrad':
+        if 'open_clip' in globals():
+            tokenizer = open_clip.get_tokenizer(args.model_name)
 
     # 4. Evaluate
     results = {'fg': [], 'bg': [], 'mean': []}
     process_ids = valid_ids[:args.limit]
     
-    print("Running evaluation...")
+    print(f"Running evaluation with method: {args.method}...")
     for idx, image_id in enumerate(tqdm(process_ids)):
         try:
             url = image_id_to_url[image_id]
@@ -301,12 +333,36 @@ def main():
             
             ann = image_annotations[image_id]
             
-            # Rollout Calculation
-            heatmap = compute_attention_rollout_reference(model, img_t, start_layer=1)
-            heatmap = F.interpolate(heatmap.view(1,1,heatmap.shape[0],heatmap.shape[1]), size=(H_img, W_img), mode='bilinear').squeeze()
-            
             # Evaluate against all classes in this image
             for class_name in ann['positive']:
+                # Compute heatmap based on method
+                if args.method == 'legrad':
+                    # LeGrad: encode text and compute heatmap
+                    if tokenizer is None:
+                        continue
+                    prompt = f"a photo of a {class_name}."
+                    text_tokens = tokenizer([prompt]).to(device)
+                    with torch.no_grad():
+                        text_emb = model.encode_text(text_tokens, normalize=True)
+                    
+                    heatmap = compute_legrad_for_embedding(model, img_t, text_emb)
+                    # LeGrad returns heatmap at feature resolution, resize to image size
+                    heatmap = F.interpolate(
+                        heatmap.view(1, 1, heatmap.shape[0], heatmap.shape[1]),
+                        size=(H_img, W_img),
+                        mode='bilinear',
+                        align_corners=False
+                    ).squeeze()
+                else:
+                    # Rollout: compute attention rollout (class-agnostic)
+                    heatmap = compute_attention_rollout_reference(model, img_t, start_layer=args.rollout_start_layer)
+                    heatmap = F.interpolate(
+                        heatmap.view(1, 1, heatmap.shape[0], heatmap.shape[1]),
+                        size=(H_img, W_img),
+                        mode='bilinear',
+                        align_corners=False
+                    ).squeeze()
+                
                 pos_pts = [(int(y*H_img), int(x*W_img)) for y, x in ann['positive'][class_name]]
                 neg_pts = [(int(y*H_img), int(x*W_img)) for y, x in ann['negative'].get(class_name, [])]
                 
@@ -320,11 +376,13 @@ def main():
             if (idx + 1) % 10 == 0 and len(results['fg']) > 0:
                 print(f"  [Interim {idx+1}] FG: {np.mean(results['fg']):.2f} | BG: {np.mean(results['bg']):.2f} | Mean: {np.mean(results['mean']):.2f}")
 
-        except Exception:
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
             continue
 
     print("\n" + "="*50)
-    print("FINAL RESULTS")
+    print(f"FINAL RESULTS ({args.method.upper()})")
     print("="*50)
     if results['fg']:
         fg = np.mean(results['fg'])
