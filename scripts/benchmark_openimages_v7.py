@@ -1,15 +1,9 @@
 #!/usr/bin/env python3
 """
-OpenImagesV7 Point-wise Segmentation Benchmark (Fixed for BigQuery Directory Structure)
+OpenImagesV7 Point-wise Segmentation Benchmark (Fixed with BigQuery)
 
 This script evaluates explainability methods on the OpenImagesV7 validation set.
-It handles Kaggle BigQuery datasets where metadata is often split across multiple 
-files inside an 'images' directory.
-
-Fixes applied:
-- Recursively scans directories named 'images' (common in BigQuery exports).
-- Content-based detection: looks for files containing "http" and "flickr" if headers fail.
-- Robust separator detection (handles comma, tab, or complex encodings).
+It uses Google BigQuery to fetch image URLs dynamically, solving directory detection issues.
 """
 
 import sys
@@ -25,14 +19,16 @@ import pandas as pd
 from collections import defaultdict
 import requests
 from io import BytesIO
-import re
+
+# Import BigQuery
+from google.cloud import bigquery
 
 # Add project root to path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-# Import model components
+# Import model components (Graceful fail if libraries missing)
 try:
     from legrad import LeWrapper, LePreprocess
     import open_clip
@@ -179,14 +175,25 @@ def compute_pointwise_miou(heatmap, positive_points, negative_points, threshold=
 
 def load_openimages_annotations(annotations_csv_path):
     print(f"Loading annotations from {annotations_csv_path}...")
-    df = pd.read_csv(annotations_csv_path)
+    try:
+        df = pd.read_csv(annotations_csv_path)
+    except Exception as e:
+        print(f"Error reading annotation CSV: {e}")
+        return {}
     
     image_annotations = defaultdict(lambda: {'positive': defaultdict(list), 'negative': defaultdict(list)})
     
+    # Check if necessary columns exist
+    required_cols = ['ImageId', 'Label', 'X', 'Y']
+    if not all(col in df.columns for col in required_cols):
+        print(f"Error: CSV missing columns. Found: {df.columns}")
+        return {}
+
     for _, row in df.iterrows():
         image_id = str(row['ImageId'])
         label_id = str(row['Label'])
         
+        # Use TextLabel if available, else Label ID
         if 'TextLabel' in row and pd.notna(row['TextLabel']):
             class_name = str(row['TextLabel']).strip()
         else:
@@ -202,109 +209,42 @@ def load_openimages_annotations(annotations_csv_path):
             
     return dict(image_annotations)
 
-def get_bigquery_metadata_deep_scan(search_path="/kaggle/input"):
+def fetch_image_urls_from_bigquery(subset='validation', limit=None):
     """
-    Deep scan for metadata. 
-    1. Looks specifically for folders named 'images'.
-    2. Scans files inside them.
-    3. Uses content detection (looking for URLs) if headers are missing.
+    Fetches image URLs directly from the BigQuery public dataset.
     """
-    print(f"\nDeep Scanning {search_path} for metadata...")
-    id_to_url = {}
-    candidate_files = []
-
-    # 1. Build list of all potential files
-    for root, dirs, files in os.walk(search_path):
-        # If we are in a folder named 'images', ALL files are candidates
-        in_images_dir = 'images' in os.path.basename(root).lower()
+    print(f"\nConnecting to BigQuery to fetch image URLs (subset='{subset}')...")
+    
+    try:
+        client = bigquery.Client()
         
-        for file in files:
-            path = os.path.join(root, file)
-            if file.lower().endswith(('.jpg', '.jpeg', '.png', '.zip', '.tar', '.gz')):
-                continue
-            
-            # Prioritize files in 'images' folder or with 'images' in name
-            if in_images_dir or 'images' in file.lower():
-                candidate_files.insert(0, path) # High priority
-            else:
-                candidate_files.append(path) # Low priority
+        # Construct Query
+        # If limit is None, we fetch all (approx 41k for validation)
+        # We only need ImageID and the URL
+        limit_clause = f"LIMIT {limit}" if limit else ""
+        
+        query = f"""
+            SELECT image_id, original_url
+            FROM `bigquery-public-data.open_images.images`
+            WHERE subset = '{subset}'
+            {limit_clause}
+        """
+        
+        df = client.query(query).to_dataframe()
+        
+        if df.empty:
+            print("Warning: BigQuery returned no results.")
+            return {}
 
-    print(f"Found {len(candidate_files)} files to check. Top 3: {candidate_files[:3]}")
+        print(f"Successfully retrieved {len(df)} URLs from BigQuery.")
+        
+        # Convert to dictionary {image_id: url}
+        return dict(zip(df.image_id, df.original_url))
 
-    for file_path in candidate_files:
-        try:
-            # Quick check: read first 1KB to see if it looks like the right file
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                snippet = f.read(1024)
-            
-            # Heuristic: Must contain 'http' and 'flickr' to be the images metadata
-            if 'http' not in snippet or 'flickr' not in snippet:
-                continue
-
-            print(f"\nScanning candidate: {file_path}")
-            
-            # Try parsing with pandas 'python' engine to auto-detect separators
-            # We assume if headers fail, we might need to rely on column index
-            try:
-                chunk_iter = pd.read_csv(file_path, sep=None, engine='python', chunksize=10000, dtype=str, on_bad_lines='skip')
-                first_chunk = next(chunk_iter)
-            except Exception:
-                continue
-
-            cols = [c.lower() for c in first_chunk.columns]
-            print(f"  Columns detected: {cols}")
-
-            # Strategy A: Columns exist and are named correctly
-            id_col = next((c for c in first_chunk.columns if 'imageid' in c.lower() or 'image_id' in c.lower()), None)
-            url_col = next((c for c in first_chunk.columns if 'originalurl' in c.lower() or 'original_url' in c.lower()), None)
-            if not url_col:
-                url_col = next((c for c in first_chunk.columns if 'thumbnail' in c.lower() and 'url' in c.lower()), None)
-
-            # Strategy B: No valid headers, but data looks right (User's case)
-            # If headers are garbage (e.g. one long string) or missing, we inspect the data in the first row
-            if not (id_col and url_col):
-                print("  Headers unclear. Inspecting data content...")
-                # Check first row values
-                row0 = first_chunk.iloc[0]
-                
-                # Find column index that looks like an ID (16 hex chars)
-                id_idx = -1
-                url_idx = -1
-                
-                for i, val in enumerate(row0):
-                    val = str(val)
-                    if len(val) == 16 and all(c in '0123456789abcdefABCDEF' for c in val):
-                        id_idx = i
-                    if val.startswith('http'):
-                        url_idx = i
-                
-                if id_idx != -1 and url_idx != -1:
-                    print(f"  Found data pattern! ID at col {id_idx}, URL at col {url_idx}")
-                    id_col = first_chunk.columns[id_idx]
-                    url_col = first_chunk.columns[url_idx]
-
-            if id_col and url_col:
-                print(f"  >>> SUCCESS. Extraction started from {file_path}")
-                
-                # Process first chunk
-                for _, row in first_chunk.iterrows():
-                    if pd.notna(row[id_col]) and pd.notna(row[url_col]):
-                        id_to_url[row[id_col]] = row[url_col]
-
-                # Process remaining
-                for chunk in chunk_iter:
-                    for _, row in chunk.iterrows():
-                        if pd.notna(row[id_col]) and pd.notna(row[url_col]):
-                            id_to_url[row[id_col]] = row[url_col]
-                
-                print(f"  Loaded {len(id_to_url)} URLs.")
-                return id_to_url
-
-        except Exception as e:
-            # print(f"  Skipping {file_path}: {e}")
-            continue
-
-    return id_to_url
+    except Exception as e:
+        print(f"BigQuery Error: {e}")
+        print("Ensure 'Internet' is enabled in Kaggle Notebook settings.")
+        return {}
 
 # =============================================================================
 # Main Evaluation
@@ -312,40 +252,44 @@ def get_bigquery_metadata_deep_scan(search_path="/kaggle/input"):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--annotations_csv', type=str, default=None)
+    parser.add_argument('--annotations_csv', type=str, default=None, help="Path to point-labels CSV")
     parser.add_argument('--limit', type=int, default=100, help="Number of images to process")
     parser.add_argument('--model_name', type=str, default='ViT-B-16')
     parser.add_argument('--pretrained', type=str, default='laion2b_s34b_b88k')
     parser.add_argument('--image_size', type=int, default=224)
     parser.add_argument('--threshold', type=float, default=0.5)
+    parser.add_argument('--subset', type=str, default='validation', help="OpenImages subset (validation/test/train)")
     
     args = parser.parse_args()
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
     # 1. Load Annotations
+    # Auto-detect annotation file if not provided
     if not args.annotations_csv:
-        for root, _, files in os.walk("/kaggle/input"):
-            for file in files:
-                if "point-labels" in file.lower() and file.endswith(".csv"):
-                    args.annotations_csv = os.path.join(root, file)
-                    break
+        search_paths = ["/kaggle/input", "."]
+        for path in search_paths:
+            for root, _, files in os.walk(path):
+                for file in files:
+                    if "point_labels" in file.lower() and file.endswith(".csv"):
+                        args.annotations_csv = os.path.join(root, file)
+                        break
+                if args.annotations_csv: break
     
     if not args.annotations_csv:
         print("Error: Annotation CSV not found. Please specify --annotations_csv")
+        # For testing without CSV, one might comment this return out, but benchmarks need labels.
         return
         
     image_annotations = load_openimages_annotations(args.annotations_csv)
     print(f"Loaded annotations for {len(image_annotations)} images.")
     
-    # 2. Load Metadata (URLs) - DEEP SCAN
-    image_id_to_url = get_bigquery_metadata_deep_scan("/kaggle/input")
+    # 2. Load Metadata (URLs) via BigQuery
+    # We fetch enough URLs to cover the limit, or all validation URLs to ensure intersection
+    fetch_limit = None if args.limit > 1000 else 5000 # Optimization: fetch more than limit to ensure intersection
+    image_id_to_url = fetch_image_urls_from_bigquery(subset=args.subset, limit=fetch_limit)
     
     if not image_id_to_url:
-        print("\n" + "!"*60)
-        print("CRITICAL ERROR: Could not find any URL metadata.")
-        print("This means the script could not find a file containing 'http' and 'flickr'.")
-        print("Please check if the 'images' table is present in your Kaggle dataset.")
-        print("!"*60)
+        print("Critical Error: Failed to fetch URLs. Exiting.")
         return
 
     # 3. Model Setup
@@ -358,13 +302,17 @@ def main():
         )
         tokenizer = open_clip.get_tokenizer(args.model_name)
         model.eval()
+        # Initialize LeGrad wrapper
         model = LeWrapper(model, layer_index=-2)
         preprocess = LePreprocess(preprocess=preprocess, image_size=args.image_size)
     except NameError:
         print("Error: 'open_clip' or 'legrad' not imported. Check dependencies.")
         return
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        return
     
-    # 4. Filter images
+    # 4. Filter images (Intersection of Annotations and Available URLs)
     valid_ids = [i for i in image_annotations.keys() if i in image_id_to_url]
     print(f"\nOverlap Analysis:")
     print(f"  Annotation IDs: {len(image_annotations)}")
@@ -372,11 +320,13 @@ def main():
     print(f"  Valid Intersection: {len(valid_ids)}")
     
     if len(valid_ids) == 0:
-        print("No valid images found for processing.")
+        print("No valid images found for processing (Intersection is 0).")
+        print("Try increasing the BigQuery limit or checking if 'subset' matches annotation file.")
         return
 
     # 5. Process Loop
     results = []
+    # If args.limit is smaller than valid_ids, slice it
     process_ids = valid_ids[:args.limit] if args.limit > 0 else valid_ids
     
     print(f"Processing {len(process_ids)} images...")
@@ -384,11 +334,15 @@ def main():
     for image_id in tqdm(process_ids):
         try:
             url = image_id_to_url[image_id]
+            
+            # Download Image on the fly
             try:
                 resp = requests.get(url, timeout=5)
-                resp.raise_for_status()
+                if resp.status_code != 200:
+                    continue
                 image = Image.open(BytesIO(resp.content)).convert('RGB')
             except Exception:
+                # Silent fail for network issues
                 continue
                 
             img_t = preprocess(image).unsqueeze(0).to(device)
@@ -398,9 +352,11 @@ def main():
             classes = list(ann['positive'].keys())
             
             for class_name in classes:
+                # Convert normalized coordinates to pixel coordinates
                 pos_pts = [(int(y*H_img), int(x*W_img)) for y, x in ann['positive'][class_name]]
                 neg_pts = [(int(y*H_img), int(x*W_img)) for y, x in ann['negative'].get(class_name, [])]
                 
+                # Compute Heatmap
                 heatmap = compute_attention_rollout_reference(model, img_t)
                 
                 heatmap = F.interpolate(
@@ -414,12 +370,13 @@ def main():
                 results.append(miou)
                 
         except Exception as e:
+            # print(f"Error processing {image_id}: {e}")
             continue
 
     if results:
         print(f"\nFinal Point-wise mIoU: {np.mean(results):.4f} (N={len(results)})")
     else:
-        print("No successful evaluations.")
+        print("No successful evaluations. (Check internet connection or URL validity)")
 
 if __name__ == "__main__":
     main()
