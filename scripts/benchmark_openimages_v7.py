@@ -330,39 +330,6 @@ def visualize_result(image, heatmap, positive_points, negative_points, metrics,
 # Data Loading
 # =============================================================================
 
-def load_local_label_map(dict_path):
-    """
-    Parses the OpenImages dictionary file which uses a custom table format.
-    Expected format: /m/01www CD
-    """
-    label_map = {}
-    if not os.path.exists(dict_path):
-        print(f"Warning: Dictionary file not found at {dict_path}")
-        return label_map
-
-    print(f"Loading local label dictionary from {dict_path}...")
-    try:
-        # Using sep=r'\s+' to handle one or more spaces/tabs
-        # We read it without a header and manually assign names
-        df = pd.read_csv(dict_path, sep=r'\s+', names=['label_id', 'display_name'], engine='python', on_bad_lines='skip')
-        
-        # Convert to dictionary: {'/m/04kkgm': 'Table'}
-        label_map = dict(zip(df['label_id'], df['display_name']))
-        print(f"Successfully loaded {len(label_map)} label mappings.")
-    except Exception as e:
-        print(f"Error parsing dictionary file: {e}")
-        # Fallback manual parsing if pandas fails
-        try:
-            with open(dict_path, 'r') as f:
-                for line in f:
-                    parts = line.strip().split(maxsplit=1)
-                    if len(parts) == 2:
-                        label_map[parts[0]] = parts[1]
-        except Exception as e2:
-            print(f"Manual parsing also failed: {e2}")
-            
-    return label_map
-
 def load_openimages_annotations(annotations_csv_path, label_id_to_name=None):
     """
     Load OpenImages annotations from CSV.
@@ -402,26 +369,25 @@ def load_openimages_annotations(annotations_csv_path, label_id_to_name=None):
         text_label_raw = row.get('TextLabel')
         
         # Try to get class name in this order:
-        # 1. Label mapping from dictionary/BigQuery (if label_id is in mapping)
-        # 2. TextLabel from CSV (if available and not NaN)
-        # 3. Skip if no mapping found (don't use label_id as fallback)
+        # 1. TextLabel from CSV (if available and not NaN)
+        # 2. Label mapping from BigQuery (if label_id is in mapping)
+        # 3. label_id itself (as fallback, but will be normalized)
         
         class_name = None
         source = None
         
-        # PRIORITY: Lookup the display name from our dictionary first
-        if label_id in label_id_to_name:
-            class_name = label_id_to_name[label_id]
-            source = "Label mapping (dict/BigQuery)"
-        elif pd.notna(text_label_raw):
+        if pd.notna(text_label_raw):
             class_name = str(text_label_raw).strip()
             source = "TextLabel (CSV)"
+        elif label_id in label_id_to_name:
+            class_name = label_id_to_name[label_id]
+            source = "BigQuery mapping"
         else:
-            # No mapping found - skip this annotation
-            if label_id.startswith('m/') or label_id.startswith('/m/'):
+            # Fallback to label_id, but mark it for warning
+            class_name = label_id
+            source = "Label ID (fallback)"
+            if label_id.startswith('m/'):
                 missing_labels.add(label_id)
-            skipped_count += 1
-            continue
         
         # Normalize the class name
         normalized_name = normalize_class_name(class_name)
@@ -506,13 +472,13 @@ def normalize_class_name(class_name):
     - Convert to lowercase
     - Replace underscores and hyphens with spaces
     - Strip extra whitespace
-    - Handle label IDs (m/xxxxx or /m/xxxxx) by returning None (should be mapped first)
+    - Handle label IDs (m/xxxxx) by returning None (should be mapped first)
     """
     if not class_name or not isinstance(class_name, str):
         return None
     
-    # Check if it's a label ID (starts with 'm/' or '/m/')
-    if class_name.startswith('m/') or class_name.startswith('/m/'):
+    # Check if it's a label ID (starts with 'm/')
+    if class_name.startswith('m/'):
         return None
     
     # Normalize: lowercase, replace separators with spaces
@@ -543,8 +509,6 @@ def main():
                         help='Output directory for visualizations')
     parser.add_argument('--vis_count', type=int, default=5,
                         help='Number of visualizations to save')
-    parser.add_argument('--label_dict_path', type=str, default='/kaggle/input/open-images/dict',
-                        help='Path to local label dictionary file (falls back to BigQuery if not found)')
     args = parser.parse_args()
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -562,17 +526,8 @@ def main():
         return
 
     # 2. Load Data
-    # Load label mappings: try local dictionary first, then fallback to BigQuery
-    label_id_to_name = {}
-    
-    # Try to load from local dictionary file
-    label_id_to_name = load_local_label_map(args.label_dict_path)
-    
-    # If local dict is empty, try BigQuery (optional fallback)
-    if not label_id_to_name:
-        print("Local dictionary not found or empty, trying BigQuery...")
-        label_id_to_name = fetch_label_names_from_bigquery()
-    
+    # Fetch label name mappings from BigQuery (to handle missing TextLabel)
+    label_id_to_name = fetch_label_names_from_bigquery()
     image_annotations = load_openimages_annotations(args.annotations_csv, label_id_to_name=label_id_to_name)
     fetch_limit = 5000 if args.limit < 1000 else args.limit * 2 
     image_id_to_url = fetch_image_urls_from_bigquery(args.subset, fetch_limit)
