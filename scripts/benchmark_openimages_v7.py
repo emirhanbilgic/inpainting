@@ -14,6 +14,7 @@ import sys
 import os
 import argparse
 import math
+import re
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -212,6 +213,18 @@ def compute_detailed_miou(heatmap, positive_points, negative_points, threshold=0
     }
     # Store pred_mask separately if needed for visualization (not returned by default)
     return result
+
+
+def sanitize_filename(name):
+    """Sanitize a string to be safe for use in filenames."""
+    # Replace problematic characters with underscores
+    # Replace forward slashes, backslashes, and other problematic chars
+    name = re.sub(r'[/\\<>:"|?*]', '_', name)
+    # Remove leading/trailing dots and spaces
+    name = name.strip('. ')
+    # Replace multiple underscores with single underscore
+    name = re.sub(r'_+', '_', name)
+    return name
 
 
 def visualize_result(image, heatmap, positive_points, negative_points, metrics, 
@@ -477,7 +490,10 @@ def main():
                 
                 # Save visualization (first N results)
                 if args.vis_count > 0 and vis_saved < args.vis_count:
-                    output_filename = f"vis_{image_id}_{class_name.replace(' ', '_')}_{vis_saved:02d}.png"
+                    # Sanitize class name and image_id for filename
+                    safe_class_name = sanitize_filename(class_name)
+                    safe_image_id = sanitize_filename(image_id)
+                    output_filename = f"vis_{safe_image_id}_{safe_class_name}_{vis_saved:02d}.png"
                     output_path = os.path.join(args.vis_output_dir, output_filename)
                     visualize_result(
                         image=image,
