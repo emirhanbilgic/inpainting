@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """
-OpenImagesV7 Point-wise Segmentation Benchmark (Fixed for Kaggle BigQuery)
+OpenImagesV7 Segmentation Benchmark (Detailed Breakdown)
 
-- Uses BigQuery to get Image URLs (Fixes dataset detection).
-- Implements LeGrad correctly using text embeddings.
-- Keeps Attention Rollout for comparison.
+Evaluates:
+1. Foreground IoU (Target class)
+2. Background IoU (Everything else)
+3. Mean IoU (Average of FG and BG)
+
+This will help verify if the ~8.75 benchmark refers to FG only or mIoU.
 """
 
 import sys
@@ -21,7 +24,7 @@ from collections import defaultdict
 import requests
 from io import BytesIO
 
-# Kaggle BigQuery
+# Import BigQuery
 from google.cloud import bigquery
 
 # Add project root to path
@@ -34,25 +37,35 @@ try:
     from legrad import LeWrapper, LePreprocess
     import open_clip
 except ImportError:
-    print("Error: 'legrad' or 'open_clip' not found. Please install them or check python path.")
-    sys.exit(1)
+    pass
 
 # =============================================================================
-# 1. Attention Rollout Implementation (Kept as requested)
+# LeGrad Implementation
 # =============================================================================
 
-def compute_rollout_attention(all_layer_matrices, start_layer=0):
+def compute_legrad_for_embedding(model, image, text_emb_1x):
+    """Compute LeGrad heatmap for a single text embedding."""
+    with torch.enable_grad():
+        logits = model.compute_legrad(image=image, text_embedding=text_emb_1x)
+    logits = logits[0, 0]
+    logits = logits.clamp(0, 1).detach().cpu()
+    return logits
+
+# =============================================================================
+# Attention Rollout (Reference)
+# =============================================================================
+
+def compute_rollout_attention(all_layer_matrices, start_layer=1):
     num_tokens = all_layer_matrices[0].shape[1]
     batch_size = all_layer_matrices[0].shape[0]
     device = all_layer_matrices[0].device
     
     eye = torch.eye(num_tokens).expand(batch_size, num_tokens, num_tokens).to(device)
-    all_layer_matrices = [all_layer_matrices[i] + eye for i in range(len(all_layer_matrices))]
-    
-    matrices_aug = [
-        all_layer_matrices[i] / all_layer_matrices[i].sum(dim=-1, keepdim=True)
-        for i in range(len(all_layer_matrices))
-    ]
+    matrices_aug = []
+    for mat in all_layer_matrices:
+        mat_aug = mat + eye
+        mat_aug = mat_aug / mat_aug.sum(dim=-1, keepdim=True)
+        matrices_aug.append(mat_aug)
     
     joint_attention = matrices_aug[start_layer]
     for i in range(start_layer + 1, len(matrices_aug)):
@@ -60,7 +73,7 @@ def compute_rollout_attention(all_layer_matrices, start_layer=0):
     
     return joint_attention
 
-def compute_attention_rollout_heatmap(model, image, start_layer=0):
+def compute_attention_rollout_reference(model, image, start_layer=1):
     blocks = model.visual.transformer.resblocks
     num_heads = blocks[0].attn.num_heads
     embed_dim = blocks[0].attn.embed_dim
@@ -81,8 +94,7 @@ def compute_attention_rollout_heatmap(model, image, start_layer=0):
             pos_embed = model.visual.original_pos_embed
         else:
             pos_embed = model.visual.positional_embedding
-        
-        # Interpolate pos encoding if needed
+            
         if pos_embed.shape[0] != x.shape[1]:
             cls_pos = pos_embed[:1]
             patch_pos = pos_embed[1:]
@@ -122,315 +134,268 @@ def compute_attention_rollout_heatmap(model, image, start_layer=0):
             attn_output = attn_module.out_proj(attn_output)
             x = x + attn_output
             x = x + block.mlp(block.ln_2(x))
-    
+
     rollout = compute_rollout_attention(all_attentions, start_layer=start_layer)
     cls_attn = rollout[:, 0, 1:]
     
     num_patches = cls_attn.shape[-1]
     h = w = int(math.sqrt(num_patches))
     heatmap = cls_attn.reshape(1, 1, h, w)
-    
-    # Normalize min-max
     heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
-    
-    # Resize to image size
     heatmap = F.interpolate(heatmap, size=image.shape[-2:], mode='bilinear', align_corners=False)
     
     return heatmap[0, 0].detach().cpu()
 
 # =============================================================================
-# 2. LeGrad Implementation (Fixed)
+# DETAILED METRIC EVALUATION
 # =============================================================================
 
-def compute_legrad_heatmap(model, image, text_embedding):
+def compute_detailed_miou(heatmap, positive_points, negative_points, threshold=0.5):
     """
-    Computes LeGrad heatmap using the specific text embedding.
+    Returns a dictionary with:
+    - 'fg_iou': Foreground IoU (Positive Class)
+    - 'bg_iou': Background IoU (Negative Class)
+    - 'm_iou':  Mean IoU
     """
-    with torch.enable_grad():
-        # image: [1, 3, H, W]
-        # text_embedding: [1, D]
-        logits = model.compute_legrad(image=image, text_embedding=text_embedding)
-    
-    # logits shape: [1, 1, h_feat, w_feat] (typically 14x14 or 24x24)
-    logits = logits[0, 0] # [h_feat, w_feat]
-    
-    # Clamp and detach
-    heatmap = logits.clamp(0, 1).detach().cpu()
-    
-    # Resize to match input image resolution for evaluation
-    # We need to add dims back for interpolate: [1, 1, h, w]
-    H_img, W_img = image.shape[-2:]
-    heatmap = F.interpolate(
-        heatmap.view(1, 1, heatmap.shape[0], heatmap.shape[1]),
-        size=(H_img, W_img),
-        mode='bilinear',
-        align_corners=False
-    )
-    
-    return heatmap[0, 0]
-
-# =============================================================================
-# 3. Evaluation Metrics
-# =============================================================================
-
-def compute_pointwise_miou(heatmap, positive_points, negative_points, threshold=0.5):
     heatmap_np = heatmap.numpy() if isinstance(heatmap, torch.Tensor) else heatmap
     H, W = heatmap_np.shape
+    
+    # Prediction Masks
+    # 1 = Foreground, 0 = Background
     pred_mask = (heatmap_np > threshold).astype(np.int32)
     
-    tp_fg = 0
-    fn_fg = 0
-    fp_fg = 0
-    tn_fg = 0
+    # Counters
+    # TP: Pos point in FG mask
+    # FN: Pos point in BG mask
+    # FP: Neg point in FG mask
+    # TN: Neg point in BG mask
+    tp = 0
+    fn = 0
+    fp = 0
+    tn = 0
     
-    # Check positive points (Should be 1)
     for y, x in positive_points:
-        y = int(np.clip(y, 0, H - 1))
-        x = int(np.clip(x, 0, W - 1))
+        y, x = int(np.clip(y, 0, H-1)), int(np.clip(x, 0, W-1))
         if pred_mask[y, x] == 1:
-            tp_fg += 1
+            tp += 1
         else:
-            fn_fg += 1
-    
-    # Check negative points (Should be 0)
+            fn += 1
+            
     for y, x in negative_points:
-        y = int(np.clip(y, 0, H - 1))
-        x = int(np.clip(x, 0, W - 1))
+        y, x = int(np.clip(y, 0, H-1)), int(np.clip(x, 0, W-1))
         if pred_mask[y, x] == 1:
-            fp_fg += 1
+            fp += 1
         else:
-            tn_fg += 1
+            tn += 1
+            
+    # --- Foreground IoU ---
+    # Intersection = TP
+    # Union = TP + FP + FN (All Pos Points + Neg Points predicted as Pos)
+    union_fg = tp + fp + fn
+    iou_fg = (tp / union_fg) if union_fg > 0 else 0.0
     
-    # IoU Foreground
-    union_fg = tp_fg + fp_fg + fn_fg
-    iou_fg = tp_fg / (union_fg + 1e-8)
+    # --- Background IoU ---
+    # Intersection = TN
+    # Union = TN + FN + FP (All Neg Points + Pos Points predicted as Neg)
+    union_bg = tn + fn + fp
+    iou_bg = (tn / union_bg) if union_bg > 0 else 0.0
     
-    # IoU Background
-    union_bg = tn_fg + fp_fg + fn_fg
-    iou_bg = tn_fg / (union_bg + 1e-8)
+    # --- Mean IoU ---
+    m_iou = (iou_fg + iou_bg) / 2.0
     
-    return (iou_fg + iou_bg) / 2.0
+    return {
+        'fg_iou': iou_fg * 100.0,
+        'bg_iou': iou_bg * 100.0,
+        'm_iou': m_iou * 100.0
+    }
 
 # =============================================================================
-# 4. Data Loading (BigQuery & CSV)
+# Data Loading
 # =============================================================================
 
 def load_openimages_annotations(annotations_csv_path):
     print(f"Loading annotations from {annotations_csv_path}...")
-    # Use pandas engine='python' or dtype specification to avoid warnings
-    df = pd.read_csv(annotations_csv_path, dtype={'ImageId': str, 'Label': str})
+    try:
+        df = pd.read_csv(annotations_csv_path)
+    except Exception as e:
+        print(f"Error reading CSV: {e}")
+        return {}
     
-    # Structure: ImageID -> ClassName -> {'positive': [], 'negative': []}
-    image_annotations = defaultdict(lambda: defaultdict(lambda: {'positive': [], 'negative': []}))
+    image_annotations = defaultdict(lambda: {'positive': defaultdict(list), 'negative': defaultdict(list)})
     
     for _, row in df.iterrows():
         image_id = str(row['ImageId'])
+        label_id = str(row['Label'])
+        class_name = str(row.get('TextLabel', label_id)).strip() if pd.notna(row.get('TextLabel')) else label_id
         
-        # Get readable class name
-        if 'TextLabel' in row and pd.notna(row['TextLabel']):
-            class_name = str(row['TextLabel']).strip()
-        else:
-            # Skip if we don't have a readable text label for the prompt
-            continue
-            
         x, y = float(row['X']), float(row['Y'])
-        # EstimatedYesNo usually indicates if the label is machine-generated (less reliable), 
-        # but PointLabels are usually human verified. We check the 'EstimatedYesNo' if it exists.
         estimated = str(row.get('EstimatedYesNo', 'yes')).lower()
         
-        # Point annotations logic
-        # Usually point labels file has columns: ImageId, Label, X, Y, Measured, etc.
-        # We assume standard OpenImages Point format.
-        
-        # In Point Labels, usually there is no 'EstimatedYesNo', but specific columns.
-        # Assuming the CSV provided is the Point-Level labels.
-        # If it's a generic CSV, we trust X, Y.
-        
-        # Heuristic: 
-        # In OpenImages Point Labels: 
-        #   Confidence=1 -> Positive
-        #   Confidence=0 -> Negative
-        # If 'EstimatedYesNo' is present (Image-level labels), 'yes' is positive.
-        
-        is_positive = True
-        if 'Confidence' in row:
-            if int(row['Confidence']) == 0:
-                is_positive = False
+        if estimated == 'yes':
+            image_annotations[image_id]['positive'][class_name].append((y, x))
         elif estimated == 'no':
-            is_positive = False
+            image_annotations[image_id]['negative'][class_name].append((y, x))
             
-        if is_positive:
-            image_annotations[image_id][class_name]['positive'].append((y, x))
-        else:
-            image_annotations[image_id][class_name]['negative'].append((y, x))
-            
-    return image_annotations
+    return dict(image_annotations)
 
-def get_bigquery_image_urls(limit=1000):
-    """
-    Queries Kaggle's BigQuery OpenImages dataset for Validation URLs.
-    """
-    print("\nQuerying BigQuery for image URLs...")
-    client = bigquery.Client()
-    
-    # We query more than the limit to ensure we find intersections with annotations
-    query = f"""
-        SELECT image_id, original_url
-        FROM `bigquery-public-data.open_images.images`
-        WHERE subset = 'validation'
-    """
-    if limit:
-        # Fetching a larger pool because we need intersection with annotations
-        query += f" LIMIT {limit * 10}" 
-        
+def fetch_image_urls_from_bigquery(subset='validation', limit=None):
+    print(f"\nConnecting to BigQuery (subset='{subset}')...")
     try:
+        client = bigquery.Client()
+        limit_clause = f"LIMIT {limit}" if limit else ""
+        query = f"""
+            SELECT image_id, original_url
+            FROM `bigquery-public-data.open_images.images`
+            WHERE subset = '{subset}'
+            {limit_clause}
+        """
         df = client.query(query).to_dataframe()
-        print(f"BigQuery returned {len(df)} rows.")
-        # Return dict: ImageId -> URL
-        return pd.Series(df.original_url.values, index=df.image_id).to_dict()
+        return dict(zip(df.image_id, df.original_url))
     except Exception as e:
         print(f"BigQuery Error: {e}")
         return {}
 
 # =============================================================================
-# 5. Main Execution
+# Main
 # =============================================================================
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--annotations_csv', type=str, default=None)
-    parser.add_argument('--limit', type=int, default=100, help="Number of images to evaluate")
+    parser.add_argument('--limit', type=int, default=100)
     parser.add_argument('--model_name', type=str, default='ViT-B-16')
     parser.add_argument('--pretrained', type=str, default='laion2b_s34b_b88k')
-    parser.add_argument('--image_size', type=int, default=448, help="Resolution for LeGrad")
-    parser.add_argument('--threshold', type=float, default=0.5)
-    
+    parser.add_argument('--subset', type=str, default='validation')
+    parser.add_argument('--method', type=str, default='rollout', choices=['rollout', 'legrad'],
+                        help='Method to use: rollout (attention rollout) or legrad (LeGrad)')
+    parser.add_argument('--rollout_start_layer', type=int, default=1,
+                        help='Start layer for attention rollout (only used when method=rollout)')
     args = parser.parse_args()
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
     # 1. Locate Annotations
     if not args.annotations_csv:
-        # Try to find the file automatically in Kaggle input
         for root, _, files in os.walk("/kaggle/input"):
             for file in files:
-                if "point_labels" in file.lower() and "validation" in file.lower() and file.endswith(".csv"):
+                if "point" in file.lower() and file.endswith(".csv"):
                     args.annotations_csv = os.path.join(root, file)
                     break
-            if args.annotations_csv: break
     
     if not args.annotations_csv:
-        print("Error: Could not auto-locate 'point_labels' CSV. Please provide --annotations_csv")
+        print("Error: No annotation CSV found.")
         return
 
-    # 2. Load Annotations
-    ann_dict = load_openimages_annotations(args.annotations_csv)
-    print(f"Found annotations for {len(ann_dict)} images.")
+    # 2. Load Data
+    image_annotations = load_openimages_annotations(args.annotations_csv)
+    fetch_limit = 5000 if args.limit < 1000 else args.limit * 2 
+    image_id_to_url = fetch_image_urls_from_bigquery(args.subset, fetch_limit)
     
-    # 3. Get URLs via BigQuery
-    # We fetch enough to likely cover the limit
-    id_to_url = get_bigquery_image_urls(limit=args.limit)
+    valid_ids = [i for i in image_annotations.keys() if i in image_id_to_url]
+    print(f"Images to process: {len(valid_ids)} (limit: {args.limit})")
     
-    # 4. Filter intersection
-    valid_ids = [i for i in ann_dict.keys() if i in id_to_url]
-    print(f"Images with both Annotations and URLs: {len(valid_ids)}")
-    
-    if not valid_ids:
-        print("CRITICAL: No intersection between annotations and BigQuery URLs. Check 'subset' or CSV file.")
-        return
-
-    process_ids = valid_ids[:args.limit]
-    
-    # 5. Load Model
-    print(f"\nLoading model {args.model_name}...")
-    model, _, preprocess = open_clip.create_model_and_transforms(
-        model_name=args.model_name,
-        pretrained=args.pretrained,
-        device=device
-    )
-    tokenizer = open_clip.get_tokenizer(args.model_name)
+    # 3. Model
+    print(f"Loading {args.model_name}...")
+    model, _, preprocess = open_clip.create_model_and_transforms(args.model_name, pretrained=args.pretrained, device=device)
     model.eval()
     
-    # Wrap model for LeGrad (layer_index -2 is standard)
-    model = LeWrapper(model, layer_index=-2)
-    # Use LePreprocess to handle arbitrary sizes (like 448) cleanly
-    preprocess = LePreprocess(preprocess=preprocess, image_size=args.image_size)
+    # For LeGrad, wrap model with LeWrapper
+    if args.method == 'legrad':
+        if 'LeWrapper' not in globals():
+            print("Error: LeWrapper not available. Cannot use legrad method.")
+            return
+        model = LeWrapper(model, layer_index=-2)
+        print("Wrapped model with LeWrapper for LeGrad")
     
-    # 6. Evaluation Loop
-    results = {
-        'rollout_miou': [],
-        'legrad_miou': []
-    }
+    if 'LePreprocess' in globals(): 
+        preprocess = LePreprocess(preprocess, image_size=224)
     
-    print(f"\nProcessing {len(process_ids)} images...")
+    # For LeGrad, we need tokenizer for text encoding
+    tokenizer = None
+    if args.method == 'legrad':
+        if 'open_clip' in globals():
+            tokenizer = open_clip.get_tokenizer(args.model_name)
+
+    # 4. Evaluate
+    results = {'fg': [], 'bg': [], 'mean': []}
+    process_ids = valid_ids[:args.limit]
     
-    for image_id in tqdm(process_ids):
-        url = id_to_url[image_id]
-        
-        # A. Download Image
+    print(f"Running evaluation with method: {args.method}...")
+    for idx, image_id in enumerate(tqdm(process_ids)):
         try:
-            resp = requests.get(url, timeout=5)
-            resp.raise_for_status()
+            url = image_id_to_url[image_id]
+            resp = requests.get(url, timeout=10)
+            if resp.status_code != 200: continue
+            
             image = Image.open(BytesIO(resp.content)).convert('RGB')
-        except Exception:
-            # print(f"Failed to download {image_id}")
-            continue
-
-        # B. Preprocess
-        try:
-            # [1, 3, H, W]
             img_t = preprocess(image).unsqueeze(0).to(device)
-            H_img, W_img = img_t.shape[-2:] # Tensor dims
-            H_orig, W_orig = image.size[1], image.size[0] # Original dims for metric calc
+            H_img, W_img = img_t.shape[-2:]
             
-            # Annotations for this image
-            # ann_dict[id] is a dict: ClassName -> {'positive': list, 'negative': list}
-            img_anns = ann_dict[image_id]
+            ann = image_annotations[image_id]
             
-            for class_name, points in img_anns.items():
-                pos_norm = points['positive']
-                neg_norm = points['negative']
+            # Evaluate against all classes in this image
+            for class_name in ann['positive']:
+                # Compute heatmap based on method
+                if args.method == 'legrad':
+                    # LeGrad: encode text and compute heatmap
+                    if tokenizer is None:
+                        continue
+                    prompt = f"a photo of a {class_name}."
+                    text_tokens = tokenizer([prompt]).to(device)
+                    with torch.no_grad():
+                        text_emb = model.encode_text(text_tokens, normalize=True)
+                    
+                    heatmap = compute_legrad_for_embedding(model, img_t, text_emb)
+                    # LeGrad returns heatmap at feature resolution, resize to image size
+                    heatmap = F.interpolate(
+                        heatmap.view(1, 1, heatmap.shape[0], heatmap.shape[1]),
+                        size=(H_img, W_img),
+                        mode='bilinear',
+                        align_corners=False
+                    ).squeeze()
+                else:
+                    # Rollout: compute attention rollout (class-agnostic)
+                    heatmap = compute_attention_rollout_reference(model, img_t, start_layer=args.rollout_start_layer)
+                    heatmap = F.interpolate(
+                        heatmap.view(1, 1, heatmap.shape[0], heatmap.shape[1]),
+                        size=(H_img, W_img),
+                        mode='bilinear',
+                        align_corners=False
+                    ).squeeze()
                 
-                # Convert normalized coords (0-1) to Tensor dims for extraction, 
-                # but metrics are scale-invariant so we can use tensor dims or orig dims.
-                # Let's map normalized points to the tensor H,W so they match the heatmap.
-                pos_pts = [(int(y * H_img), int(x * W_img)) for y, x in pos_norm]
-                neg_pts = [(int(y * H_img), int(x * W_img)) for y, x in neg_norm]
+                pos_pts = [(int(y*H_img), int(x*W_img)) for y, x in ann['positive'][class_name]]
+                neg_pts = [(int(y*H_img), int(x*W_img)) for y, x in ann['negative'].get(class_name, [])]
                 
-                # --- Method 1: Attention Rollout (Class Agnostic/Generic) ---
-                # Rollout is technically class-agnostic in standard implementation, 
-                # heavily biased towards the most salient object.
-                heatmap_rollout = compute_attention_rollout_heatmap(model, img_t)
-                miou_rollout = compute_pointwise_miou(heatmap_rollout, pos_pts, neg_pts, args.threshold)
-                results['rollout_miou'].append(miou_rollout)
+                metrics = compute_detailed_miou(heatmap, pos_pts, neg_pts)
                 
-                # --- Method 2: LeGrad (Class Specific) ---
-                # 1. Create text embedding
-                text_prompt = f"a photo of a {class_name.lower()}."
-                text_input = tokenizer([text_prompt]).to(device)
-                
-                with torch.no_grad():
-                    text_embedding = model.encode_text(text_input, normalize=True)
-                
-                # 2. Compute LeGrad
-                heatmap_legrad = compute_legrad_heatmap(model, img_t, text_embedding)
-                miou_legrad = compute_pointwise_miou(heatmap_legrad, pos_pts, neg_pts, args.threshold)
-                results['legrad_miou'].append(miou_legrad)
-                
+                results['fg'].append(metrics['fg_iou'])
+                results['bg'].append(metrics['bg_iou'])
+                results['mean'].append(metrics['m_iou'])
+        
+            # Periodic print
+            if (idx + 1) % 10 == 0 and len(results['fg']) > 0:
+                print(f"  [Interim {idx+1}] FG: {np.mean(results['fg']):.2f} | BG: {np.mean(results['bg']):.2f} | Mean: {np.mean(results['mean']):.2f}")
+
         except Exception as e:
-            print(f"Error processing {image_id}: {e}")
+            import traceback
+            traceback.print_exc()
             continue
 
-    # 7. Final Results
-    print("\n" + "="*40)
-    print("FINAL RESULTS")
-    print("="*40)
-    
-    if results['rollout_miou']:
-        print(f"Attention Rollout mIoU: {np.mean(results['rollout_miou']):.4f}")
-        print(f"LeGrad mIoU:            {np.mean(results['legrad_miou']):.4f}")
-        print(f"Total Samples:          {len(results['legrad_miou'])}")
+    print("\n" + "="*50)
+    print(f"FINAL RESULTS ({args.method.upper()})")
+    print("="*50)
+    if results['fg']:
+        fg = np.mean(results['fg'])
+        bg = np.mean(results['bg'])
+        m = np.mean(results['mean'])
+        
+        print(f"Foreground IoU (FG): {fg:.4f}")
+        print(f"Background IoU (BG): {bg:.4f}")
+        print(f"Mean IoU (mIoU):     {m:.4f}")
+        print("-" * 30)
+        print("Note: If the paper reports ~8.75, it likely refers to 'Foreground IoU'.")
     else:
-        print("No successful samples processed.")
+        print("No results computed.")
 
 if __name__ == "__main__":
     main()
