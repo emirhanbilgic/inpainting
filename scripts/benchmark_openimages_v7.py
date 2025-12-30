@@ -373,18 +373,34 @@ def load_openimages_annotations(annotations_csv_path, label_id_to_name=None):
         
         class_name = None
         source = None
+        
+        # Check if TextLabel is valid (not NaN and not a label ID)
         if pd.notna(text_label_raw):
-            class_name = str(text_label_raw).strip()
-            source = "TextLabel (CSV)"
-        elif label_id in label_id_to_name:
-            class_name = label_id_to_name[label_id]
-            source = "BigQuery mapping"
-        else:
-            # Fallback to label_id, but mark it for warning
-            class_name = label_id
-            source = "Label ID (fallback)"
-            if label_id.startswith('m/'):
-                missing_labels.add(label_id)
+            text_label_clean = str(text_label_raw).strip()
+            # Only use TextLabel if it's not empty and not a label ID
+            if text_label_clean and not (text_label_clean.startswith('m/') or text_label_clean.startswith('/m/')):
+                class_name = text_label_clean
+                source = "TextLabel (CSV)"
+        
+        # Try label dictionary mapping (handle both '/m/...' and 'm/...' formats)
+        if class_name is None:
+            # Try exact match first
+            if label_id in label_id_to_name:
+                class_name = label_id_to_name[label_id]
+                source = "Label dictionary"
+            # Try with/without leading slash
+            elif label_id.startswith('/m/') and label_id[1:] in label_id_to_name:
+                class_name = label_id_to_name[label_id[1:]]
+                source = "Label dictionary"
+            elif label_id.startswith('m/') and '/' + label_id in label_id_to_name:
+                class_name = label_id_to_name['/' + label_id]
+                source = "Label dictionary"
+        
+        # If still no class name found, mark as missing
+        if class_name is None:
+            missing_labels.add(label_id)
+            skipped_count += 1
+            continue
         
         # Normalize the class name
         normalized_name = normalize_class_name(class_name)
@@ -445,9 +461,123 @@ def fetch_image_urls_from_bigquery(subset='validation', limit=None):
         print(f"BigQuery Error: {e}")
         return {}
 
+def load_label_dictionary_from_kaggle(dict_path="/kaggle/input/open-images/dict"):
+    """
+    Load label ID to display name mapping from Kaggle input directory.
+    The dict is a BigQuery table with columns: label_name, label_display_name
+    
+    Args:
+        dict_path: Path to the dictionary (could be a directory or file)
+    
+    Returns:
+        Dictionary mapping label IDs (both '/m/...' and 'm/...' formats) to display names
+    """
+    print(f"\nLoading label dictionary from {dict_path}...")
+    label_map = {}
+    
+    # Try to read as a BigQuery table file (could be CSV, TSV, or Parquet)
+    possible_files = []
+    if os.path.exists(dict_path):
+        if os.path.isdir(dict_path):
+            # Look for files in the directory
+            for file in os.listdir(dict_path):
+                file_path = os.path.join(dict_path, file)
+                if os.path.isfile(file_path) and not file.startswith('.'):
+                    possible_files.append(file_path)
+        elif os.path.isfile(dict_path):
+            possible_files.append(dict_path)
+    
+    # Try to read the file(s)
+    for file_path in possible_files:
+        try:
+            # Try different formats
+            if file_path.endswith('.parquet'):
+                df = pd.read_parquet(file_path)
+            elif file_path.endswith('.tsv'):
+                df = pd.read_csv(file_path, sep='\t')
+            elif file_path.endswith('.csv'):
+                df = pd.read_csv(file_path)
+            else:
+                # Try to auto-detect format
+                try:
+                    # Try Parquet first (common for BigQuery exports)
+                    df = pd.read_parquet(file_path)
+                except:
+                    try:
+                        # Try CSV
+                        df = pd.read_csv(file_path)
+                    except:
+                        # Try TSV
+                        df = pd.read_csv(file_path, sep='\t')
+            
+            # Find the correct column names (case-insensitive)
+            label_name_col = None
+            display_name_col = None
+            
+            for col in df.columns:
+                col_lower = col.lower().strip()
+                if 'label_name' in col_lower or col_lower == 'label_name':
+                    label_name_col = col
+                elif 'label_display_name' in col_lower or 'display_name' in col_lower:
+                    display_name_col = col
+            
+            if label_name_col is None or display_name_col is None:
+                # Try to use first two columns
+                if len(df.columns) >= 2:
+                    label_name_col = df.columns[0]
+                    display_name_col = df.columns[1]
+                    print(f"  Using columns: {label_name_col} -> {display_name_col}")
+                else:
+                    print(f"  Warning: Could not find correct columns. Found: {list(df.columns)}")
+                    continue
+            
+            # Build the mapping
+            for _, row in df.iterrows():
+                label_id = str(row[label_name_col]).strip()
+                display_name = str(row[display_name_col]).strip()
+                
+                # Skip empty entries
+                if not label_id or not display_name or label_id.lower() == 'nan' or display_name.lower() == 'nan':
+                    continue
+                
+                # Store both '/m/...' and 'm/...' formats for lookup
+                if label_id.startswith('/m/'):
+                    label_map[label_id] = display_name  # '/m/...'
+                    label_map[label_id[1:]] = display_name  # 'm/...'
+                elif label_id.startswith('m/'):
+                    label_map[label_id] = display_name  # 'm/...'
+                    label_map['/' + label_id] = display_name  # '/m/...'
+                else:
+                    # Store as-is
+                    label_map[label_id] = display_name
+            
+            print(f"  Loaded {len(df)} rows from {file_path}")
+            print(f"  Created {len(label_map)} label mappings (with format normalization)")
+            if len(label_map) > 0:
+                # Show a few samples
+                sample_items = list(label_map.items())[:5]
+                print(f"  Samples:")
+                for key, val in sample_items:
+                    print(f"    {key} -> {val}")
+            break  # Successfully loaded, no need to try other files
+            
+        except Exception as e:
+            print(f"  Error reading {file_path}: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
+    
+    if not label_map:
+        print(f"  Warning: Could not load label dictionary from {dict_path}")
+        if not os.path.exists(dict_path):
+            print(f"  Path does not exist: {dict_path}")
+        print("  Will try BigQuery as fallback")
+    
+    return label_map
+
 def fetch_label_names_from_bigquery():
-    """Fetch label ID to label name mapping from BigQuery."""
-    print("\nFetching label names from BigQuery...")
+    """Fetch label ID to label name mapping from BigQuery (fallback)."""
+    print("\nFetching label names from BigQuery (fallback)...")
     try:
         client = bigquery.Client()
         query = """
@@ -455,7 +585,21 @@ def fetch_label_names_from_bigquery():
             FROM `bigquery-public-data.open_images.labels`
         """
         df = client.query(query).to_dataframe()
-        label_map = dict(zip(df.LabelName, df.DisplayName))
+        label_map = {}
+        for _, row in df.iterrows():
+            label_id = str(row['LabelName']).strip()
+            display_name = str(row['DisplayName']).strip()
+            
+            # Store both '/m/...' and 'm/...' formats
+            if label_id.startswith('/m/'):
+                label_map[label_id] = display_name
+                label_map[label_id[1:]] = display_name
+            elif label_id.startswith('m/'):
+                label_map[label_id] = display_name
+                label_map['/' + label_id] = display_name
+            else:
+                label_map[label_id] = display_name
+        
         print(f"Loaded {len(label_map)} label mappings from BigQuery")
         return label_map
     except Exception as e:
@@ -474,8 +618,8 @@ def normalize_class_name(class_name):
     if not class_name or not isinstance(class_name, str):
         return None
     
-    # Check if it's a label ID (starts with 'm/')
-    if class_name.startswith('m/'):
+    # Check if it's a label ID (starts with 'm/' or '/m/')
+    if class_name.startswith('m/') or class_name.startswith('/m/'):
         return None
     
     # Normalize: lowercase, replace separators with spaces
@@ -523,8 +667,14 @@ def main():
         return
 
     # 2. Load Data
-    # Fetch label name mappings from BigQuery (to handle missing TextLabel)
-    label_id_to_name = fetch_label_names_from_bigquery()
+    # Load label name mappings from Kaggle dictionary (primary source)
+    label_id_to_name = load_label_dictionary_from_kaggle()
+    
+    # Fallback to BigQuery if dictionary is empty or not found
+    if not label_id_to_name:
+        print("Label dictionary not found or empty, falling back to BigQuery...")
+        label_id_to_name = fetch_label_names_from_bigquery()
+    
     image_annotations = load_openimages_annotations(args.annotations_csv, label_id_to_name=label_id_to_name)
     fetch_limit = 5000 if args.limit < 1000 else args.limit * 2 
     image_id_to_url = fetch_image_urls_from_bigquery(args.subset, fetch_limit)
