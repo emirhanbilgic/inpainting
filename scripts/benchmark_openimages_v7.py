@@ -23,6 +23,8 @@ import pandas as pd
 from collections import defaultdict
 import requests
 from io import BytesIO
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 
 # Import BigQuery
 from google.cloud import bigquery
@@ -203,11 +205,113 @@ def compute_detailed_miou(heatmap, positive_points, negative_points, threshold=0
     # --- Mean IoU ---
     m_iou = (iou_fg + iou_bg) / 2.0
     
-    return {
+    result = {
         'fg_iou': iou_fg * 100.0,
         'bg_iou': iou_bg * 100.0,
         'm_iou': m_iou * 100.0
     }
+    # Store pred_mask separately if needed for visualization (not returned by default)
+    return result
+
+
+def visualize_result(image, heatmap, positive_points, negative_points, metrics, 
+                     image_id, class_name, method, output_path, threshold=0.5):
+    """
+    Create and save a visualization showing:
+    - Original image
+    - Heatmap overlay
+    - Positive points (green)
+    - Negative points (red)
+    - Binary prediction mask
+    - Metrics text
+    """
+    # Convert heatmap to numpy if needed
+    heatmap_np = heatmap.numpy() if isinstance(heatmap, torch.Tensor) else heatmap
+    H, W = heatmap_np.shape
+    
+    # Resize image to match heatmap size
+    img_resized = image.resize((W, H), Image.Resampling.LANCZOS)
+    img_array = np.array(img_resized)
+    
+    # Normalize heatmap to [0, 1] if needed
+    if heatmap_np.max() > 1.0 or heatmap_np.min() < 0.0:
+        heatmap_norm = (heatmap_np - heatmap_np.min()) / (heatmap_np.max() - heatmap_np.min() + 1e-8)
+    else:
+        heatmap_norm = heatmap_np
+    
+    # Create binary prediction mask
+    pred_mask = (heatmap_norm > threshold).astype(np.float32)
+    
+    # Create figure with subplots
+    fig, axes = plt.subplots(2, 2, figsize=(12, 12))
+    
+    # Extract point coordinates
+    pos_x, pos_y = ([], [])
+    neg_x, neg_y = ([], [])
+    if positive_points:
+        pos_y, pos_x = zip(*positive_points)
+    if negative_points:
+        neg_y, neg_x = zip(*negative_points)
+    
+    # 1. Original image with points
+    axes[0, 0].imshow(img_array)
+    if positive_points:
+        axes[0, 0].scatter(pos_x, pos_y, c='green', marker='+', s=100, linewidths=3, label='Positive')
+    if negative_points:
+        axes[0, 0].scatter(neg_x, neg_y, c='red', marker='x', s=100, linewidths=3, label='Negative')
+    axes[0, 0].set_title(f'Image: {image_id}\nClass: {class_name}')
+    axes[0, 0].axis('off')
+    if positive_points or negative_points:
+        axes[0, 0].legend(loc='upper right')
+    
+    # 2. Heatmap overlay on image
+    axes[0, 1].imshow(img_array)
+    im = axes[0, 1].imshow(heatmap_norm, cmap='jet', alpha=0.5, vmin=0, vmax=1)
+    if positive_points:
+        axes[0, 1].scatter(pos_x, pos_y, c='green', marker='+', s=100, linewidths=3)
+    if negative_points:
+        axes[0, 1].scatter(neg_x, neg_y, c='red', marker='x', s=100, linewidths=3)
+    axes[0, 1].set_title('Heatmap Overlay')
+    axes[0, 1].axis('off')
+    plt.colorbar(im, ax=axes[0, 1], fraction=0.046, pad=0.04)
+    
+    # 3. Binary prediction mask
+    axes[1, 0].imshow(img_array)
+    axes[1, 0].imshow(pred_mask, cmap='gray', alpha=0.5, vmin=0, vmax=1)
+    if positive_points:
+        axes[1, 0].scatter(pos_x, pos_y, c='green', marker='+', s=100, linewidths=3)
+    if negative_points:
+        axes[1, 0].scatter(neg_x, neg_y, c='red', marker='x', s=100, linewidths=3)
+    axes[1, 0].set_title(f'Binary Prediction (threshold={threshold:.2f})')
+    axes[1, 0].axis('off')
+    
+    # 4. Metrics text
+    axes[1, 1].axis('off')
+    metrics_text = f"""
+    Method: {method.upper()}
+    
+    Metrics:
+    - Foreground IoU: {metrics['fg_iou']:.2f}%
+    - Background IoU: {metrics['bg_iou']:.2f}%
+    - Mean IoU: {metrics['m_iou']:.2f}%
+    
+    Points:
+    - Positive: {len(positive_points)}
+    - Negative: {len(negative_points)}
+    
+    Heatmap Stats:
+    - Min: {heatmap_np.min():.3f}
+    - Max: {heatmap_np.max():.3f}
+    - Mean: {heatmap_np.mean():.3f}
+    """
+    axes[1, 1].text(0.1, 0.5, metrics_text, fontsize=12, verticalalignment='center',
+                     family='monospace', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    axes[1, 1].set_title('Metrics')
+    
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f"[vis] Saved visualization to {output_path}")
 
 # =============================================================================
 # Data Loading
@@ -270,6 +374,10 @@ def main():
                         help='Method to use: rollout (attention rollout) or legrad (LeGrad)')
     parser.add_argument('--rollout_start_layer', type=int, default=1,
                         help='Start layer for attention rollout (only used when method=rollout)')
+    parser.add_argument('--vis_output_dir', type=str, default='outputs/openimages_vis',
+                        help='Output directory for visualizations')
+    parser.add_argument('--vis_count', type=int, default=5,
+                        help='Number of visualizations to save')
     args = parser.parse_args()
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -319,6 +427,12 @@ def main():
     results = {'fg': [], 'bg': [], 'mean': []}
     process_ids = valid_ids[:args.limit]
     
+    # Setup visualization
+    vis_saved = 0
+    if args.vis_count > 0:
+        os.makedirs(args.vis_output_dir, exist_ok=True)
+        print(f"Will save up to {args.vis_count} visualizations to {args.vis_output_dir}")
+    
     print(f"Running evaluation with method: {args.method}...")
     for idx, image_id in enumerate(tqdm(process_ids)):
         try:
@@ -360,6 +474,24 @@ def main():
                 results['fg'].append(metrics['fg_iou'])
                 results['bg'].append(metrics['bg_iou'])
                 results['mean'].append(metrics['m_iou'])
+                
+                # Save visualization (first N results)
+                if args.vis_count > 0 and vis_saved < args.vis_count:
+                    output_filename = f"vis_{image_id}_{class_name.replace(' ', '_')}_{vis_saved:02d}.png"
+                    output_path = os.path.join(args.vis_output_dir, output_filename)
+                    visualize_result(
+                        image=image,
+                        heatmap=heatmap,
+                        positive_points=pos_pts,
+                        negative_points=neg_pts,
+                        metrics=metrics,
+                        image_id=image_id,
+                        class_name=class_name,
+                        method=args.method,
+                        output_path=output_path,
+                        threshold=0.5
+                    )
+                    vis_saved += 1
         
             # Periodic print
             if (idx + 1) % 10 == 0 and len(results['fg']) > 0:
