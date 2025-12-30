@@ -153,19 +153,37 @@ def compute_attention_rollout_reference(model, image, start_layer=1):
 # DETAILED METRIC EVALUATION
 # =============================================================================
 
-def compute_detailed_miou(heatmap, positive_points, negative_points, threshold=0.5):
+def compute_detailed_miou(heatmap, positive_points, negative_points, threshold=0.5, adaptive_threshold=False):
     """
     Returns a dictionary with:
     - 'fg_iou': Foreground IoU (Positive Class)
     - 'bg_iou': Background IoU (Negative Class)
     - 'm_iou':  Mean IoU
+    - 'threshold': The threshold used (for logging)
+    
+    Args:
+        heatmap: Heatmap tensor or numpy array
+        positive_points: List of (y, x) tuples for positive points
+        negative_points: List of (y, x) tuples for negative points
+        threshold: Fixed threshold value (used if adaptive_threshold=False)
+        adaptive_threshold: If True, use mean of normalized heatmap as threshold
     """
     heatmap_np = heatmap.numpy() if isinstance(heatmap, torch.Tensor) else heatmap
     H, W = heatmap_np.shape
     
+    # Normalize heatmap to [0, 1] if needed
+    if heatmap_np.max() > 1.0 or heatmap_np.min() < 0.0:
+        heatmap_norm = (heatmap_np - heatmap_np.min()) / (heatmap_np.max() - heatmap_np.min() + 1e-8)
+    else:
+        heatmap_norm = heatmap_np
+    
+    # Compute threshold: adaptive (mean) or fixed
+    if adaptive_threshold:
+        threshold = float(heatmap_norm.mean())
+    
     # Prediction Masks
     # 1 = Foreground, 0 = Background
-    pred_mask = (heatmap_np > threshold).astype(np.int32)
+    pred_mask = (heatmap_norm > threshold).astype(np.int32)
     
     # Counters
     # TP: Pos point in FG mask
@@ -209,7 +227,8 @@ def compute_detailed_miou(heatmap, positive_points, negative_points, threshold=0
     result = {
         'fg_iou': iou_fg * 100.0,
         'bg_iou': iou_bg * 100.0,
-        'm_iou': m_iou * 100.0
+        'm_iou': m_iou * 100.0,
+        'threshold': threshold
     }
     # Store pred_mask separately if needed for visualization (not returned by default)
     return result
@@ -228,7 +247,7 @@ def sanitize_filename(name):
 
 
 def visualize_result(image, heatmap, positive_points, negative_points, metrics, 
-                     image_id, class_name, method, output_path, threshold=0.5):
+                     image_id, class_name, method, output_path, threshold=None):
     """
     Create and save a visualization showing:
     - Original image
@@ -237,6 +256,9 @@ def visualize_result(image, heatmap, positive_points, negative_points, metrics,
     - Negative points (red)
     - Binary prediction mask
     - Metrics text
+    
+    Args:
+        threshold: If None, use threshold from metrics dict
     """
     # Convert heatmap to numpy if needed
     heatmap_np = heatmap.numpy() if isinstance(heatmap, torch.Tensor) else heatmap
@@ -251,6 +273,10 @@ def visualize_result(image, heatmap, positive_points, negative_points, metrics,
         heatmap_norm = (heatmap_np - heatmap_np.min()) / (heatmap_np.max() - heatmap_np.min() + 1e-8)
     else:
         heatmap_norm = heatmap_np
+    
+    # Use threshold from metrics if not provided
+    if threshold is None:
+        threshold = metrics.get('threshold', 0.5)
     
     # Create binary prediction mask
     pred_mask = (heatmap_norm > threshold).astype(np.float32)
@@ -316,6 +342,7 @@ def visualize_result(image, heatmap, positive_points, negative_points, metrics,
     - Min: {heatmap_np.min():.3f}
     - Max: {heatmap_np.max():.3f}
     - Mean: {heatmap_np.mean():.3f}
+    - Threshold: {threshold:.3f}
     """
     axes[1, 1].text(0.1, 0.5, metrics_text, fontsize=12, verticalalignment='center',
                      family='monospace', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
@@ -391,6 +418,11 @@ def main():
                         help='Output directory for visualizations')
     parser.add_argument('--vis_count', type=int, default=5,
                         help='Number of visualizations to save')
+    parser.add_argument('--threshold_mode', type=str, default='adaptive', 
+                        choices=['adaptive', 'fixed'],
+                        help='Thresholding mode: "adaptive" uses mean of normalized heatmap (as in paper), "fixed" uses --fixed_threshold')
+    parser.add_argument('--fixed_threshold', type=float, default=0.5,
+                        help='Fixed threshold value when threshold_mode=fixed')
     args = parser.parse_args()
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -447,6 +479,12 @@ def main():
         print(f"Will save up to {args.vis_count} visualizations to {args.vis_output_dir}")
     
     print(f"Running evaluation with method: {args.method}...")
+    print(f"Threshold mode: {args.threshold_mode}")
+    if args.threshold_mode == 'fixed':
+        print(f"Fixed threshold: {args.fixed_threshold}")
+    else:
+        print("Adaptive threshold: using mean of normalized heatmap (as in paper)")
+    
     for idx, image_id in enumerate(tqdm(process_ids)):
         try:
             url = image_id_to_url[image_id]
@@ -482,7 +520,11 @@ def main():
                 pos_pts = [(int(y*H_img), int(x*W_img)) for y, x in ann['positive'][class_name]]
                 neg_pts = [(int(y*H_img), int(x*W_img)) for y, x in ann['negative'].get(class_name, [])]
                 
-                metrics = compute_detailed_miou(heatmap, pos_pts, neg_pts)
+                # Use adaptive thresholding (mean) as in the paper, or fixed threshold
+                use_adaptive = (args.threshold_mode == 'adaptive')
+                metrics = compute_detailed_miou(heatmap, pos_pts, neg_pts, 
+                                                threshold=args.fixed_threshold, 
+                                                adaptive_threshold=use_adaptive)
                 
                 results['fg'].append(metrics['fg_iou'])
                 results['bg'].append(metrics['bg_iou'])
@@ -505,7 +547,7 @@ def main():
                         class_name=class_name,
                         method=args.method,
                         output_path=output_path,
-                        threshold=0.5
+                        threshold=None  # Will use threshold from metrics dict
                     )
                     vis_saved += 1
         
