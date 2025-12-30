@@ -324,7 +324,7 @@ def main():
     for idx, image_id in enumerate(tqdm(process_ids)):
         try:
             url = image_id_to_url[image_id]
-            resp = requests.get(url, timeout=3)
+            resp = requests.get(url, timeout=10)
             if resp.status_code != 200: continue
             
             image = Image.open(BytesIO(resp.content)).convert('RGB')
