@@ -330,16 +330,9 @@ def visualize_result(image, heatmap, positive_points, negative_points, metrics,
 # Data Loading
 # =============================================================================
 
-def load_openimages_annotations(annotations_csv_path, label_id_to_name=None):
+def load_openimages_annotations(annotations_csv_path, label_id_to_name):
     """
-    Load OpenImages annotations from CSV.
-    
-    Args:
-        annotations_csv_path: Path to the annotations CSV file
-        label_id_to_name: Optional dict mapping label IDs (e.g., 'm/012345') to display names
-    
-    Returns:
-        Dictionary mapping image_id to annotations with positive/negative points per class
+    Load annotations and resolve Machine IDs to Human Names immediately.
     """
     print(f"Loading annotations from {annotations_csv_path}...")
     try:
@@ -347,88 +340,45 @@ def load_openimages_annotations(annotations_csv_path, label_id_to_name=None):
     except Exception as e:
         print(f"Error reading CSV: {e}")
         return {}
-    
-    if label_id_to_name is None:
-        label_id_to_name = {}
-    
+
     image_annotations = defaultdict(lambda: {'positive': defaultdict(list), 'negative': defaultdict(list)})
-    missing_labels = set()
-    skipped_count = 0
     
-    # Debug: Track first 10 unique class labels
-    debug_printed = set()
-    debug_count = 0
-    
-    print("\n" + "="*70)
-    print("DEBUG: First 10 unique class labels (showing resolution process)")
-    print("="*70)
-    
+    # Track metrics for the log
+    resolved_count = 0
+    unresolved_ids = set()
+
     for _, row in df.iterrows():
         image_id = str(row['ImageId'])
-        label_id = str(row['Label'])
-        text_label_raw = row.get('TextLabel')
+        label_id = str(row['Label']) # This is usually the '/m/...' ID
         
-        # Try to get class name in this order:
-        # 1. TextLabel from CSV (if available and not NaN)
-        # 2. Label mapping from BigQuery (if label_id is in mapping)
-        # 3. label_id itself (as fallback, but will be normalized)
+        # 1. Resolve ID to Human Name
+        human_name = label_id_to_name.get(label_id)
         
-        class_name = None
-        source = None
+        if not human_name:
+            unresolved_ids.add(label_id)
+            continue
+            
+        # 2. Normalize (e.g., "Ice cream" -> "ice cream")
+        normalized_name = normalize_class_name(human_name)
         
-        if pd.notna(text_label_raw):
-            class_name = str(text_label_raw).strip()
-            source = "TextLabel (CSV)"
-        elif label_id in label_id_to_name:
-            class_name = label_id_to_name[label_id]
-            source = "BigQuery mapping"
-        else:
-            # Fallback to label_id, but mark it for warning
-            class_name = label_id
-            source = "Label ID (fallback)"
-            if label_id.startswith('m/'):
-                missing_labels.add(label_id)
-        
-        # Normalize the class name
-        normalized_name = normalize_class_name(class_name)
         if normalized_name is None:
-            # Skip if we can't normalize (e.g., label ID without mapping)
-            skipped_count += 1
+            unresolved_ids.add(label_id)
             continue
         
-        # Debug: Print first 10 unique class names
-        if normalized_name not in debug_printed and debug_count < 10:
-            debug_printed.add(normalized_name)
-            debug_count += 1
-            text_label_str = str(text_label_raw) if pd.notna(text_label_raw) else "N/A"
-            print(f"\n[{debug_count}] Class Label Resolution:")
-            print(f"    Label ID:        {label_id}")
-            print(f"    TextLabel (raw): {text_label_str}")
-            print(f"    Source:          {source}")
-            print(f"    Raw class name:  '{class_name}'")
-            print(f"    Normalized:      '{normalized_name}'")
-            print(f"    Final prompt:    'a photo of a {normalized_name}.'")
-        
         x, y = float(row['X']), float(row['Y'])
-        estimated = str(row.get('EstimatedYesNo', 'yes')).lower()
+        is_positive = str(row.get('EstimatedYesNo', 'yes')).lower() == 'yes'
         
-        if estimated == 'yes':
+        if is_positive:
             image_annotations[image_id]['positive'][normalized_name].append((y, x))
-        elif estimated == 'no':
+        else:
             image_annotations[image_id]['negative'][normalized_name].append((y, x))
+        resolved_count += 1
+
+    print(f"Finished: Resolved {resolved_count} points.")
+    if unresolved_ids:
+        print(f"Warning: Could not find names for {len(unresolved_ids)} IDs (e.g., {list(unresolved_ids)[:3]})")
     
-    print("\n" + "="*70)
-    print("DEBUG: Class label resolution complete")
-    print("="*70)
-    
-    if missing_labels:
-        print(f"Warning: {len(missing_labels)} label IDs without name mapping (e.g., {list(missing_labels)[:5]})")
-        print("  These annotations were skipped. Consider fetching label names from BigQuery.")
-    if skipped_count > 0:
-        print(f"Skipped {skipped_count} annotations due to missing class names")
-    
-    print(f"\nLoaded annotations for {len(image_annotations)} images")
-    print(f"Total unique class names: {len(debug_printed)} (showed first 10 above)")
+    print(f"Loaded annotations for {len(image_annotations)} images")
     return dict(image_annotations)
 
 def fetch_image_urls_from_bigquery(subset='validation', limit=None):
@@ -449,21 +399,25 @@ def fetch_image_urls_from_bigquery(subset='validation', limit=None):
         return {}
 
 def fetch_label_names_from_bigquery():
-    """Fetch label ID to label name mapping from BigQuery."""
-    print("\nFetching label names from BigQuery...")
+    """
+    Fetch the mapping between Machine IDs (/m/...) and Human Names (Dog, Car, etc.)
+    using the 'dict' table in BigQuery.
+    """
+    print("\n[BQ] Fetching Label Dictionary (ID -> Human Name)...")
     try:
         client = bigquery.Client()
+        # We query the 'dict' table which is the master key for all machine IDs
         query = """
             SELECT label_name, label_display_name
-            FROM `bigquery-public-data.open_images.labels`
+            FROM `bigquery-public-data.open_images.dict`
         """
         df = client.query(query).to_dataframe()
-        label_map = dict(zip(df.LabelName, df.DisplayName))
-        print(f"Loaded {len(label_map)} label mappings from BigQuery")
+        # Create a dictionary: {'/m/04kkgm': 'Bowl', ...}
+        label_map = dict(zip(df.label_name, df.label_display_name))
+        print(f"[BQ] Successfully loaded {len(label_map)} label mappings.")
         return label_map
     except Exception as e:
-        print(f"BigQuery Error (labels): {e}")
-        print("Will use TextLabel from CSV or fallback to label ID")
+        print(f"[BQ] Error fetching dictionary: {e}")
         return {}
 
 def normalize_class_name(class_name):
