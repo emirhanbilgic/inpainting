@@ -299,13 +299,12 @@ def main():
     model, _, preprocess = open_clip.create_model_and_transforms(args.model_name, pretrained=args.pretrained, device=device)
     model.eval()
     
-    # For LeGrad, wrap model with LeWrapper
-    if args.method == 'legrad':
-        if 'LeWrapper' not in globals():
-            print("Error: LeWrapper not available. Cannot use legrad method.")
-            return
-        model = LeWrapper(model, layer_index=-2)
-        print("Wrapped model with LeWrapper for LeGrad")
+    # Wrap model with LeWrapper (required for both methods to access model.visual properly)
+    if 'LeWrapper' not in globals():
+        print("Error: LeWrapper not available.")
+        return
+    model = LeWrapper(model, layer_index=-2)
+    print("Wrapped model with LeWrapper")
     
     if 'LePreprocess' in globals(): 
         preprocess = LePreprocess(preprocess, image_size=224)
@@ -345,23 +344,13 @@ def main():
                     with torch.no_grad():
                         text_emb = model.encode_text(text_tokens, normalize=True)
                     
+                    # LeGrad returns heatmap at image resolution [H_img, W_img]
+                    # No need to resize - it's already at the correct size
                     heatmap = compute_legrad_for_embedding(model, img_t, text_emb)
-                    # LeGrad returns heatmap at feature resolution, resize to image size
-                    heatmap = F.interpolate(
-                        heatmap.view(1, 1, heatmap.shape[0], heatmap.shape[1]),
-                        size=(H_img, W_img),
-                        mode='bilinear',
-                        align_corners=False
-                    ).squeeze()
                 else:
                     # Rollout: compute attention rollout (class-agnostic)
+                    # Rollout already returns heatmap at image resolution
                     heatmap = compute_attention_rollout_reference(model, img_t, start_layer=args.rollout_start_layer)
-                    heatmap = F.interpolate(
-                        heatmap.view(1, 1, heatmap.shape[0], heatmap.shape[1]),
-                        size=(H_img, W_img),
-                        mode='bilinear',
-                        align_corners=False
-                    ).squeeze()
                 
                 pos_pts = [(int(y*H_img), int(x*W_img)) for y, x in ann['positive'][class_name]]
                 neg_pts = [(int(y*H_img), int(x*W_img)) for y, x in ann['negative'].get(class_name, [])]
