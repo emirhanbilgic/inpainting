@@ -354,10 +354,17 @@ def load_openimages_annotations(annotations_csv_path, label_id_to_name=None):
     image_annotations = defaultdict(lambda: {'positive': defaultdict(list), 'negative': defaultdict(list)})
     missing_labels = set()
     skipped_count = 0
+    debug_count = 0
+    debug_printed = set()  # Track unique class names we've printed
+    
+    print("\n" + "="*70)
+    print("DEBUG: First 10 unique class labels (showing resolution process)")
+    print("="*70)
     
     for _, row in df.iterrows():
         image_id = str(row['ImageId'])
         label_id = str(row['Label'])
+        text_label_raw = row.get('TextLabel')
         
         # Try to get class name in this order:
         # 1. TextLabel from CSV (if available and not NaN)
@@ -365,13 +372,17 @@ def load_openimages_annotations(annotations_csv_path, label_id_to_name=None):
         # 3. label_id itself (as fallback, but will be normalized)
         
         class_name = None
-        if pd.notna(row.get('TextLabel')):
-            class_name = str(row.get('TextLabel')).strip()
+        source = None
+        if pd.notna(text_label_raw):
+            class_name = str(text_label_raw).strip()
+            source = "TextLabel (CSV)"
         elif label_id in label_id_to_name:
             class_name = label_id_to_name[label_id]
+            source = "BigQuery mapping"
         else:
             # Fallback to label_id, but mark it for warning
             class_name = label_id
+            source = "Label ID (fallback)"
             if label_id.startswith('m/'):
                 missing_labels.add(label_id)
         
@@ -382,6 +393,19 @@ def load_openimages_annotations(annotations_csv_path, label_id_to_name=None):
             skipped_count += 1
             continue
         
+        # Debug: Print first 10 unique class names
+        if normalized_name not in debug_printed and debug_count < 10:
+            debug_printed.add(normalized_name)
+            debug_count += 1
+            text_label_str = str(text_label_raw) if pd.notna(text_label_raw) else "N/A"
+            print(f"\n[{debug_count}] Class Label Resolution:")
+            print(f"    Label ID:        {label_id}")
+            print(f"    TextLabel (raw): {text_label_str}")
+            print(f"    Source:          {source}")
+            print(f"    Raw class name:  '{class_name}'")
+            print(f"    Normalized:      '{normalized_name}'")
+            print(f"    Final prompt:    'a photo of a {normalized_name}.'")
+        
         x, y = float(row['X']), float(row['Y'])
         estimated = str(row.get('EstimatedYesNo', 'yes')).lower()
         
@@ -390,13 +414,18 @@ def load_openimages_annotations(annotations_csv_path, label_id_to_name=None):
         elif estimated == 'no':
             image_annotations[image_id]['negative'][normalized_name].append((y, x))
     
+    print("\n" + "="*70)
+    print("DEBUG: Class label resolution complete")
+    print("="*70)
+    
     if missing_labels:
         print(f"Warning: {len(missing_labels)} label IDs without name mapping (e.g., {list(missing_labels)[:5]})")
         print("  These annotations were skipped. Consider fetching label names from BigQuery.")
     if skipped_count > 0:
         print(f"Skipped {skipped_count} annotations due to missing class names")
     
-    print(f"Loaded annotations for {len(image_annotations)} images")
+    print(f"\nLoaded annotations for {len(image_annotations)} images")
+    print(f"Total unique class names: {len(debug_printed)} (showed first 10 above)")
     return dict(image_annotations)
 
 def fetch_image_urls_from_bigquery(subset='validation', limit=None):
