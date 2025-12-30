@@ -153,37 +153,19 @@ def compute_attention_rollout_reference(model, image, start_layer=1):
 # DETAILED METRIC EVALUATION
 # =============================================================================
 
-def compute_detailed_miou(heatmap, positive_points, negative_points, threshold=0.5, adaptive_threshold=False):
+def compute_detailed_miou(heatmap, positive_points, negative_points, threshold=0.5):
     """
     Returns a dictionary with:
     - 'fg_iou': Foreground IoU (Positive Class)
     - 'bg_iou': Background IoU (Negative Class)
     - 'm_iou':  Mean IoU
-    - 'threshold': The threshold used (for logging)
-    
-    Args:
-        heatmap: Heatmap tensor or numpy array
-        positive_points: List of (y, x) tuples for positive points
-        negative_points: List of (y, x) tuples for negative points
-        threshold: Fixed threshold value (used if adaptive_threshold=False)
-        adaptive_threshold: If True, use mean of normalized heatmap as threshold
     """
     heatmap_np = heatmap.numpy() if isinstance(heatmap, torch.Tensor) else heatmap
     H, W = heatmap_np.shape
     
-    # Normalize heatmap to [0, 1] if needed
-    if heatmap_np.max() > 1.0 or heatmap_np.min() < 0.0:
-        heatmap_norm = (heatmap_np - heatmap_np.min()) / (heatmap_np.max() - heatmap_np.min() + 1e-8)
-    else:
-        heatmap_norm = heatmap_np
-    
-    # Compute threshold: adaptive (mean) or fixed
-    if adaptive_threshold:
-        threshold = float(heatmap_norm.mean())
-    
     # Prediction Masks
     # 1 = Foreground, 0 = Background
-    pred_mask = (heatmap_norm > threshold).astype(np.int32)
+    pred_mask = (heatmap_np > threshold).astype(np.int32)
     
     # Counters
     # TP: Pos point in FG mask
@@ -227,8 +209,7 @@ def compute_detailed_miou(heatmap, positive_points, negative_points, threshold=0
     result = {
         'fg_iou': iou_fg * 100.0,
         'bg_iou': iou_bg * 100.0,
-        'm_iou': m_iou * 100.0,
-        'threshold': threshold
+        'm_iou': m_iou * 100.0
     }
     # Store pred_mask separately if needed for visualization (not returned by default)
     return result
@@ -247,7 +228,7 @@ def sanitize_filename(name):
 
 
 def visualize_result(image, heatmap, positive_points, negative_points, metrics, 
-                     image_id, class_name, method, output_path, threshold=None):
+                     image_id, class_name, method, output_path, threshold=0.5):
     """
     Create and save a visualization showing:
     - Original image
@@ -256,9 +237,6 @@ def visualize_result(image, heatmap, positive_points, negative_points, metrics,
     - Negative points (red)
     - Binary prediction mask
     - Metrics text
-    
-    Args:
-        threshold: If None, use threshold from metrics dict
     """
     # Convert heatmap to numpy if needed
     heatmap_np = heatmap.numpy() if isinstance(heatmap, torch.Tensor) else heatmap
@@ -273,10 +251,6 @@ def visualize_result(image, heatmap, positive_points, negative_points, metrics,
         heatmap_norm = (heatmap_np - heatmap_np.min()) / (heatmap_np.max() - heatmap_np.min() + 1e-8)
     else:
         heatmap_norm = heatmap_np
-    
-    # Use threshold from metrics if not provided
-    if threshold is None:
-        threshold = metrics.get('threshold', 0.5)
     
     # Create binary prediction mask
     pred_mask = (heatmap_norm > threshold).astype(np.float32)
@@ -342,7 +316,6 @@ def visualize_result(image, heatmap, positive_points, negative_points, metrics,
     - Min: {heatmap_np.min():.3f}
     - Max: {heatmap_np.max():.3f}
     - Mean: {heatmap_np.mean():.3f}
-    - Threshold: {threshold:.3f}
     """
     axes[1, 1].text(0.1, 0.5, metrics_text, fontsize=12, verticalalignment='center',
                      family='monospace', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
@@ -357,7 +330,17 @@ def visualize_result(image, heatmap, positive_points, negative_points, metrics,
 # Data Loading
 # =============================================================================
 
-def load_openimages_annotations(annotations_csv_path):
+def load_openimages_annotations(annotations_csv_path, label_id_to_name=None):
+    """
+    Load OpenImages annotations from CSV.
+    
+    Args:
+        annotations_csv_path: Path to the annotations CSV file
+        label_id_to_name: Optional dict mapping label IDs (e.g., 'm/012345') to display names
+    
+    Returns:
+        Dictionary mapping image_id to annotations with positive/negative points per class
+    """
     print(f"Loading annotations from {annotations_csv_path}...")
     try:
         df = pd.read_csv(annotations_csv_path)
@@ -365,21 +348,55 @@ def load_openimages_annotations(annotations_csv_path):
         print(f"Error reading CSV: {e}")
         return {}
     
+    if label_id_to_name is None:
+        label_id_to_name = {}
+    
     image_annotations = defaultdict(lambda: {'positive': defaultdict(list), 'negative': defaultdict(list)})
+    missing_labels = set()
+    skipped_count = 0
     
     for _, row in df.iterrows():
         image_id = str(row['ImageId'])
         label_id = str(row['Label'])
-        class_name = str(row.get('TextLabel', label_id)).strip() if pd.notna(row.get('TextLabel')) else label_id
+        
+        # Try to get class name in this order:
+        # 1. TextLabel from CSV (if available and not NaN)
+        # 2. Label mapping from BigQuery (if label_id is in mapping)
+        # 3. label_id itself (as fallback, but will be normalized)
+        
+        class_name = None
+        if pd.notna(row.get('TextLabel')):
+            class_name = str(row.get('TextLabel')).strip()
+        elif label_id in label_id_to_name:
+            class_name = label_id_to_name[label_id]
+        else:
+            # Fallback to label_id, but mark it for warning
+            class_name = label_id
+            if label_id.startswith('m/'):
+                missing_labels.add(label_id)
+        
+        # Normalize the class name
+        normalized_name = normalize_class_name(class_name)
+        if normalized_name is None:
+            # Skip if we can't normalize (e.g., label ID without mapping)
+            skipped_count += 1
+            continue
         
         x, y = float(row['X']), float(row['Y'])
         estimated = str(row.get('EstimatedYesNo', 'yes')).lower()
         
         if estimated == 'yes':
-            image_annotations[image_id]['positive'][class_name].append((y, x))
+            image_annotations[image_id]['positive'][normalized_name].append((y, x))
         elif estimated == 'no':
-            image_annotations[image_id]['negative'][class_name].append((y, x))
-            
+            image_annotations[image_id]['negative'][normalized_name].append((y, x))
+    
+    if missing_labels:
+        print(f"Warning: {len(missing_labels)} label IDs without name mapping (e.g., {list(missing_labels)[:5]})")
+        print("  These annotations were skipped. Consider fetching label names from BigQuery.")
+    if skipped_count > 0:
+        print(f"Skipped {skipped_count} annotations due to missing class names")
+    
+    print(f"Loaded annotations for {len(image_annotations)} images")
     return dict(image_annotations)
 
 def fetch_image_urls_from_bigquery(subset='validation', limit=None):
@@ -398,6 +415,48 @@ def fetch_image_urls_from_bigquery(subset='validation', limit=None):
     except Exception as e:
         print(f"BigQuery Error: {e}")
         return {}
+
+def fetch_label_names_from_bigquery():
+    """Fetch label ID to label name mapping from BigQuery."""
+    print("\nFetching label names from BigQuery...")
+    try:
+        client = bigquery.Client()
+        query = """
+            SELECT LabelName, DisplayName
+            FROM `bigquery-public-data.open_images.labels`
+        """
+        df = client.query(query).to_dataframe()
+        label_map = dict(zip(df.LabelName, df.DisplayName))
+        print(f"Loaded {len(label_map)} label mappings from BigQuery")
+        return label_map
+    except Exception as e:
+        print(f"BigQuery Error (labels): {e}")
+        print("Will use TextLabel from CSV or fallback to label ID")
+        return {}
+
+def normalize_class_name(class_name):
+    """
+    Normalize class name for use in text prompts.
+    - Convert to lowercase
+    - Replace underscores and hyphens with spaces
+    - Strip extra whitespace
+    - Handle label IDs (m/xxxxx) by returning None (should be mapped first)
+    """
+    if not class_name or not isinstance(class_name, str):
+        return None
+    
+    # Check if it's a label ID (starts with 'm/')
+    if class_name.startswith('m/'):
+        return None
+    
+    # Normalize: lowercase, replace separators with spaces
+    normalized = class_name.lower()
+    normalized = normalized.replace('_', ' ')
+    normalized = normalized.replace('-', ' ')
+    # Remove extra whitespace
+    normalized = ' '.join(normalized.split())
+    
+    return normalized if normalized else None
 
 # =============================================================================
 # Main
@@ -418,11 +477,6 @@ def main():
                         help='Output directory for visualizations')
     parser.add_argument('--vis_count', type=int, default=5,
                         help='Number of visualizations to save')
-    parser.add_argument('--threshold_mode', type=str, default='adaptive', 
-                        choices=['adaptive', 'fixed'],
-                        help='Thresholding mode: "adaptive" uses mean of normalized heatmap (as in paper), "fixed" uses --fixed_threshold')
-    parser.add_argument('--fixed_threshold', type=float, default=0.5,
-                        help='Fixed threshold value when threshold_mode=fixed')
     args = parser.parse_args()
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -440,7 +494,9 @@ def main():
         return
 
     # 2. Load Data
-    image_annotations = load_openimages_annotations(args.annotations_csv)
+    # Fetch label name mappings from BigQuery (to handle missing TextLabel)
+    label_id_to_name = fetch_label_names_from_bigquery()
+    image_annotations = load_openimages_annotations(args.annotations_csv, label_id_to_name=label_id_to_name)
     fetch_limit = 5000 if args.limit < 1000 else args.limit * 2 
     image_id_to_url = fetch_image_urls_from_bigquery(args.subset, fetch_limit)
     
@@ -478,13 +534,10 @@ def main():
         os.makedirs(args.vis_output_dir, exist_ok=True)
         print(f"Will save up to {args.vis_count} visualizations to {args.vis_output_dir}")
     
-    print(f"Running evaluation with method: {args.method}...")
-    print(f"Threshold mode: {args.threshold_mode}")
-    if args.threshold_mode == 'fixed':
-        print(f"Fixed threshold: {args.fixed_threshold}")
-    else:
-        print("Adaptive threshold: using mean of normalized heatmap (as in paper)")
+    # Track unique class names for debugging
+    seen_classes = set()
     
+    print(f"Running evaluation with method: {args.method}...")
     for idx, image_id in enumerate(tqdm(process_ids)):
         try:
             url = image_id_to_url[image_id]
@@ -504,7 +557,18 @@ def main():
                     # LeGrad: encode text and compute heatmap
                     if tokenizer is None:
                         continue
-                    prompt = f"a photo of a {class_name}."
+                    # class_name is already normalized, use it directly
+                    # Handle plural/singular and articles appropriately
+                    if class_name.startswith(('a ', 'an ', 'the ')):
+                        prompt = f"a photo of {class_name}."
+                    else:
+                        prompt = f"a photo of a {class_name}."
+                    
+                    # Debug: log first few unique class names to verify they're correct
+                    if class_name not in seen_classes and len(seen_classes) < 10:
+                        seen_classes.add(class_name)
+                        print(f"  [Debug] Class name: '{class_name}' -> Prompt: '{prompt}'")
+                    
                     text_tokens = tokenizer([prompt]).to(device)
                     with torch.no_grad():
                         text_emb = model.encode_text(text_tokens, normalize=True)
@@ -520,11 +584,7 @@ def main():
                 pos_pts = [(int(y*H_img), int(x*W_img)) for y, x in ann['positive'][class_name]]
                 neg_pts = [(int(y*H_img), int(x*W_img)) for y, x in ann['negative'].get(class_name, [])]
                 
-                # Use adaptive thresholding (mean) as in the paper, or fixed threshold
-                use_adaptive = (args.threshold_mode == 'adaptive')
-                metrics = compute_detailed_miou(heatmap, pos_pts, neg_pts, 
-                                                threshold=args.fixed_threshold, 
-                                                adaptive_threshold=use_adaptive)
+                metrics = compute_detailed_miou(heatmap, pos_pts, neg_pts)
                 
                 results['fg'].append(metrics['fg_iou'])
                 results['bg'].append(metrics['bg_iou'])
@@ -547,7 +607,7 @@ def main():
                         class_name=class_name,
                         method=args.method,
                         output_path=output_path,
-                        threshold=None  # Will use threshold from metrics dict
+                        threshold=0.5
                     )
                     vis_saved += 1
         
