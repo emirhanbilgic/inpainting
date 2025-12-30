@@ -454,7 +454,7 @@ def fetch_label_names_from_bigquery():
     try:
         client = bigquery.Client()
         query = """
-            SELECT LabelName, DisplayName
+            SELECT label_name, label_display_name
             FROM `bigquery-public-data.open_images.labels`
         """
         df = client.query(query).to_dataframe()
