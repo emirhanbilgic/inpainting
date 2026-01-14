@@ -609,9 +609,41 @@ def main():
         print(f"Score = correct_mIoU - {args.composite_lambda} × wrong_mIoU")
         print(f"{'='*60}\n")
     
+    # Custom callback for detailed logging
+    def trial_callback(study, trial):
+        """Log detailed metrics after each trial."""
+        if trial.state != TrialState.COMPLETE:
+            return
+        
+        correct_miou = trial.user_attrs.get('correct_miou', 0)
+        wrong_miou = trial.user_attrs.get('wrong_miou', 0)
+        composite = trial.user_attrs.get('composite_score', trial.value)
+        
+        # Find best trial so far
+        best_trial = study.best_trial
+        best_correct = best_trial.user_attrs.get('correct_miou', 0)
+        best_wrong = best_trial.user_attrs.get('wrong_miou', 0)
+        best_composite = best_trial.value
+        
+        # Print detailed info
+        print(f"\n  Trial {trial.number}: "
+              f"Correct={correct_miou:.2f} | Wrong={wrong_miou:.2f} | "
+              f"Composite={composite:.2f}")
+        print(f"  Best so far (Trial {best_trial.number}): "
+              f"Correct={best_correct:.2f} | Wrong={best_wrong:.2f} | "
+              f"Composite={best_composite:.2f}")
+        
+        # Show baseline comparison if available
+        if baseline_composite is not None:
+            improvement = best_composite - baseline_composite
+            print(f"  vs Baseline: Composite improvement = {improvement:+.2f}")
+    
     # Run optimization
     print(f"Starting Optuna optimization with {args.n_trials} trials")
     print(f"Negative strategy: {args.negative_strategy}, Num negatives: {args.num_negatives}")
+    if baseline_composite is not None:
+        print(f"Baseline to beat: Correct={baseline_correct_miou:.2f} | "
+              f"Wrong={baseline_wrong_miou:.2f} | Composite={baseline_composite:.2f}")
     print(f"{'='*60}\n")
     
     study.optimize(
@@ -620,6 +652,7 @@ def main():
         timeout=args.timeout,
         n_jobs=args.n_jobs,
         show_progress_bar=True,
+        callbacks=[trial_callback],
     )
     
     # Print results
