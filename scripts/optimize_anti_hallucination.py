@@ -473,6 +473,14 @@ def main():
     parser.add_argument('--multi_objective', action='store_true',
                         help='Use multi-objective Pareto optimization instead of composite score')
     
+    # Baseline comparison (from compute_legrad_negative_baseline.py)
+    parser.add_argument('--baseline_json', type=str, default=None,
+                        help='Path to baseline JSON from compute_legrad_negative_baseline.py')
+    parser.add_argument('--baseline_correct_miou', type=float, default=None,
+                        help='Manual baseline correct mIoU (overrides --baseline_json)')
+    parser.add_argument('--baseline_wrong_miou', type=float, default=None,
+                        help='Manual baseline wrong mIoU (overrides --baseline_json)')
+    
     # Optuna settings
     parser.add_argument('--n_trials', type=int, default=100, help='Number of Optuna trials')
     parser.add_argument('--study_name', type=str, default='anti_hallucination_optimization')
@@ -485,6 +493,28 @@ def main():
     parser.add_argument('--output_json', type=str, default='anti_hallucination_results.json')
     
     args = parser.parse_args()
+    
+    # Load baseline if provided
+    baseline_correct_miou = args.baseline_correct_miou
+    baseline_wrong_miou = args.baseline_wrong_miou
+    baseline_composite = None
+    
+    if args.baseline_json and os.path.exists(args.baseline_json):
+        print(f"Loading baseline from {args.baseline_json}...")
+        with open(args.baseline_json, 'r') as f:
+            baseline_data = json.load(f)
+        if baseline_correct_miou is None:
+            baseline_correct_miou = baseline_data.get('correct', {}).get('miou')
+        if baseline_wrong_miou is None:
+            baseline_wrong_miou = baseline_data.get('wrong', {}).get('miou')
+        baseline_composite = baseline_data.get('composite')
+        print(f"  Baseline correct mIoU: {baseline_correct_miou:.2f}")
+        print(f"  Baseline wrong mIoU: {baseline_wrong_miou:.2f}")
+        if baseline_composite is not None:
+            print(f"  Baseline composite: {baseline_composite:.2f}")
+    
+    if baseline_correct_miou is not None and baseline_composite is None:
+        baseline_composite = baseline_correct_miou - args.composite_lambda * (baseline_wrong_miou or 0)
     
     # Load model
     print(f"Loading model {args.model_name}...")
@@ -637,6 +667,20 @@ def main():
         print(f"  Composite Score: {best_trial.value:.2f}")
         print(f"  Correct mIoU: {best_trial.user_attrs.get('correct_miou', 'N/A'):.2f}")
         print(f"  Wrong mIoU: {best_trial.user_attrs.get('wrong_miou', 'N/A'):.2f}")
+        
+        # Compare with baseline if available
+        if baseline_composite is not None:
+            improvement = best_trial.value - baseline_composite
+            print(f"\n  === COMPARISON WITH BASELINE ===")
+            print(f"  Baseline Composite: {baseline_composite:.2f}")
+            print(f"  Improvement: {improvement:+.2f} ({improvement/abs(baseline_composite)*100:+.1f}%)")
+            if baseline_correct_miou is not None:
+                correct_diff = best_trial.user_attrs.get('correct_miou', 0) - baseline_correct_miou
+                print(f"  Correct mIoU change: {correct_diff:+.2f}")
+            if baseline_wrong_miou is not None:
+                wrong_diff = best_trial.user_attrs.get('wrong_miou', 0) - baseline_wrong_miou
+                print(f"  Wrong mIoU change: {wrong_diff:+.2f} (lower is better)")
+        
         print(f"\nBest hyperparameters:")
         for key, value in best_trial.params.items():
             print(f"  {key}: {value}")
@@ -664,6 +708,12 @@ def main():
             'best_wrong_miou': best_trial.user_attrs.get('wrong_miou'),
             'best_params': best_trial.params,
             'n_trials': len(study.trials),
+            'baseline': {
+                'correct_miou': baseline_correct_miou,
+                'wrong_miou': baseline_wrong_miou,
+                'composite': baseline_composite,
+            } if baseline_composite is not None else None,
+            'improvement_over_baseline': best_trial.value - baseline_composite if baseline_composite is not None else None,
             'top_5_trials': [
                 {
                     'trial_number': t.number,
