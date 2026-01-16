@@ -66,32 +66,46 @@ def main():
     parser.add_argument('--max_dict_cos_sim', type=float, default=0.9)
     parser.add_argument('--sparse_threshold', type=float, default=0.5)
     
-    # Known baseline values
-    parser.add_argument('--baseline_correct_miou', type=float, default=58.66)
-    parser.add_argument('--baseline_correct_acc', type=float, default=77.52)
-    parser.add_argument('--baseline_correct_map', type=float, default=82.49)
-    parser.add_argument('--baseline_wrong_miou', type=float, default=41.63)
-    parser.add_argument('--baseline_wrong_acc', type=float, default=67.55)
-    parser.add_argument('--baseline_wrong_map', type=float, default=71.47)
+    # Known baseline values (auto-set based on --use_siglip if None)
+    parser.add_argument('--baseline_correct_miou', type=float, default=None)
+    parser.add_argument('--baseline_correct_acc', type=float, default=None)
+    parser.add_argument('--baseline_correct_map', type=float, default=None)
+    parser.add_argument('--baseline_wrong_miou', type=float, default=None)
+    parser.add_argument('--baseline_wrong_acc', type=float, default=None)
+    parser.add_argument('--baseline_wrong_map', type=float, default=None)
     parser.add_argument('--composite_lambda', type=float, default=0.5)
     
     parser.add_argument('--output_json', type=str, default=None)
     
     args = parser.parse_args()
     
-    # Set model defaults based on --use_siglip
+    # Set model and baseline defaults based on --use_siglip
     if args.use_siglip:
         if args.model_name is None:
             args.model_name = 'ViT-B-16-SigLIP'
         if args.pretrained is None:
             args.pretrained = 'webli'
         model_type = 'SigLIP'
+        # SigLIP baseline values
+        if args.baseline_correct_miou is None: args.baseline_correct_miou = 41.05
+        if args.baseline_correct_acc is None: args.baseline_correct_acc = 71.64
+        if args.baseline_correct_map is None: args.baseline_correct_map = 78.95
+        if args.baseline_wrong_miou is None: args.baseline_wrong_miou = 35.42
+        if args.baseline_wrong_acc is None: args.baseline_wrong_acc = 70.20
+        if args.baseline_wrong_map is None: args.baseline_wrong_map = 69.50
     else:
         if args.model_name is None:
             args.model_name = 'ViT-B-16'
         if args.pretrained is None:
             args.pretrained = 'laion2b_s34b_b88k'
         model_type = 'CLIP'
+        # CLIP baseline values
+        if args.baseline_correct_miou is None: args.baseline_correct_miou = 58.66
+        if args.baseline_correct_acc is None: args.baseline_correct_acc = 77.52
+        if args.baseline_correct_map is None: args.baseline_correct_map = 82.49
+        if args.baseline_wrong_miou is None: args.baseline_wrong_miou = 41.63
+        if args.baseline_wrong_acc is None: args.baseline_wrong_acc = 67.55
+        if args.baseline_wrong_map is None: args.baseline_wrong_map = 71.47
     
     # Load model
     print(f"Loading {model_type} model: {args.model_name} ({args.pretrained})...")
