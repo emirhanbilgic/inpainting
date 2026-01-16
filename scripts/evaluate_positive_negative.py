@@ -44,9 +44,13 @@ def main():
     parser.add_argument('--mat_file', type=str, default='scripts/data/gtsegs_ijcv.mat')
     parser.add_argument('--limit', type=int, default=50)
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
-    parser.add_argument('--model_name', type=str, default='ViT-B-16')
-    parser.add_argument('--pretrained', type=str, default='laion2b_s34b_b88k')
+    parser.add_argument('--model_name', type=str, default=None,
+                        help='Model name (auto-set based on --use_siglip if not provided)')
+    parser.add_argument('--pretrained', type=str, default=None,
+                        help='Pretrained weights (auto-set based on --use_siglip if not provided)')
     parser.add_argument('--image_size', type=int, default=448)
+    parser.add_argument('--use_siglip', action='store_true',
+                        help='Use SigLIP instead of CLIP for comparison')
     parser.add_argument('--class_index_path', type=str, default='resources/imagenet_class_index.json')
     
     parser.add_argument('--num_negatives', type=int, default=1)
@@ -75,8 +79,22 @@ def main():
     
     args = parser.parse_args()
     
+    # Set model defaults based on --use_siglip
+    if args.use_siglip:
+        if args.model_name is None:
+            args.model_name = 'ViT-B-16-SigLIP'
+        if args.pretrained is None:
+            args.pretrained = 'webli'
+        model_type = 'SigLIP'
+    else:
+        if args.model_name is None:
+            args.model_name = 'ViT-B-16'
+        if args.pretrained is None:
+            args.pretrained = 'laion2b_s34b_b88k'
+        model_type = 'CLIP'
+    
     # Load model
-    print(f"Loading model {args.model_name}...")
+    print(f"Loading {model_type} model: {args.model_name} ({args.pretrained})...")
     model, _, preprocess = open_clip.create_model_and_transforms(
         model_name=args.model_name, pretrained=args.pretrained, device=args.device)
     tokenizer = open_clip.get_tokenizer(args.model_name)
