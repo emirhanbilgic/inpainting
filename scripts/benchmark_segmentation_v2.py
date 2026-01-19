@@ -1070,6 +1070,70 @@ def compute_gradcam_for_embedding(model, image, text_emb_1x, layer_index: int = 
     return heatmap
 
 
+def compute_gradcam_online(model, image, text_emb_1x):
+    """
+    GradCAM implementation from online source - hooks at ln_post.
+    This is for comparison with our intermediate-layer GradCAM.
+    """
+    model.zero_grad()
+    patch_features_captured = {}
+
+    def hook_fn(module, input, output):
+        patches = output[:, 1:, :]
+        patches.retain_grad()
+        patch_features_captured['features'] = patches
+
+    # Register hook on ln_post
+    hook_handle = model.visual.ln_post.register_forward_hook(hook_fn)
+
+    # Forward pass
+    _ = model.encode_image(image)
+
+    hook_handle.remove()
+
+    patch_tokens = patch_features_captured['features']
+
+    # Project to embedding space
+    if model.visual.proj is not None:
+        patch_features = patch_tokens @ model.visual.proj
+    else:
+        patch_features = patch_tokens
+
+    # Normalize
+    patch_features = F.normalize(patch_features, dim=-1)
+    patch_features = patch_features.detach()
+    patch_features.requires_grad = True
+
+    text_feat = text_emb_1x[0]  # [proj_dim]
+
+    # Compute per-patch similarity
+    cam_weights = torch.matmul(patch_features[0], text_feat)
+    sim = torch.sum(cam_weights)
+    sim.backward()
+
+    # Negate gradients (original implementation)
+    gradients = -patch_features.grad
+
+    # Mean across patches
+    weights = torch.mean(gradients, dim=1, keepdim=True)
+
+    cam = torch.sum(weights * patch_features, dim=-1).squeeze()
+
+    # No ReLU (original had it commented out)
+    # cam = torch.nn.functional.relu(cam)
+
+    # Min-max normalize
+    cam = cam.cpu().detach()
+    cam = (cam - cam.min()) / (cam.max() - cam.min() + 1e-8)
+
+    # Reshape to grid
+    num_patches = patch_features.shape[1]
+    grid_size = int(np.sqrt(num_patches))
+    cam = cam.reshape(grid_size, grid_size)
+
+    return cam
+
+
 def compute_legrad_for_embedding(model, image, text_emb_1x):
     """Compute LeGrad heatmap for a single text embedding."""
     with torch.enable_grad():
@@ -1268,10 +1332,10 @@ def main():
 
     # Parse methods
     methods = [m.strip().lower() for m in str(args.methods).split(",") if m.strip()]
-    allowed_methods = {'original', 'gradcam', 'rollout', 'textspan', 'rawattn', 'chefercam', 'sparse'}
+    allowed_methods = {'original', 'gradcam', 'gradcam_online', 'rollout', 'textspan', 'rawattn', 'chefercam', 'sparse'}
     methods = [m for m in methods if m in allowed_methods]
     if not methods:
-        raise ValueError("No valid methods. Use --methods with: original,gradcam,rollout,textspan,rawattn,chefercam,sparse")
+        raise ValueError("No valid methods. Use --methods with: original,gradcam,gradcam_online,rollout,textspan,rawattn,chefercam,sparse")
     
     print(f"Methods to evaluate: {methods}")
     print(f"Threshold mode: {args.threshold_mode}")
@@ -1416,6 +1480,17 @@ def main():
                     align_corners=False
                 ).squeeze()
                 heatmaps['gradcam'] = heatmap_resized
+            
+            # --- GRADCAM ONLINE (hooks at ln_post) ---
+            if 'gradcam_online' in methods:
+                heatmap = compute_gradcam_online(model, img_t, text_emb_1x)
+                heatmap_resized = F.interpolate(
+                    heatmap.view(1, 1, heatmap.shape[-2], heatmap.shape[-1]),
+                    size=(H_gt, W_gt),
+                    mode='bilinear',
+                    align_corners=False
+                ).squeeze()
+                heatmaps['gradcam_online'] = heatmap_resized
             
             # --- ROLLOUT (Reference Implementation) ---
             if 'rollout' in methods:
