@@ -34,7 +34,7 @@ import h5py
 import torch
 import torch.nn.functional as F
 from PIL import Image
-from sklearn.metrics import average_precision_score
+from sklearn.metrics import average_precision_score, roc_auc_score
 from tqdm import tqdm
 from torchvision.transforms import InterpolationMode
 import torchvision.transforms as transforms
@@ -244,10 +244,17 @@ class AntiHallucinationObjective:
     ):
         """
         Evaluate a specific sparse configuration.
-        Returns: (correct_miou, wrong_miou, correct_acc, wrong_acc, correct_map, wrong_map)
+        Returns: (correct_miou, wrong_miou, correct_acc, wrong_acc, correct_map, wrong_map,
+                  correct_auroc, wrong_auroc, correct_stats, wrong_stats)
         """
-        correct_results = {'iou': [], 'acc': [], 'ap': []}
-        wrong_results = {'iou': [], 'acc': [], 'ap': []}
+        correct_results = {
+            'iou': [], 'acc': [], 'ap': [], 'auroc': [],
+            'max': [], 'mean': [], 'median': [], 'min': []
+        }
+        wrong_results = {
+            'iou': [], 'acc': [], 'ap': [], 'auroc': [],
+            'max': [], 'mean': [], 'median': [], 'min': []
+        }
         
         iterator = range(self.limit)
         if show_progress:
@@ -365,13 +372,33 @@ class AntiHallucinationObjective:
                     iou, acc = compute_iou_acc(heatmap_resized, gt_mask, threshold=sparse_threshold)
                     ap = compute_map_score(heatmap_resized, gt_mask)
                     
-                    return iou, acc, ap
+                    # Statistics
+                    max_val = float(np.max(heatmap_resized))
+                    mean_val = float(np.mean(heatmap_resized))
+                    median_val = float(np.median(heatmap_resized))
+                    min_val = float(np.min(heatmap_resized))
+                    
+                    # AUROC
+                    gt_binary = (gt_mask > 0).astype(int).flatten()
+                    pred_flat = heatmap_resized.flatten()
+                    if len(np.unique(gt_binary)) > 1:
+                        auroc = roc_auc_score(gt_binary, pred_flat)
+                    else:
+                        auroc = np.nan
+                    
+                    return iou, acc, ap, auroc, max_val, mean_val, median_val, min_val
                 
                 # === CORRECT PROMPT ===
-                iou_c, acc_c, ap_c = compute_metrics(original_1x, class_name)
+                iou_c, acc_c, ap_c, auroc_c, mx_c, mn_c, md_c, mi_c = compute_metrics(original_1x, class_name)
                 correct_results['iou'].append(iou_c)
                 correct_results['acc'].append(acc_c)
                 correct_results['ap'].append(ap_c)
+                if not np.isnan(auroc_c):
+                    correct_results['auroc'].append(auroc_c)
+                correct_results['max'].append(mx_c)
+                correct_results['mean'].append(mn_c)
+                correct_results['median'].append(md_c)
+                correct_results['min'].append(mi_c)
                 
                 # === WRONG PROMPTS ===
                 neg_indices = self._sample_negative_indices(cls_idx)
@@ -380,10 +407,16 @@ class AntiHallucinationObjective:
                     neg_class_name = self.wnid_to_classname[neg_wnid]
                     neg_emb = self.all_text_embs[neg_idx:neg_idx + 1]
                     
-                    iou_w, acc_w, ap_w = compute_metrics(neg_emb, neg_class_name)
+                    iou_w, acc_w, ap_w, auroc_w, mx_w, mn_w, md_w, mi_w = compute_metrics(neg_emb, neg_class_name)
                     wrong_results['iou'].append(iou_w)
                     wrong_results['acc'].append(acc_w)
                     wrong_results['ap'].append(ap_w)
+                    if not np.isnan(auroc_w):
+                        wrong_results['auroc'].append(auroc_w)
+                    wrong_results['max'].append(mx_w)
+                    wrong_results['mean'].append(mn_w)
+                    wrong_results['median'].append(md_w)
+                    wrong_results['min'].append(mi_w)
                 
             except Exception as e:
                 continue
@@ -392,12 +425,31 @@ class AntiHallucinationObjective:
         correct_miou = np.mean(correct_results['iou']) * 100 if correct_results['iou'] else 0.0
         correct_macc = np.mean(correct_results['acc']) * 100 if correct_results['acc'] else 0.0
         correct_map = np.mean(correct_results['ap']) * 100 if correct_results['ap'] else 0.0
+        correct_auroc = np.mean(correct_results['auroc']) * 100 if correct_results['auroc'] else 0.0
         
         wrong_miou = np.mean(wrong_results['iou']) * 100 if wrong_results['iou'] else 0.0
         wrong_macc = np.mean(wrong_results['acc']) * 100 if wrong_results['acc'] else 0.0
         wrong_map = np.mean(wrong_results['ap']) * 100 if wrong_results['ap'] else 0.0
+        wrong_auroc = np.mean(wrong_results['auroc']) * 100 if wrong_results['auroc'] else 0.0
         
-        return correct_miou, wrong_miou, correct_macc, wrong_macc, correct_map, wrong_map
+        # Statistics
+        correct_stats = {
+            'max': np.mean(correct_results['max']) if correct_results['max'] else 0.0,
+            'mean': np.mean(correct_results['mean']) if correct_results['mean'] else 0.0,
+            'median': np.mean(correct_results['median']) if correct_results['median'] else 0.0,
+            'min': np.mean(correct_results['min']) if correct_results['min'] else 0.0,
+            'n_samples': len(correct_results['iou']),
+        }
+        wrong_stats = {
+            'max': np.mean(wrong_results['max']) if wrong_results['max'] else 0.0,
+            'mean': np.mean(wrong_results['mean']) if wrong_results['mean'] else 0.0,
+            'median': np.mean(wrong_results['median']) if wrong_results['median'] else 0.0,
+            'min': np.mean(wrong_results['min']) if wrong_results['min'] else 0.0,
+            'n_samples': len(wrong_results['iou']),
+        }
+        
+        return (correct_miou, wrong_miou, correct_macc, wrong_macc, correct_map, wrong_map,
+                correct_auroc, wrong_auroc, correct_stats, wrong_stats)
     
     def __call__(self, trial: optuna.Trial):
         """Optuna objective function."""
@@ -414,7 +466,8 @@ class AntiHallucinationObjective:
         max_dict_cos_sim = trial.suggest_float('max_dict_cos_sim', 0.5, 1.0, step=0.05)
         
         # Evaluate
-        correct_miou, wrong_miou, correct_acc, wrong_acc, correct_map, wrong_map = self.evaluate_sparse_config(
+        (correct_miou, wrong_miou, correct_acc, wrong_acc, correct_map, wrong_map,
+         correct_auroc, wrong_auroc, correct_stats, wrong_stats) = self.evaluate_sparse_config(
             wn_use_synonyms=wn_use_synonyms,
             wn_use_hypernyms=wn_use_hypernyms,
             wn_use_hyponyms=wn_use_hyponyms,
@@ -426,17 +479,32 @@ class AntiHallucinationObjective:
             show_progress=False,
         )
         
-        # Log metrics
+        # Log all metrics
         trial.set_user_attr('correct_miou', correct_miou)
         trial.set_user_attr('wrong_miou', wrong_miou)
         trial.set_user_attr('correct_acc', correct_acc)
         trial.set_user_attr('wrong_acc', wrong_acc)
         trial.set_user_attr('correct_map', correct_map)
         trial.set_user_attr('wrong_map', wrong_map)
+        trial.set_user_attr('correct_auroc', correct_auroc)
+        trial.set_user_attr('wrong_auroc', wrong_auroc)
+        trial.set_user_attr('correct_stats', correct_stats)
+        trial.set_user_attr('wrong_stats', wrong_stats)
         
-        # Compute composite score for single-objective optimization
-        composite = correct_miou - self.composite_lambda * wrong_miou
+        # Compute multi-metric composite score for single-objective optimization
+        # Objective: maximize correct metrics, minimize wrong metrics
+        composite_miou = correct_miou - self.composite_lambda * wrong_miou
+        composite_acc = correct_acc - self.composite_lambda * wrong_acc
+        composite_map = correct_map - self.composite_lambda * wrong_map
+        composite_auroc = correct_auroc - self.composite_lambda * wrong_auroc
+        
+        # Sum all composite scores (each weighted equally)
+        composite = composite_miou + composite_acc + composite_map + composite_auroc
         trial.set_user_attr('composite_score', composite)
+        trial.set_user_attr('composite_miou', composite_miou)
+        trial.set_user_attr('composite_acc', composite_acc)
+        trial.set_user_attr('composite_map', composite_map)
+        trial.set_user_attr('composite_auroc', composite_auroc)
         
         # Report for pruning
         trial.report(composite, step=0)
@@ -445,8 +513,10 @@ class AntiHallucinationObjective:
             raise optuna.TrialPruned()
         
         if self.multi_objective:
-            # Return tuple for multi-objective: (maximize correct, minimize wrong)
-            return correct_miou, wrong_miou
+            # Return tuple for multi-objective: all 4 correct and wrong metrics
+            # Directions: maximize correct, minimize wrong
+            return (correct_miou, correct_acc, correct_map, correct_auroc,
+                    wrong_miou, wrong_acc, wrong_map, wrong_auroc)
         else:
             # Return composite score for single-objective
             return composite
@@ -584,25 +654,27 @@ def main():
     pruner = optuna.pruners.MedianPruner(n_startup_trials=10, n_warmup_steps=0)
     
     if args.multi_objective:
-        # Multi-objective: maximize correct_miou, minimize wrong_miou
+        # Multi-objective: maximize all correct metrics, minimize all wrong metrics
+        directions = ['maximize', 'maximize', 'maximize', 'maximize',  # correct: mIoU, Acc, mAP, AUROC
+                      'minimize', 'minimize', 'minimize', 'minimize']  # wrong: mIoU, Acc, mAP, AUROC
         if args.storage:
             study = optuna.create_study(
                 study_name=args.study_name,
                 storage=args.storage,
                 load_if_exists=True,
-                directions=['maximize', 'minimize'],
+                directions=directions,
                 sampler=optuna.samplers.NSGAIISampler(seed=args.seed),
             )
         else:
             study = optuna.create_study(
                 study_name=args.study_name,
-                directions=['maximize', 'minimize'],
+                directions=directions,
                 sampler=optuna.samplers.NSGAIISampler(seed=args.seed),
             )
         print(f"\n{'='*60}")
-        print("Multi-Objective Optimization Mode")
-        print("Objective 1 (MAXIMIZE): Correct prompt mIoU")
-        print("Objective 2 (MINIMIZE): Wrong prompt mIoU")
+        print("Multi-Objective Optimization Mode (8 objectives)")
+        print("MAXIMIZE: Correct mIoU, Accuracy, mAP, AUROC")
+        print("MINIMIZE: Wrong mIoU, Accuracy, mAP, AUROC")
         print(f"{'='*60}\n")
     else:
         # Single-objective with composite score
@@ -623,8 +695,8 @@ def main():
                 pruner=pruner,
             )
         print(f"\n{'='*60}")
-        print("Composite Score Optimization Mode")
-        print(f"Score = correct_mIoU - {args.composite_lambda} × wrong_mIoU")
+        print("Multi-Metric Composite Score Optimization")
+        print(f"Score = Σ(correct_metric - {args.composite_lambda} × wrong_metric) for mIoU, Acc, mAP, AUROC")
         print(f"{'='*60}\n")
     
     # Custom callback for detailed logging
@@ -635,26 +707,30 @@ def main():
         
         correct_miou = trial.user_attrs.get('correct_miou', 0)
         wrong_miou = trial.user_attrs.get('wrong_miou', 0)
+        correct_auroc = trial.user_attrs.get('correct_auroc', 0)
+        wrong_auroc = trial.user_attrs.get('wrong_auroc', 0)
         composite = trial.user_attrs.get('composite_score', trial.value)
         
-        # Find best trial so far
-        best_trial = study.best_trial
-        best_correct = best_trial.user_attrs.get('correct_miou', 0)
-        best_wrong = best_trial.user_attrs.get('wrong_miou', 0)
-        best_composite = best_trial.value
-        
-        # Print detailed info
-        print(f"\n  Trial {trial.number}: "
-              f"Correct={correct_miou:.2f} | Wrong={wrong_miou:.2f} | "
-              f"Composite={composite:.2f}")
-        print(f"  Best so far (Trial {best_trial.number}): "
-              f"Correct={best_correct:.2f} | Wrong={best_wrong:.2f} | "
-              f"Composite={best_composite:.2f}")
-        
-        # Show baseline comparison if available
-        if baseline_composite is not None:
-            improvement = best_composite - baseline_composite
-            print(f"  vs Baseline: Composite improvement = {improvement:+.2f}")
+        # Find best trial so far (for single-objective)
+        if not args.multi_objective:
+            best_trial = study.best_trial
+            best_correct = best_trial.user_attrs.get('correct_miou', 0)
+            best_wrong = best_trial.user_attrs.get('wrong_miou', 0)
+            best_composite = best_trial.value
+            
+            # Print detailed info
+            print(f"\n  Trial {trial.number}: "
+                  f"mIoU(C/W)={correct_miou:.1f}/{wrong_miou:.1f} | "
+                  f"AUROC(C/W)={correct_auroc:.1f}/{wrong_auroc:.1f} | "
+                  f"Composite={composite:.2f}")
+            print(f"  Best so far (Trial {best_trial.number}): "
+                  f"Correct mIoU={best_correct:.2f} | Wrong mIoU={best_wrong:.2f} | "
+                  f"Composite={best_composite:.2f}")
+            
+            # Show baseline comparison if available
+            if baseline_composite is not None:
+                improvement = best_composite - baseline_composite
+                print(f"  vs Baseline: Composite improvement = {improvement:+.2f}")
     
     # Run optimization
     print(f"Starting Optuna optimization with {args.n_trials} trials")
@@ -693,10 +769,10 @@ def main():
         print(f"{'='*60}")
         
         for i, trial in enumerate(pareto_trials[:10], 1):
-            correct_miou, wrong_miou = trial.values
+            vals = trial.values
             print(f"\n#{i} Trial {trial.number}:")
-            print(f"  Correct mIoU: {correct_miou:.2f} (higher is better)")
-            print(f"  Wrong mIoU: {wrong_miou:.2f} (lower is better)")
+            print(f"  Correct: mIoU={vals[0]:.2f} | Acc={vals[1]:.2f} | mAP={vals[2]:.2f} | AUROC={vals[3]:.2f}")
+            print(f"  Wrong:   mIoU={vals[4]:.2f} | Acc={vals[5]:.2f} | mAP={vals[6]:.2f} | AUROC={vals[7]:.2f}")
             print(f"  Params: {trial.params}")
         
         results = {
@@ -705,8 +781,8 @@ def main():
             'pareto_trials': [
                 {
                     'trial_number': t.number,
-                    'correct_miou': t.values[0],
-                    'wrong_miou': t.values[1],
+                    'correct': {'miou': t.values[0], 'acc': t.values[1], 'map': t.values[2], 'auroc': t.values[3]},
+                    'wrong': {'miou': t.values[4], 'acc': t.values[5], 'map': t.values[6], 'auroc': t.values[7]},
                     'params': t.params,
                 }
                 for t in pareto_trials
@@ -715,23 +791,57 @@ def main():
     else:
         # Single-objective results
         best_trial = study.best_trial
-        print(f"\nBest trial:")
-        print(f"  Composite Score: {best_trial.value:.2f}")
-        print(f"  Correct mIoU: {best_trial.user_attrs.get('correct_miou', 'N/A'):.2f}")
-        print(f"  Wrong mIoU: {best_trial.user_attrs.get('wrong_miou', 'N/A'):.2f}")
         
-        # Compare with baseline if available
-        if baseline_composite is not None:
-            improvement = best_trial.value - baseline_composite
-            print(f"\n  === COMPARISON WITH BASELINE ===")
-            print(f"  Baseline Composite: {baseline_composite:.2f}")
-            print(f"  Improvement: {improvement:+.2f} ({improvement/abs(baseline_composite)*100:+.1f}%)")
-            if baseline_correct_miou is not None:
-                correct_diff = best_trial.user_attrs.get('correct_miou', 0) - baseline_correct_miou
-                print(f"  Correct mIoU change: {correct_diff:+.2f}")
-            if baseline_wrong_miou is not None:
-                wrong_diff = best_trial.user_attrs.get('wrong_miou', 0) - baseline_wrong_miou
-                print(f"  Wrong mIoU change: {wrong_diff:+.2f} (lower is better)")
+        # Extract all metrics from best trial
+        correct_metrics = {
+            'miou': best_trial.user_attrs.get('correct_miou', 0),
+            'acc': best_trial.user_attrs.get('correct_acc', 0),
+            'map': best_trial.user_attrs.get('correct_map', 0),
+            'auroc': best_trial.user_attrs.get('correct_auroc', 0),
+        }
+        wrong_metrics = {
+            'miou': best_trial.user_attrs.get('wrong_miou', 0),
+            'acc': best_trial.user_attrs.get('wrong_acc', 0),
+            'map': best_trial.user_attrs.get('wrong_map', 0),
+            'auroc': best_trial.user_attrs.get('wrong_auroc', 0),
+        }
+        correct_stats = best_trial.user_attrs.get('correct_stats', {})
+        wrong_stats = best_trial.user_attrs.get('wrong_stats', {})
+        
+        print(f"\n{'='*60}")
+        print("BEST TRIAL RESULTS")
+        print(f"{'='*60}")
+        print(f"\nComposite Score: {best_trial.value:.2f}")
+        
+        print(f"\n=== CORRECT PROMPTS (image class = text prompt class) ===")
+        print(f"  mIoU:     {correct_metrics['miou']:.2f}")
+        print(f"  Accuracy: {correct_metrics['acc']:.2f}")
+        print(f"  mAP:      {correct_metrics['map']:.2f}")
+        print(f"  AUROC:    {correct_metrics['auroc']:.2f}")
+        if correct_stats:
+            print(f"  Max Val:  {correct_stats.get('max', 0):.4f}")
+            print(f"  Mean Val: {correct_stats.get('mean', 0):.4f}")
+            print(f"  Median:   {correct_stats.get('median', 0):.4f}")
+            print(f"  Min Val:  {correct_stats.get('min', 0):.4f}")
+            print(f"  Samples:  {correct_stats.get('n_samples', 0)}")
+        
+        print(f"\n=== WRONG PROMPTS (image class ≠ text prompt class) ===")
+        print(f"  mIoU:     {wrong_metrics['miou']:.2f}")
+        print(f"  Accuracy: {wrong_metrics['acc']:.2f}")
+        print(f"  mAP:      {wrong_metrics['map']:.2f}")
+        print(f"  AUROC:    {wrong_metrics['auroc']:.2f}")
+        if wrong_stats:
+            print(f"  Max Val:  {wrong_stats.get('max', 0):.4f}")
+            print(f"  Mean Val: {wrong_stats.get('mean', 0):.4f}")
+            print(f"  Median:   {wrong_stats.get('median', 0):.4f}")
+            print(f"  Min Val:  {wrong_stats.get('min', 0):.4f}")
+            print(f"  Samples:  {wrong_stats.get('n_samples', 0)}")
+        
+        print(f"\n=== COMPOSITE BREAKDOWN ===")
+        print(f"  mIoU:     {best_trial.user_attrs.get('composite_miou', 0):.2f}")
+        print(f"  Accuracy: {best_trial.user_attrs.get('composite_acc', 0):.2f}")
+        print(f"  mAP:      {best_trial.user_attrs.get('composite_map', 0):.2f}")
+        print(f"  AUROC:    {best_trial.user_attrs.get('composite_auroc', 0):.2f}")
         
         print(f"\nBest hyperparameters:")
         for key, value in best_trial.params.items():
@@ -747,17 +857,23 @@ def main():
         for i, trial in enumerate(sorted_trials, 1):
             print(f"\n#{i} Trial {trial.number}:")
             print(f"  Composite: {trial.value:.2f}")
-            print(f"  Correct mIoU: {trial.user_attrs.get('correct_miou', 0):.2f}")
-            print(f"  Wrong mIoU: {trial.user_attrs.get('wrong_miou', 0):.2f}")
-            for key, value in trial.params.items():
-                print(f"  {key}: {value}")
+            print(f"  Correct: mIoU={trial.user_attrs.get('correct_miou', 0):.1f} | "
+                  f"Acc={trial.user_attrs.get('correct_acc', 0):.1f} | "
+                  f"mAP={trial.user_attrs.get('correct_map', 0):.1f} | "
+                  f"AUROC={trial.user_attrs.get('correct_auroc', 0):.1f}")
+            print(f"  Wrong:   mIoU={trial.user_attrs.get('wrong_miou', 0):.1f} | "
+                  f"Acc={trial.user_attrs.get('wrong_acc', 0):.1f} | "
+                  f"mAP={trial.user_attrs.get('wrong_map', 0):.1f} | "
+                  f"AUROC={trial.user_attrs.get('wrong_auroc', 0):.1f}")
         
         results = {
             'mode': 'composite',
             'composite_lambda': args.composite_lambda,
             'best_composite_score': best_trial.value,
-            'best_correct_miou': best_trial.user_attrs.get('correct_miou'),
-            'best_wrong_miou': best_trial.user_attrs.get('wrong_miou'),
+            'best_correct': correct_metrics,
+            'best_wrong': wrong_metrics,
+            'best_correct_stats': correct_stats,
+            'best_wrong_stats': wrong_stats,
             'best_params': best_trial.params,
             'n_trials': len(study.trials),
             'model_settings': {
@@ -766,18 +882,22 @@ def main():
                 'model_type': model_type,
                 'use_siglip': args.use_siglip,
             },
-            'baseline': {
-                'correct_miou': baseline_correct_miou,
-                'wrong_miou': baseline_wrong_miou,
-                'composite': baseline_composite,
-            } if baseline_composite is not None else None,
-            'improvement_over_baseline': best_trial.value - baseline_composite if baseline_composite is not None else None,
             'top_5_trials': [
                 {
                     'trial_number': t.number,
                     'composite_score': t.value,
-                    'correct_miou': t.user_attrs.get('correct_miou'),
-                    'wrong_miou': t.user_attrs.get('wrong_miou'),
+                    'correct': {
+                        'miou': t.user_attrs.get('correct_miou'),
+                        'acc': t.user_attrs.get('correct_acc'),
+                        'map': t.user_attrs.get('correct_map'),
+                        'auroc': t.user_attrs.get('correct_auroc'),
+                    },
+                    'wrong': {
+                        'miou': t.user_attrs.get('wrong_miou'),
+                        'acc': t.user_attrs.get('wrong_acc'),
+                        'map': t.user_attrs.get('wrong_map'),
+                        'auroc': t.user_attrs.get('wrong_auroc'),
+                    },
                     'params': t.params,
                 }
                 for t in sorted_trials
