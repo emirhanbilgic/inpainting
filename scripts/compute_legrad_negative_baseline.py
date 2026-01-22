@@ -45,7 +45,7 @@ import h5py
 import torch
 import torch.nn.functional as F
 from PIL import Image
-from sklearn.metrics import average_precision_score
+from sklearn.metrics import average_precision_score, roc_auc_score
 from tqdm import tqdm
 from torchvision.transforms import InterpolationMode
 import torchvision.transforms as transforms
@@ -176,11 +176,17 @@ class LeGradBaselineEvaluator:
         Evaluate LeGrad baseline on correct and wrong prompts.
         
         Returns dict with:
-        - correct: {miou, acc, map}
-        - wrong: {miou, acc, map}
+        - correct: {miou, acc, map, max, mean, median, min, auroc}
+        - wrong: {miou, acc, map, max, mean, median, min, auroc}
         """
-        correct_results = {'iou': [], 'acc': [], 'ap': []}
-        wrong_results = {'iou': [], 'acc': [], 'ap': []}
+        correct_results = {
+            'iou': [], 'acc': [], 'ap': [], 
+            'max': [], 'mean': [], 'median': [], 'min': [], 'auroc': []
+        }
+        wrong_results = {
+            'iou': [], 'acc': [], 'ap': [],
+            'max': [], 'mean': [], 'median': [], 'min': [], 'auroc': []
+        }
         
         iterator = range(self.limit)
         if show_progress:
@@ -235,23 +241,50 @@ class LeGradBaselineEvaluator:
                     iou, acc = compute_iou_acc(heatmap_resized, gt_mask, threshold=threshold)
                     ap = compute_map_score(heatmap_resized, gt_mask)
                     
-                    return iou, acc, ap
+                    # New metrics
+                    max_val = np.max(heatmap_resized)
+                    mean_val = np.mean(heatmap_resized)
+                    median_val = np.median(heatmap_resized)
+                    min_val = np.min(heatmap_resized)
+                    
+                    # AUROC
+                    gt_binary = (gt_mask > 0).astype(int).flatten()
+                    pred_flat = heatmap_resized.flatten()
+                    
+                    if len(np.unique(gt_binary)) > 1:
+                        auroc = roc_auc_score(gt_binary, pred_flat)
+                    else:
+                        auroc = np.nan
+                    
+                    return iou, acc, ap, max_val, mean_val, median_val, min_val, auroc
                 
                 # === CORRECT PROMPT ===
-                iou_c, acc_c, ap_c = compute_metrics(text_emb)
-                correct_results['iou'].append(iou_c)
-                correct_results['acc'].append(acc_c)
-                correct_results['ap'].append(ap_c)
+                iou, acc, ap, mx, mn, md, mi, auc = compute_metrics(text_emb)
+                correct_results['iou'].append(iou)
+                correct_results['acc'].append(acc)
+                correct_results['ap'].append(ap)
+                correct_results['max'].append(mx)
+                correct_results['mean'].append(mn)
+                correct_results['median'].append(md)
+                correct_results['min'].append(mi)
+                if not np.isnan(auc):
+                    correct_results['auroc'].append(auc)
                 
                 # === WRONG PROMPTS ===
                 neg_indices = self._sample_negative_indices(cls_idx)
                 for neg_idx in neg_indices:
                     neg_emb = self.all_text_embs[neg_idx:neg_idx + 1]
                     
-                    iou_w, acc_w, ap_w = compute_metrics(neg_emb)
-                    wrong_results['iou'].append(iou_w)
-                    wrong_results['acc'].append(acc_w)
-                    wrong_results['ap'].append(ap_w)
+                    iou, acc, ap, mx, mn, md, mi, auc = compute_metrics(neg_emb)
+                    wrong_results['iou'].append(iou)
+                    wrong_results['acc'].append(acc)
+                    wrong_results['ap'].append(ap)
+                    wrong_results['max'].append(mx)
+                    wrong_results['mean'].append(mn)
+                    wrong_results['median'].append(md)
+                    wrong_results['min'].append(mi)
+                    if not np.isnan(auc):
+                        wrong_results['auroc'].append(auc)
                 
             except Exception as e:
                 print(f"[Warning] Error processing image {idx}: {e}")
@@ -263,12 +296,22 @@ class LeGradBaselineEvaluator:
                 'miou': np.mean(correct_results['iou']) * 100 if correct_results['iou'] else 0.0,
                 'acc': np.mean(correct_results['acc']) * 100 if correct_results['acc'] else 0.0,
                 'map': np.mean(correct_results['ap']) * 100 if correct_results['ap'] else 0.0,
+                'max': np.mean(correct_results['max']) if correct_results['max'] else 0.0,
+                'mean': np.mean(correct_results['mean']) if correct_results['mean'] else 0.0,
+                'median': np.mean(correct_results['median']) if correct_results['median'] else 0.0,
+                'min': np.mean(correct_results['min']) if correct_results['min'] else 0.0,
+                'auroc': np.mean(correct_results['auroc']) * 100 if correct_results['auroc'] else 0.0,
                 'n_samples': len(correct_results['iou']),
             },
             'wrong': {
                 'miou': np.mean(wrong_results['iou']) * 100 if wrong_results['iou'] else 0.0,
                 'acc': np.mean(wrong_results['acc']) * 100 if wrong_results['acc'] else 0.0,
                 'map': np.mean(wrong_results['ap']) * 100 if wrong_results['ap'] else 0.0,
+                'max': np.mean(wrong_results['max']) if wrong_results['max'] else 0.0,
+                'mean': np.mean(wrong_results['mean']) if wrong_results['mean'] else 0.0,
+                'median': np.mean(wrong_results['median']) if wrong_results['median'] else 0.0,
+                'min': np.mean(wrong_results['min']) if wrong_results['min'] else 0.0,
+                'auroc': np.mean(wrong_results['auroc']) * 100 if wrong_results['auroc'] else 0.0,
                 'n_samples': len(wrong_results['iou']),
             },
         }
@@ -393,12 +436,22 @@ def main():
     print(f"  mIoU:     {results['correct']['miou']:.2f}")
     print(f"  Accuracy: {results['correct']['acc']:.2f}")
     print(f"  mAP:      {results['correct']['map']:.2f}")
+    print(f"  Max Val:  {results['correct']['max']:.4f}")
+    print(f"  Mean Val: {results['correct']['mean']:.4f}")
+    print(f"  Median:   {results['correct']['median']:.4f}")
+    print(f"  Min Val:  {results['correct']['min']:.4f}")
+    print(f"  AUROC:    {results['correct']['auroc']:.2f}")
     print(f"  Samples:  {results['correct']['n_samples']}")
     
     print(f"\n=== WRONG PROMPTS (image class ≠ text prompt class) ===")
     print(f"  mIoU:     {results['wrong']['miou']:.2f}")
     print(f"  Accuracy: {results['wrong']['acc']:.2f}")
     print(f"  mAP:      {results['wrong']['map']:.2f}")
+    print(f"  Max Val:  {results['wrong']['max']:.4f}")
+    print(f"  Mean Val: {results['wrong']['mean']:.4f}")
+    print(f"  Median:   {results['wrong']['median']:.4f}")
+    print(f"  Min Val:  {results['wrong']['min']:.4f}")
+    print(f"  AUROC:    {results['wrong']['auroc']:.2f}")
     print(f"  Samples:  {results['wrong']['n_samples']}")
     
     print(f"\n=== COMPOSITE SCORE ===")
