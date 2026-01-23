@@ -398,7 +398,7 @@ class LeGradBaselineEvaluator:
         all_indices.remove(correct_idx)
         
         # Random sampling (other strategies can be added here)
-        return self.rng.sample(all_indices, min(self.num_negatives, len(all_indices)))
+        return random.sample(all_indices, min(self.num_negatives, len(all_indices)))
     
     def evaluate(self, threshold=0.5, show_progress=True):
         """
