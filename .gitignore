@@ -188,3 +188,8 @@ Transformer-Explainability
 scripts/KAGGLE_COMMANDS.md
 scripts/gtsegs_ijcv.mat
 legrad_negative_baseline.json
+anti_hallucination_results.json
+.gitignore
+test_gradcam_clip_verification.json
+test_gradcam_baseline.json
+test_gradcam_siglip.json
