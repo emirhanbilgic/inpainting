@@ -372,6 +372,8 @@ class AntiHallucinationObjective:
         use_gradcam=False,
         gradcam_layer=8,
         use_chefercam=False,
+        threshold_mode='mean',
+        fixed_threshold=0.5,
     ):
         self.model = model
         self.tokenizer = tokenizer
@@ -386,6 +388,8 @@ class AntiHallucinationObjective:
         self.use_gradcam = use_gradcam
         self.gradcam_layer = gradcam_layer
         self.use_chefercam = use_chefercam
+        self.threshold_mode = threshold_mode
+        self.fixed_threshold = fixed_threshold
         
         # Load dataset
         self.f = h5py.File(dataset_file, 'r')
@@ -593,14 +597,21 @@ class AntiHallucinationObjective:
                     else:
                         heatmap = compute_map_for_embedding(self.model, img_t, sparse_1x)
                     
+                    heatmap_norm = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
+                    
+                    if self.threshold_mode == 'mean':
+                        thr = heatmap_norm.mean().item()
+                    else:
+                        thr = sparse_threshold
+
                     heatmap_resized = F.interpolate(
-                        heatmap.view(1, 1, H_feat, W_feat),
+                        heatmap_norm.view(1, 1, H_feat, W_feat),
                         size=(H_gt, W_gt),
                         mode='bilinear',
                         align_corners=False
                     ).squeeze().numpy()
                     
-                    iou, acc = compute_iou_acc(heatmap_resized, gt_mask, threshold=sparse_threshold)
+                    iou, acc = compute_iou_acc(heatmap_resized, gt_mask, threshold=thr)
                     ap = compute_map_score(heatmap_resized, gt_mask)
                     
                     # Statistics
@@ -692,7 +703,10 @@ class AntiHallucinationObjective:
         wn_use_siblings = trial.suggest_categorical('wn_use_siblings', [True, False])
         dict_include_prompts = trial.suggest_categorical('dict_include_prompts', [True, False])
         
-        sparse_threshold = trial.suggest_float('sparse_threshold', 0.1, 0.9, step=0.025)
+        if self.threshold_mode == 'fixed':
+            sparse_threshold = trial.suggest_float('sparse_threshold', 0.1, 0.9, step=0.025)
+        else:
+            sparse_threshold = 0.5  # Dummy value, ignored by adaptive thresholding
         atoms = trial.suggest_int('atoms', 1, 32)
         max_dict_cos_sim = trial.suggest_float('max_dict_cos_sim', 0.5, 1.0, step=0.05)
         
@@ -762,7 +776,7 @@ def main():
                         help='Model name (auto-set based on --use_siglip if not provided)')
     parser.add_argument('--pretrained', type=str, default=None,
                         help='Pretrained weights (auto-set based on --use_siglip if not provided)')
-    parser.add_argument('--image_size', type=int, default=448)
+    parser.add_argument('--image_size', type=int, default=224)
     parser.add_argument('--use_siglip', action='store_true',
                         help='Use SigLIP instead of CLIP for optimization')
     parser.add_argument('--class_index_path', type=str, default='resources/imagenet_class_index.json')
@@ -793,6 +807,13 @@ def main():
                         help='GradCAM layer index (default: 8)')
     parser.add_argument('--use_chefercam', action='store_true',
                         help='Use CheferCAM (attention GradCAM) instead of LeGrad')
+    
+    # Threshold settings
+    parser.add_argument('--threshold_mode', type=str, default='mean',
+                        choices=['mean', 'fixed'],
+                        help='Thresholding mode: "mean" (adaptive) or "fixed"')
+    parser.add_argument('--fixed_threshold', type=float, default=0.5,
+                        help='Fixed threshold value when threshold_mode=fixed')
     
     # Optuna settings
     parser.add_argument('--n_trials', type=int, default=100, help='Number of Optuna trials')
@@ -889,6 +910,8 @@ def main():
         use_gradcam=args.use_gradcam,
         gradcam_layer=args.gradcam_layer,
         use_chefercam=args.use_chefercam,
+        threshold_mode=args.threshold_mode,
+        fixed_threshold=args.fixed_threshold,
     )
     
     # Create Optuna study

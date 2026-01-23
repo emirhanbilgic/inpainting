@@ -331,6 +331,8 @@ class LeGradBaselineEvaluator:
         use_gradcam=False,
         gradcam_layer=8,
         use_chefercam=False,
+        threshold_mode='mean',
+        fixed_threshold=0.5,
     ):
         self.model = model
         self.tokenizer = tokenizer
@@ -342,6 +344,8 @@ class LeGradBaselineEvaluator:
         self.use_gradcam = use_gradcam
         self.gradcam_layer = gradcam_layer
         self.use_chefercam = use_chefercam
+        self.threshold_mode = threshold_mode
+        self.fixed_threshold = fixed_threshold
         
         # Load dataset
         self.f = h5py.File(dataset_file, 'r')
@@ -476,14 +480,22 @@ class LeGradBaselineEvaluator:
                     else:
                         heatmap = compute_legrad_heatmap(self.model, img_t, text_emb_1x)
                     
+                    # Normalize heatmap [0, 1] - essential for fair comparison with benchmark script
+                    heatmap_norm = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
+                    
+                    if self.threshold_mode == 'mean':
+                        thr = heatmap_norm.mean().item()
+                    else:
+                        thr = self.fixed_threshold
+                    
                     heatmap_resized = F.interpolate(
-                        heatmap.view(1, 1, H_feat, W_feat),
+                        heatmap_norm.view(1, 1, H_feat, W_feat),
                         size=(H_gt, W_gt),
                         mode='bilinear',
                         align_corners=False
                     ).squeeze().numpy()
                     
-                    iou, acc = compute_iou_acc(heatmap_resized, gt_mask, threshold=threshold)
+                    iou, acc = compute_iou_acc(heatmap_resized, gt_mask, threshold=thr)
                     ap = compute_map_score(heatmap_resized, gt_mask)
                     
                     # New metrics
@@ -597,7 +609,7 @@ def main():
                         help='Model name (auto-set based on --use_siglip if not provided)')
     parser.add_argument('--pretrained', type=str, default=None,
                         help='Pretrained weights (auto-set based on --use_siglip if not provided)')
-    parser.add_argument('--image_size', type=int, default=448)
+    parser.add_argument('--image_size', type=int, default=224)
     parser.add_argument('--use_siglip', action='store_true',
                         help='Use SigLIP instead of CLIP for comparison')
     parser.add_argument('--class_index_path', type=str, default='resources/imagenet_class_index.json')
@@ -610,8 +622,11 @@ def main():
                         help='Strategy for sampling negative prompts (only random for baseline)')
     
     # LeGrad threshold
-    parser.add_argument('--threshold', type=float, default=0.5, 
-                        help='Binarization threshold for LeGrad heatmaps')
+    parser.add_argument('--threshold_mode', type=str, default='mean',
+                        choices=['mean', 'fixed'],
+                        help='Thresholding mode: "mean" (adaptive) or "fixed"')
+    parser.add_argument('--fixed_threshold', type=float, default=0.5, 
+                        help='Fixed threshold value when threshold_mode=fixed')
     
     # GradCAM settings
     parser.add_argument('--use_gradcam', action='store_true',
@@ -687,6 +702,8 @@ def main():
         use_gradcam=args.use_gradcam,
         gradcam_layer=args.gradcam_layer,
         use_chefercam=args.use_chefercam,
+        threshold_mode=args.threshold_mode,
+        fixed_threshold=args.fixed_threshold,
     )
     
     # Run evaluation
