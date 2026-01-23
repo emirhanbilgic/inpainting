@@ -140,6 +140,144 @@ def compute_gradcam_for_embedding(model, image, text_emb_1x, layer_index: int = 
     return heatmap
 
 
+def compute_chefercam_for_embedding(model, image, text_emb_1x):
+    """
+    Computes GradCAM on the last Attention layer (CheferCAM/attn_gradcam baseline).
+    """
+    import math
+    
+    model.zero_grad()
+    
+    # Get the last transformer block
+    blocks = list(model.visual.transformer.resblocks)
+    last_block = blocks[-1]
+    num_heads = last_block.attn.num_heads
+    num_prompts = text_emb_1x.shape[0]
+    
+    with torch.enable_grad():
+        # Forward through visual encoder
+        x = model.visual.conv1(image)  # [B, C, H', W']
+        x = x.reshape(x.shape[0], x.shape[1], -1)  # [B, C, N]
+        x = x.permute(0, 2, 1)  # [B, N, C]
+        
+        # Add class token
+        batch_size = x.shape[0]
+        class_token = model.visual.class_embedding.unsqueeze(0).unsqueeze(0)
+        class_token = class_token.expand(batch_size, -1, -1)
+        x = torch.cat([class_token, x], dim=1)  # [B, N+1, C]
+        
+        # Add positional embedding
+        num_patches = x.shape[1] - 1
+        if hasattr(model.visual, 'original_pos_embed'):
+            pos_embed = model.visual.original_pos_embed
+        else:
+            pos_embed = model.visual.positional_embedding
+        
+        if pos_embed.shape[0] != x.shape[1]:
+            cls_pos = pos_embed[:1]
+            patch_pos = pos_embed[1:]
+            orig_size = int(math.sqrt(patch_pos.shape[0]))
+            patch_pos = patch_pos.reshape(1, orig_size, orig_size, -1).permute(0, 3, 1, 2)
+            new_size = int(math.sqrt(num_patches))
+            patch_pos = F.interpolate(patch_pos, size=(new_size, new_size), mode='bilinear', align_corners=False)
+            patch_pos = patch_pos.permute(0, 2, 3, 1).reshape(-1, pos_embed.shape[1])
+            pos_embed = torch.cat([cls_pos, patch_pos], dim=0)
+        
+        x = x + pos_embed.unsqueeze(0).to(x.dtype)
+        
+        if hasattr(model.visual, 'ln_pre'):
+            x = model.visual.ln_pre(x)
+        
+        x = x.permute(1, 0, 2)  # [N+1, B, C] for transformer
+        
+        # Forward through all blocks except the last
+        for i in range(len(blocks) - 1):
+            x = blocks[i](x)
+        
+        # For the last block, manually compute attention with gradients
+        last_attn = last_block.attn
+        x_normed = last_block.ln_1(x)
+        
+        # Compute Q, K, V
+        qkv = F.linear(x_normed, last_attn.in_proj_weight, last_attn.in_proj_bias)
+        q, k, v = qkv.chunk(3, dim=-1)
+        
+        seq_len, bsz, embed_dim = q.shape
+        head_dim = embed_dim // num_heads
+        
+        q = q.contiguous().view(seq_len, bsz * num_heads, head_dim).transpose(0, 1)
+        k = k.contiguous().view(seq_len, bsz * num_heads, head_dim).transpose(0, 1)
+        v = v.contiguous().view(seq_len, bsz * num_heads, head_dim).transpose(0, 1)
+        
+        # Compute attention weights (this is what we need gradients for)
+        scale = float(head_dim) ** -0.5
+        attn_weights = torch.bmm(q * scale, k.transpose(-2, -1))
+        attn_weights = F.softmax(attn_weights, dim=-1)  # [bsz*heads, N, N]
+        
+        # Compute attention output
+        attn_output = torch.bmm(attn_weights, v)
+        attn_output = attn_output.transpose(0, 1).contiguous().view(seq_len, bsz, embed_dim)
+        attn_output = last_attn.out_proj(attn_output)
+        
+        # Continue forward
+        x = x + attn_output
+        x = x + last_block.mlp(last_block.ln_2(x))
+        
+        # Get final image features
+        x = x.permute(1, 0, 2)  # [B, N+1, C]
+        image_features = model.visual.ln_post(x[:, 0, :]) @ model.visual.proj
+        image_features = F.normalize(image_features, dim=-1)
+        
+        # Compute similarity
+        sim = text_emb_1x @ image_features.transpose(-1, -2)  # [1, 1]
+        one_hot = F.one_hot(torch.arange(0, num_prompts)).float().requires_grad_(True).to(text_emb_1x.device)
+        s = torch.sum(one_hot * sim)
+        
+        # Compute gradient w.r.t. attention weights
+        grad = torch.autograd.grad(s, [attn_weights], retain_graph=False, create_graph=False)[0]
+        
+        # Reshape: [bsz*heads, N, N] -> [bsz, heads, N, N]
+        grad = grad.view(bsz, num_heads, seq_len, seq_len)
+        attn_weights = attn_weights.view(bsz, num_heads, seq_len, seq_len)
+        
+        # Apply ReLU to gradients (GradCAM standard)
+        grad = torch.clamp(grad, min=0)
+        
+        # Weight attention map by gradients
+        cam = grad * attn_weights  # [batch, heads, N, N]
+        
+        # Average over heads
+        cam = cam.mean(dim=1)  # [batch, N, N]
+        
+        # Extract CLS token attention to patches (row 0, columns 1:)
+        cam = cam[:, 0, 1:]  # [batch, num_patches]
+        
+        # Reshape to spatial grid
+        num_patches = cam.shape[-1]
+        grid_size = int(math.sqrt(num_patches))
+        if grid_size * grid_size != num_patches:
+            w = h = int(math.sqrt(num_patches))
+            if w * h != num_patches:
+                raise RuntimeError(f"Cannot reshape {num_patches} patches to square grid")
+        else:
+            w = h = grid_size
+        
+        heatmap = cam.reshape(bsz, 1, h, w)
+        
+        # Upsample to image size
+        heatmap = F.interpolate(
+            heatmap, 
+            size=image.shape[-2:], 
+            mode='bilinear', 
+            align_corners=False
+        )
+        
+        # Normalize to [0, 1]
+        heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
+        
+        return heatmap[0, 0].detach().cpu()
+
+
 class AntiHallucinationObjective:
     """
     Optuna objective for anti-hallucination hyperparameter optimization.
@@ -166,6 +304,7 @@ class AntiHallucinationObjective:
         seed=42,
         use_gradcam=False,
         gradcam_layer=8,
+        use_chefercam=False,
     ):
         self.model = model
         self.tokenizer = tokenizer
@@ -179,6 +318,7 @@ class AntiHallucinationObjective:
         self.rng = random.Random(seed)
         self.use_gradcam = use_gradcam
         self.gradcam_layer = gradcam_layer
+        self.use_chefercam = use_chefercam
         
         # Load dataset
         self.f = h5py.File(dataset_file, 'r')
@@ -378,8 +518,10 @@ class AntiHallucinationObjective:
                     """Compute heatmap and metrics for a given embedding."""
                     sparse_1x = build_sparse_embedding(text_emb_1x, target_class_name)
                     
-                    # Choose between GradCAM and LeGrad (sparse)
-                    if self.use_gradcam:
+                    # Choose between CheferCAM, GradCAM and LeGrad (sparse)
+                    if self.use_chefercam:
+                        heatmap = compute_chefercam_for_embedding(self.model, img_t, sparse_1x)
+                    elif self.use_gradcam:
                         heatmap = compute_gradcam_for_embedding(self.model, img_t, sparse_1x, layer_index=self.gradcam_layer)
                     else:
                         heatmap = compute_map_for_embedding(self.model, img_t, sparse_1x)
@@ -582,6 +724,8 @@ def main():
                         help='Use GradCAM instead of LeGrad for optimization')
     parser.add_argument('--gradcam_layer', type=int, default=8,
                         help='GradCAM layer index (default: 8)')
+    parser.add_argument('--use_chefercam', action='store_true',
+                        help='Use CheferCAM (attention GradCAM) instead of LeGrad')
     
     # Optuna settings
     parser.add_argument('--n_trials', type=int, default=100, help='Number of Optuna trials')
@@ -677,6 +821,7 @@ def main():
         seed=args.seed,
         use_gradcam=args.use_gradcam,
         gradcam_layer=args.gradcam_layer,
+        use_chefercam=args.use_chefercam,
     )
     
     # Create Optuna study
@@ -763,7 +908,13 @@ def main():
                 print(f"  vs Baseline: Composite improvement = {improvement:+.2f}")
     
     # Run optimization
-    method_name = "GradCAM" if args.use_gradcam else "LeGrad"
+    if args.use_chefercam:
+        method_name = "CheferCAM"
+    elif args.use_gradcam:
+        method_name = "GradCAM"
+    else:
+        method_name = "LeGrad"
+
     print(f"Starting Optuna optimization with {args.n_trials} trials")
     print(f"Model: {args.model_name} ({args.pretrained}) [{model_type}]")
     print(f"Method: {method_name}")
