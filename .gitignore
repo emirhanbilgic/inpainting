@@ -193,3 +193,4 @@ anti_hallucination_results.json
 test_gradcam_clip_verification.json
 test_gradcam_baseline.json
 test_gradcam_siglip.json
+results.json

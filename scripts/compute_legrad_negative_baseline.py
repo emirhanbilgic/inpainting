@@ -229,13 +229,14 @@ class LeGradBaselineEvaluator:
                 text_emb = self.all_text_embs[cls_idx:cls_idx + 1]
                 
                 # DEBUG: Print class info for first 3 images
-                correct_class = self.wnid_to_classname.get(wnid, wnid)
-                correct_prompt = self.wnid_to_prompt.get(wnid, f"unknown prompt for {wnid}")
-                print(f"\n[DEBUG] Image {idx}:")
-                print(f"  wnid: {wnid}")
-                print(f"  cls_idx: {cls_idx}")
-                print(f"  CORRECT class: {correct_class}")
-                print(f"  CORRECT prompt: {correct_prompt}")
+                if idx < 3:
+                    correct_class = self.wnid_to_classname.get(wnid, wnid)
+                    correct_prompt = self.wnid_to_prompt.get(wnid, f"unknown prompt for {wnid}")
+                    print(f"\n[DEBUG] Image {idx}:")
+                    print(f"  wnid: {wnid}")
+                    print(f"  cls_idx: {cls_idx}")
+                    print(f"  CORRECT class: {correct_class}")
+                    print(f"  CORRECT prompt: {correct_prompt}")
                 
                 def compute_metrics(text_emb_1x):
                     """Compute heatmap and metrics for standard LeGrad."""
@@ -279,19 +280,27 @@ class LeGradBaselineEvaluator:
                 if not np.isnan(auc):
                     correct_results['auroc'].append(auc)
                 
+                # DEBUG: Print per-image correct metrics
+                auc_str = f"{auc:.4f}" if not np.isnan(auc) else "nan"
+                print(f"  CORRECT IoU: {iou:.4f}, Acc: {acc:.4f}, mAP: {ap:.4f}, AUROC: {auc_str}")
+                correct_iou_this_image = iou
+                
                 # === WRONG PROMPTS ===
                 neg_indices = self._sample_negative_indices(cls_idx)
                 
-                # DEBUG: Print wrong class info for ALL images
-                print(f"  WRONG class indices sampled: {neg_indices}")
-                for neg_idx in neg_indices:
-                    neg_wnid = self.idx_to_wnid[neg_idx]
-                    wrong_class = self.wnid_to_classname.get(neg_wnid, neg_wnid)
-                    wrong_prompt = self.wnid_to_prompt.get(neg_wnid, f"unknown prompt for {neg_wnid}")
-                    print(f"    WRONG class: {wrong_class}, prompt: {wrong_prompt}")
+                # DEBUG: Print wrong class info for first 3 images
+                if idx < 3:
+                    print(f"  WRONG class indices sampled: {neg_indices}")
+                    for neg_idx in neg_indices:
+                        neg_wnid = self.idx_to_wnid[neg_idx]
+                        wrong_class = self.wnid_to_classname.get(neg_wnid, neg_wnid)
+                        wrong_prompt = self.wnid_to_prompt.get(neg_wnid, f"unknown prompt for {neg_wnid}")
+                        print(f"    WRONG class: {wrong_class}, prompt: {wrong_prompt}")
                 
                 for neg_idx in neg_indices:
                     neg_emb = self.all_text_embs[neg_idx:neg_idx + 1]
+                    neg_wnid = self.idx_to_wnid[neg_idx]
+                    neg_class = self.wnid_to_classname[neg_wnid]
                     
                     iou, acc, ap, mx, mn, md, mi, auc = compute_metrics(neg_emb)
                     wrong_results['iou'].append(iou)
@@ -303,6 +312,11 @@ class LeGradBaselineEvaluator:
                     wrong_results['min'].append(mi)
                     if not np.isnan(auc):
                         wrong_results['auroc'].append(auc)
+                    
+                    # DEBUG: Print per-image wrong metrics and comparison
+                    comparison = "GOOD (correct > wrong)" if correct_iou_this_image > iou else "BAD (wrong > correct)"
+                    print(f"  WRONG IoU ({neg_class}): {iou:.4f} -- {comparison}")
+                
                 
             except Exception as e:
                 print(f"[Warning] Error processing image {idx}: {e}")
