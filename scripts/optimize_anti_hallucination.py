@@ -127,6 +127,19 @@ def get_distant_class_indices(class_idx: int, all_wnids: list, wnid_to_idx: dict
     return distant_indices
 
 
+def compute_gradcam_for_embedding(model, image, text_emb_1x, layer_index: int = 8):
+    """
+    Compute a GradCAM heatmap (normalized to [0, 1]) for a single text embedding.
+    Returns: 2D tensor [H, W] on CPU.
+    """
+    if hasattr(model, "starting_depth"):
+        layer_index = max(layer_index, int(model.starting_depth))
+    with torch.enable_grad():
+        heatmap = model.compute_gradcam(image=image, text_embedding=text_emb_1x, layer_index=layer_index)
+    heatmap = heatmap[0, 0].clamp(0, 1).detach().cpu()
+    return heatmap
+
+
 class AntiHallucinationObjective:
     """
     Optuna objective for anti-hallucination hyperparameter optimization.
@@ -151,6 +164,8 @@ class AntiHallucinationObjective:
         composite_lambda=0.5,
         multi_objective=False,
         seed=42,
+        use_gradcam=False,
+        gradcam_layer=8,
     ):
         self.model = model
         self.tokenizer = tokenizer
@@ -162,6 +177,8 @@ class AntiHallucinationObjective:
         self.composite_lambda = composite_lambda
         self.multi_objective = multi_objective
         self.rng = random.Random(seed)
+        self.use_gradcam = use_gradcam
+        self.gradcam_layer = gradcam_layer
         
         # Load dataset
         self.f = h5py.File(dataset_file, 'r')
@@ -361,7 +378,12 @@ class AntiHallucinationObjective:
                     """Compute heatmap and metrics for a given embedding."""
                     sparse_1x = build_sparse_embedding(text_emb_1x, target_class_name)
                     
-                    heatmap = compute_map_for_embedding(self.model, img_t, sparse_1x)
+                    # Choose between GradCAM and LeGrad (sparse)
+                    if self.use_gradcam:
+                        heatmap = compute_gradcam_for_embedding(self.model, img_t, sparse_1x, layer_index=self.gradcam_layer)
+                    else:
+                        heatmap = compute_map_for_embedding(self.model, img_t, sparse_1x)
+                    
                     heatmap_resized = F.interpolate(
                         heatmap.view(1, 1, H_feat, W_feat),
                         size=(H_gt, W_gt),
@@ -555,6 +577,12 @@ def main():
     parser.add_argument('--baseline_wrong_miou', type=float, default=None,
                         help='Manual baseline wrong mIoU (overrides --baseline_json)')
     
+    # GradCAM settings
+    parser.add_argument('--use_gradcam', action='store_true',
+                        help='Use GradCAM instead of LeGrad for optimization')
+    parser.add_argument('--gradcam_layer', type=int, default=8,
+                        help='GradCAM layer index (default: 8)')
+    
     # Optuna settings
     parser.add_argument('--n_trials', type=int, default=100, help='Number of Optuna trials')
     parser.add_argument('--study_name', type=str, default='anti_hallucination_optimization')
@@ -647,6 +675,8 @@ def main():
         composite_lambda=args.composite_lambda,
         multi_objective=args.multi_objective,
         seed=args.seed,
+        use_gradcam=args.use_gradcam,
+        gradcam_layer=args.gradcam_layer,
     )
     
     # Create Optuna study
@@ -733,8 +763,12 @@ def main():
                 print(f"  vs Baseline: Composite improvement = {improvement:+.2f}")
     
     # Run optimization
+    method_name = "GradCAM" if args.use_gradcam else "LeGrad"
     print(f"Starting Optuna optimization with {args.n_trials} trials")
     print(f"Model: {args.model_name} ({args.pretrained}) [{model_type}]")
+    print(f"Method: {method_name}")
+    if args.use_gradcam:
+        print(f"GradCAM layer: {args.gradcam_layer}")
     print(f"Negative strategy: {args.negative_strategy}, Num negatives: {args.num_negatives}")
     if baseline_composite is not None:
         print(f"Baseline to beat: Correct={baseline_correct_miou:.2f} | "

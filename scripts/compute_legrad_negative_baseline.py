@@ -86,6 +86,16 @@ def compute_legrad_heatmap(model, image, text_emb_1x):
     return logits
 
 
+def compute_gradcam_heatmap(model, image, text_emb_1x, layer_index: int = 8):
+    """Compute GradCAM heatmap for a single text embedding."""
+    if hasattr(model, "starting_depth"):
+        layer_index = max(layer_index, int(model.starting_depth))
+    with torch.enable_grad():
+        heatmap = model.compute_gradcam(image=image, text_embedding=text_emb_1x, layer_index=layer_index)
+    heatmap = heatmap[0, 0].clamp(0, 1).detach().cpu()
+    return heatmap
+
+
 class LeGradBaselineEvaluator:
     """
     Evaluate standard LeGrad baseline on correct and wrong prompts.
@@ -104,6 +114,8 @@ class LeGradBaselineEvaluator:
         num_negatives=1,
         negative_strategy='random',
         seed=42,
+        use_gradcam=False,
+        gradcam_layer=8,
     ):
         self.model = model
         self.tokenizer = tokenizer
@@ -113,6 +125,8 @@ class LeGradBaselineEvaluator:
         self.num_negatives = num_negatives
         self.negative_strategy = negative_strategy
         self.rng = random.Random(seed)
+        self.use_gradcam = use_gradcam
+        self.gradcam_layer = gradcam_layer
         
         # Load dataset
         self.f = h5py.File(dataset_file, 'r')
@@ -239,8 +253,12 @@ class LeGradBaselineEvaluator:
                     print(f"  CORRECT prompt: {correct_prompt}")
                 
                 def compute_metrics(text_emb_1x):
-                    """Compute heatmap and metrics for standard LeGrad."""
-                    heatmap = compute_legrad_heatmap(self.model, img_t, text_emb_1x)
+                    """Compute heatmap and metrics for standard LeGrad or GradCAM."""
+                    if self.use_gradcam:
+                        heatmap = compute_gradcam_heatmap(self.model, img_t, text_emb_1x, layer_index=self.gradcam_layer)
+                    else:
+                        heatmap = compute_legrad_heatmap(self.model, img_t, text_emb_1x)
+                    
                     heatmap_resized = F.interpolate(
                         heatmap.view(1, 1, H_feat, W_feat),
                         size=(H_gt, W_gt),
@@ -377,6 +395,12 @@ def main():
     parser.add_argument('--threshold', type=float, default=0.5, 
                         help='Binarization threshold for LeGrad heatmaps')
     
+    # GradCAM settings
+    parser.add_argument('--use_gradcam', action='store_true',
+                        help='Use GradCAM instead of LeGrad for baseline evaluation')
+    parser.add_argument('--gradcam_layer', type=int, default=8,
+                        help='GradCAM layer index (default: 8)')
+    
     # Composite score calculation
     parser.add_argument('--composite_lambda', type=float, default=0.5,
                         help='Weight for wrong-prompt penalty in composite score')
@@ -441,13 +465,19 @@ def main():
         num_negatives=args.num_negatives,
         negative_strategy=args.negative_strategy,
         seed=args.seed,
+        use_gradcam=args.use_gradcam,
+        gradcam_layer=args.gradcam_layer,
     )
     
     # Run evaluation
+    method_name = "GradCAM" if args.use_gradcam else "LeGrad"
     print(f"\n{'='*60}")
-    print(f"Computing LeGrad Baseline ({model_type}, No Sparse Encoding)")
+    print(f"Computing {method_name} Baseline ({model_type}, No Sparse Encoding)")
     print(f"{'='*60}")
     print(f"Model: {args.model_name} ({args.pretrained})")
+    print(f"Method: {method_name}")
+    if args.use_gradcam:
+        print(f"GradCAM layer: {args.gradcam_layer}")
     print(f"Strategy: {args.negative_strategy}")
     print(f"Num negatives per image: {args.num_negatives}")
     print(f"Seed: {args.seed}")
@@ -461,7 +491,7 @@ def main():
     
     # Print results
     print(f"\n{'='*60}")
-    print("LEGRAD BASELINE RESULTS")
+    print(f"{method_name.upper()} BASELINE RESULTS")
     print(f"{'='*60}")
     
     print(f"\n=== CORRECT PROMPTS (image class = text prompt class) ===")
@@ -528,6 +558,8 @@ def main():
             'use_siglip': args.use_siglip,
             'image_size': args.image_size,
             'composite_lambda': args.composite_lambda,
+            'use_gradcam': args.use_gradcam,
+            'gradcam_layer': args.gradcam_layer if args.use_gradcam else None,
         }
     }
     
