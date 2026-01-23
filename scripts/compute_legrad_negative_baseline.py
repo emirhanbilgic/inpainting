@@ -104,89 +104,157 @@ def compute_chefercam_heatmap(model, image, text_emb_1x):
     Method: attn_gradcam - GradCAM applied to attention maps from the last layer
     """
     import math
+    from open_clip.timm_model import TimmModel
     
     model.zero_grad()
     
-    # Get the last transformer block
-    blocks = list(model.visual.transformer.resblocks)
+    # Determine model type and get blocks
+    if isinstance(model.visual, TimmModel):
+        # SigLIP / Timm model
+        blocks = list(model.visual.trunk.blocks)
+        is_timm = True
+        # Timm blocks have 'attn' attribute directly
+    else:
+        # CLIP / Standard VisionTransformer
+        blocks = list(model.visual.transformer.resblocks)
+        is_timm = False
+    
     last_block = blocks[-1]
-    num_heads = last_block.attn.num_heads
+    last_attn = last_block.attn
+    num_heads = last_attn.num_heads
     num_prompts = text_emb_1x.shape[0]
     
     with torch.enable_grad():
-        # Forward through visual encoder
-        x = model.visual.conv1(image)  # [B, C, H', W']
-        x = x.reshape(x.shape[0], x.shape[1], -1)  # [B, C, N]
-        x = x.permute(0, 2, 1)  # [B, N, C]
-        
-        # Add class token
-        batch_size = x.shape[0]
-        class_token = model.visual.class_embedding.unsqueeze(0).unsqueeze(0)
-        class_token = class_token.expand(batch_size, -1, -1)
-        x = torch.cat([class_token, x], dim=1)  # [B, N+1, C]
-        
-        # Add positional embedding
-        num_patches = x.shape[1] - 1
-        if hasattr(model.visual, 'original_pos_embed'):
-            pos_embed = model.visual.original_pos_embed
+        if is_timm:
+            # --- SigLIP (Attentional Pooler) ---
+            pooler = model.visual.trunk.attn_pool
+            blocks = list(model.visual.trunk.blocks)
+            
+            # Trunk Forward Pass
+            x = model.visual.trunk.patch_embed(image)
+            if model.visual.trunk.pos_embed is not None:
+                x = x + model.visual.trunk.pos_embed
+            
+            for block in blocks:
+                x = block(x)
+            
+            # --- Attentional Pooler Manual Forward ---
+            B, N, C = x.shape
+            
+            # 1. Pos embed (if any)
+            if pooler.pos_embed is not None:
+                x = x + pooler.pos_embed.unsqueeze(0).to(x.dtype)
+            
+            # 2. Compute Q, K, V
+            # q from latent
+            q_latent = pooler.latent.expand(B, -1, -1)
+            q = pooler.q(q_latent).reshape(B, pooler.latent_len, pooler.num_heads, pooler.head_dim).transpose(1, 2)
+            
+            # k, v from x
+            kv = pooler.kv(x).reshape(B, N, 2, pooler.num_heads, pooler.head_dim).permute(2, 0, 3, 1, 4)
+            k, v = kv.unbind(0)
+            
+            # Norm
+            q, k = pooler.q_norm(q), pooler.k_norm(k)
+            
+            # Attention
+            q = q * pooler.scale
+            attn_weights = q @ k.transpose(-2, -1)
+            attn_weights = attn_weights.softmax(dim=-1) # [B, num_heads, latent_len, N]
+            
+            # Output
+            x_pool = attn_weights @ v # [B, heads, latent_len, head_dim]
+            x_pool = x_pool.transpose(1, 2).reshape(B, pooler.latent_len, C)
+            x_pool = pooler.proj(x_pool)
+            x_pool = pooler.proj_drop(x_pool)
+            x_pool = x_pool + pooler.mlp(pooler.norm(x_pool))
+            
+            # Pooling
+            if pooler.pool == 'token':
+                pooled_feat = x_pool[:, 0]
+            elif pooler.pool == 'avg':
+                pooled_feat = x_pool.mean(1)
+            else:
+                pooled_feat = x_pool[:, 0] # fallback
+                
+            image_features = F.normalize(pooled_feat, dim=-1)
+           
         else:
-            pos_embed = model.visual.positional_embedding
+            # --- CLIP Forward Pass ---
+            # Forward through visual encoder
+            x = model.visual.conv1(image)  # [B, C, H', W']
+            x = x.reshape(x.shape[0], x.shape[1], -1)  # [B, C, N]
+            x = x.permute(0, 2, 1)  # [B, N, C]
+            
+            # Add class token
+            batch_size = x.shape[0]
+            class_token = model.visual.class_embedding.unsqueeze(0).unsqueeze(0)
+            class_token = class_token.expand(batch_size, -1, -1)
+            x = torch.cat([class_token, x], dim=1)  # [B, N+1, C]
+            
+            # Add positional embedding
+            num_patches = x.shape[1] - 1
+            if hasattr(model.visual, 'original_pos_embed'):
+                pos_embed = model.visual.original_pos_embed
+            else:
+                pos_embed = model.visual.positional_embedding
+            
+            if pos_embed.shape[0] != x.shape[1]:
+                cls_pos = pos_embed[:1]
+                patch_pos = pos_embed[1:]
+                orig_size = int(math.sqrt(patch_pos.shape[0]))
+                patch_pos = patch_pos.reshape(1, orig_size, orig_size, -1).permute(0, 3, 1, 2)
+                new_size = int(math.sqrt(num_patches))
+                patch_pos = F.interpolate(patch_pos, size=(new_size, new_size), mode='bilinear', align_corners=False)
+                patch_pos = patch_pos.permute(0, 2, 3, 1).reshape(-1, pos_embed.shape[1])
+                pos_embed = torch.cat([cls_pos, patch_pos], dim=0)
+            
+            x = x + pos_embed.unsqueeze(0).to(x.dtype)
+            
+            if hasattr(model.visual, 'ln_pre'):
+                x = model.visual.ln_pre(x)
+            
+            x = x.permute(1, 0, 2)  # [N+1, B, C] for transformer
+            
+            # Forward through all blocks except the last
+            for i in range(len(blocks) - 1):
+                x = blocks[i](x)
+            
+            # Manual attention for last block
+            x_normed = last_block.ln_1(x)
+            
+            qkv = F.linear(x_normed, last_attn.in_proj_weight, last_attn.in_proj_bias)
+            q, k, v = qkv.chunk(3, dim=-1)
+            
+            seq_len, bsz, embed_dim = q.shape
+            head_dim = embed_dim // num_heads
+            
+            q = q.contiguous().view(seq_len, bsz * num_heads, head_dim).transpose(0, 1)
+            k = k.contiguous().view(seq_len, bsz * num_heads, head_dim).transpose(0, 1)
+            v = v.contiguous().view(seq_len, bsz * num_heads, head_dim).transpose(0, 1)
+            
+            scale = float(head_dim) ** -0.5
+            attn_weights = torch.bmm(q * scale, k.transpose(-2, -1))
+            attn_weights = F.softmax(attn_weights, dim=-1)  # [bsz*heads, N, N]
+            
+            # Convert to [B, heads, N, N] for consistency
+            attn_weights = attn_weights.view(bsz, num_heads, seq_len, seq_len)
+            
+            # Compute attention output
+            attn_output = torch.bmm(attn_weights.reshape(bsz*num_heads, seq_len, seq_len), v)
+            attn_output = attn_output.transpose(0, 1).contiguous().view(seq_len, bsz, embed_dim)
+            attn_output = last_attn.out_proj(attn_output)
+            
+            # Continue
+            x = x + attn_output
+            x = x + last_block.mlp(last_block.ln_2(x))
+            
+            # Final features
+            x = x.permute(1, 0, 2)  # [B, N+1, C]
+            image_features = model.visual.ln_post(x[:, 0, :]) @ model.visual.proj
+            image_features = F.normalize(image_features, dim=-1)
         
-        if pos_embed.shape[0] != x.shape[1]:
-            cls_pos = pos_embed[:1]
-            patch_pos = pos_embed[1:]
-            orig_size = int(math.sqrt(patch_pos.shape[0]))
-            patch_pos = patch_pos.reshape(1, orig_size, orig_size, -1).permute(0, 3, 1, 2)
-            new_size = int(math.sqrt(num_patches))
-            patch_pos = F.interpolate(patch_pos, size=(new_size, new_size), mode='bilinear', align_corners=False)
-            patch_pos = patch_pos.permute(0, 2, 3, 1).reshape(-1, pos_embed.shape[1])
-            pos_embed = torch.cat([cls_pos, patch_pos], dim=0)
-        
-        x = x + pos_embed.unsqueeze(0).to(x.dtype)
-        
-        if hasattr(model.visual, 'ln_pre'):
-            x = model.visual.ln_pre(x)
-        
-        x = x.permute(1, 0, 2)  # [N+1, B, C] for transformer
-        
-        # Forward through all blocks except the last
-        for i in range(len(blocks) - 1):
-            x = blocks[i](x)
-        
-        # For the last block, manually compute attention with gradients
-        last_attn = last_block.attn
-        x_normed = last_block.ln_1(x)
-        
-        # Compute Q, K, V
-        qkv = F.linear(x_normed, last_attn.in_proj_weight, last_attn.in_proj_bias)
-        q, k, v = qkv.chunk(3, dim=-1)
-        
-        seq_len, bsz, embed_dim = q.shape
-        head_dim = embed_dim // num_heads
-        
-        q = q.contiguous().view(seq_len, bsz * num_heads, head_dim).transpose(0, 1)
-        k = k.contiguous().view(seq_len, bsz * num_heads, head_dim).transpose(0, 1)
-        v = v.contiguous().view(seq_len, bsz * num_heads, head_dim).transpose(0, 1)
-        
-        # Compute attention weights (this is what we need gradients for)
-        scale = float(head_dim) ** -0.5
-        attn_weights = torch.bmm(q * scale, k.transpose(-2, -1))
-        attn_weights = F.softmax(attn_weights, dim=-1)  # [bsz*heads, N, N]
-        
-        # Compute attention output
-        attn_output = torch.bmm(attn_weights, v)
-        attn_output = attn_output.transpose(0, 1).contiguous().view(seq_len, bsz, embed_dim)
-        attn_output = last_attn.out_proj(attn_output)
-        
-        # Continue forward
-        x = x + attn_output
-        x = x + last_block.mlp(last_block.ln_2(x))
-        
-        # Get final image features
-        x = x.permute(1, 0, 2)  # [B, N+1, C]
-        image_features = model.visual.ln_post(x[:, 0, :]) @ model.visual.proj
-        image_features = F.normalize(image_features, dim=-1)
-        
+        # --- Common Cam Calculation ---
         # Compute similarity
         sim = text_emb_1x @ image_features.transpose(-1, -2)  # [1, 1]
         one_hot = F.one_hot(torch.arange(0, num_prompts)).float().requires_grad_(True).to(text_emb_1x.device)
@@ -195,11 +263,7 @@ def compute_chefercam_heatmap(model, image, text_emb_1x):
         # Compute gradient w.r.t. attention weights
         grad = torch.autograd.grad(s, [attn_weights], retain_graph=False, create_graph=False)[0]
         
-        # Reshape: [bsz*heads, N, N] -> [bsz, heads, N, N]
-        grad = grad.view(bsz, num_heads, seq_len, seq_len)
-        attn_weights = attn_weights.view(bsz, num_heads, seq_len, seq_len)
-        
-        # Apply ReLU to gradients (GradCAM standard)
+        # Apply ReLU
         grad = torch.clamp(grad, min=0)
         
         # Weight attention map by gradients
@@ -208,20 +272,31 @@ def compute_chefercam_heatmap(model, image, text_emb_1x):
         # Average over heads
         cam = cam.mean(dim=1)  # [batch, N, N]
         
-        # Extract CLS token attention to patches (row 0, columns 1:)
-        cam = cam[:, 0, 1:]  # [batch, num_patches]
+        # Extract attention to patches
+        # For CLIP: row 0 is CLS, cols 1: are patches
+        # For SigLIP: no CLS token usually, purely spatial. But check architecture.
+        # SigLIP doesn't use CLS token for pooling, it uses MAP (Multi-head Attention Pooling)
+        # However, timm implementation might differ.
         
+        if is_timm:
+            # SigLIP (Attentional Pooler)
+            # cam shape: [B, latent_len, N]
+            # Average over latents/queries to get importance of spatial tokens
+            cam = cam.mean(dim=1) # [B, N]
+        else:
+            # CLIP (Self Attention)
+            # cam shape: [B, N+1, N+1]
+            # Extract CLS token attention to patches (row 0, cols 1:)
+            cam = cam[:, 0, 1:]  # [batch, num_patches]
+            
         # Reshape to spatial grid
         num_patches = cam.shape[-1]
         grid_size = int(math.sqrt(num_patches))
-        if grid_size * grid_size != num_patches:
-            w = h = int(math.sqrt(num_patches))
-            if w * h != num_patches:
-                raise RuntimeError(f"Cannot reshape {num_patches} patches to square grid")
-        else:
-            w = h = grid_size
         
-        heatmap = cam.reshape(bsz, 1, h, w)
+        # Handle non-square if needed, but usually square
+        w = h = grid_size
+        
+        heatmap = cam.reshape(text_emb_1x.shape[0], 1, h, w)
         
         # Upsample to image size
         heatmap = F.interpolate(
