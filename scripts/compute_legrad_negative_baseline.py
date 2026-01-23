@@ -228,6 +228,16 @@ class LeGradBaselineEvaluator:
                 cls_idx = self.wnid_to_idx[wnid]
                 text_emb = self.all_text_embs[cls_idx:cls_idx + 1]
                 
+                # DEBUG: Print class info for first 3 images
+                if idx < 3:
+                    correct_class = self.wnid_to_classname.get(wnid, wnid)
+                    correct_prompt = self.wnid_to_prompt.get(wnid, f"unknown prompt for {wnid}")
+                    print(f"\n[DEBUG] Image {idx}:")
+                    print(f"  wnid: {wnid}")
+                    print(f"  cls_idx: {cls_idx}")
+                    print(f"  CORRECT class: {correct_class}")
+                    print(f"  CORRECT prompt: {correct_prompt}")
+                
                 def compute_metrics(text_emb_1x):
                     """Compute heatmap and metrics for standard LeGrad."""
                     heatmap = compute_legrad_heatmap(self.model, img_t, text_emb_1x)
@@ -272,6 +282,16 @@ class LeGradBaselineEvaluator:
                 
                 # === WRONG PROMPTS ===
                 neg_indices = self._sample_negative_indices(cls_idx)
+                
+                # DEBUG: Print wrong class info for first 3 images
+                if idx < 3:
+                    print(f"  WRONG class indices sampled: {neg_indices}")
+                    for neg_idx in neg_indices:
+                        neg_wnid = self.idx_to_wnid[neg_idx]
+                        wrong_class = self.wnid_to_classname.get(neg_wnid, neg_wnid)
+                        wrong_prompt = self.wnid_to_prompt.get(neg_wnid, f"unknown prompt for {neg_wnid}")
+                        print(f"    WRONG class: {wrong_class}, prompt: {wrong_prompt}")
+                
                 for neg_idx in neg_indices:
                     neg_emb = self.all_text_embs[neg_idx:neg_idx + 1]
                     
