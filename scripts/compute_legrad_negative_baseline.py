@@ -404,7 +404,7 @@ class LeGradBaselineEvaluator:
         # Random sampling (other strategies can be added here)
         return random.sample(all_indices, min(self.num_negatives, len(all_indices)))
     
-    def evaluate(self, threshold=0.5, show_progress=True):
+    def evaluate(self, show_progress=True):
         """
         Evaluate LeGrad baseline on correct and wrong prompts.
         
@@ -723,10 +723,12 @@ def main():
         print(f"GradCAM layer: {args.gradcam_layer}")
     print(f"Strategy: {args.negative_strategy}")
     print(f"Num negatives per image: {args.num_negatives}")
-    print(f"Threshold: {args.threshold}")
+    print(f"Threshold Mode: {args.threshold_mode}")
+    if args.threshold_mode == 'fixed':
+        print(f"Fixed Threshold: {args.fixed_threshold}")
     print(f"{'='*60}\n")
     
-    results = evaluator.evaluate(threshold=args.threshold)
+    results = evaluator.evaluate()
     
     # Compute composite score
     composite = results['correct']['miou'] - args.composite_lambda * results['wrong']['miou']
@@ -789,7 +791,8 @@ def main():
         'wrong': convert_to_native(results['wrong']),
         'composite': float(composite),
         'settings': {
-            'threshold': args.threshold,
+            'threshold_mode': args.threshold_mode,
+            'fixed_threshold': args.fixed_threshold,
             'num_negatives': args.num_negatives,
             'negative_strategy': args.negative_strategy,
             'limit': args.limit if args.limit > 0 else 'all',
