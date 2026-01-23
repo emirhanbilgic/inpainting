@@ -611,7 +611,6 @@ def main():
     parser.add_argument('--negative_strategy', type=str, default='random', 
                         choices=['random'],
                         help='Strategy for sampling negative prompts (only random for baseline)')
-    parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
     
     # LeGrad threshold
     parser.add_argument('--threshold', type=float, default=0.5, 
