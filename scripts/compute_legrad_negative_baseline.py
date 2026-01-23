@@ -298,9 +298,10 @@ class LeGradBaselineEvaluator:
                 if not np.isnan(auc):
                     correct_results['auroc'].append(auc)
                 
-                # DEBUG: Print per-image correct metrics
-                auc_str = f"{auc:.4f}" if not np.isnan(auc) else "nan"
-                print(f"  CORRECT IoU: {iou:.4f}, Acc: {acc:.4f}, mAP: {ap:.4f}, AUROC: {auc_str}")
+                # DEBUG: Print per-image correct metrics (first 3 only)
+                if idx < 3:
+                    auc_str = f"{auc:.4f}" if not np.isnan(auc) else "nan"
+                    print(f"  CORRECT IoU: {iou:.4f}, Acc: {acc:.4f}, mAP: {ap:.4f}, AUROC: {auc_str}")
                 correct_iou_this_image = iou
                 
                 # === WRONG PROMPTS ===
@@ -331,9 +332,10 @@ class LeGradBaselineEvaluator:
                     if not np.isnan(auc):
                         wrong_results['auroc'].append(auc)
                     
-                    # DEBUG: Print per-image wrong metrics and comparison
-                    comparison = "GOOD (correct > wrong)" if correct_iou_this_image > iou else "BAD (wrong > correct)"
-                    print(f"  WRONG IoU ({neg_class}): {iou:.4f} -- {comparison}")
+                    # DEBUG: Print per-image wrong metrics and comparison (first 3 only)
+                    if idx < 3:
+                        comparison = "GOOD (correct > wrong)" if correct_iou_this_image > iou else "BAD (wrong > correct)"
+                        print(f"  WRONG IoU ({neg_class}): {iou:.4f} -- {comparison}")
                 
                 
             except Exception as e:
