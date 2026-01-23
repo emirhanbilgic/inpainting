@@ -920,9 +920,27 @@ def main():
     --max_dict_cos_sim {best_params['max_dict_cos_sim']:.2f}"""
         print(cmd)
     
-    with open(args.output_json, 'w') as f:
-        json.dump(results, f, indent=2)
-    print(f"\nResults saved to {args.output_json}")
+    try:
+        with open(args.output_json, 'w') as f:
+            json.dump(results, f, indent=2)
+        print(f"\nResults saved to {args.output_json}")
+    except (PermissionError, OSError) as e:
+        print(f"\n[Warning] Failed to write to {args.output_json}: {e}")
+        # Fallback to current working directory
+        filename = os.path.basename(args.output_json)
+        fallback_path = os.path.join(os.getcwd(), filename)
+        
+        # If the original path was already just a filename in CWD, we might need a new name
+        if os.path.abspath(args.output_json) == os.path.abspath(fallback_path):
+             fallback_path = os.path.join(os.getcwd(), f"fallback_{filename}")
+
+        print(f"Attempting fallback to: {fallback_path}")
+        try:
+            with open(fallback_path, 'w') as f:
+                json.dump(results, f, indent=2)
+            print(f"Results saved to {fallback_path}")
+        except Exception as e2:
+            print(f"[Error] Failed to save results to fallback path: {e2}")
 
 
 if __name__ == '__main__':
