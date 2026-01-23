@@ -19,11 +19,10 @@ Usage:
         --mat_file /path/to/gtsegs_ijcv.mat \
         --limit 100
 
-    # With specific seed and number of negatives
+    # With specific number of negatives
     python scripts/compute_legrad_negative_baseline.py \
         --mat_file /path/to/gtsegs_ijcv.mat \
         --limit 1000 \
-        --seed 42 \
         --num_negatives 1
 
 Output JSON format:
@@ -329,7 +328,6 @@ class LeGradBaselineEvaluator:
         limit=0,
         num_negatives=1,
         negative_strategy='random',
-        seed=42,
         use_gradcam=False,
         gradcam_layer=8,
         use_chefercam=False,
@@ -341,7 +339,6 @@ class LeGradBaselineEvaluator:
         self.image_size = image_size
         self.num_negatives = num_negatives
         self.negative_strategy = negative_strategy
-        self.rng = random.Random(seed)
         self.use_gradcam = use_gradcam
         self.gradcam_layer = gradcam_layer
         self.use_chefercam = use_chefercam
@@ -687,7 +684,6 @@ def main():
         limit=args.limit,
         num_negatives=args.num_negatives,
         negative_strategy=args.negative_strategy,
-        seed=args.seed,
         use_gradcam=args.use_gradcam,
         gradcam_layer=args.gradcam_layer,
         use_chefercam=args.use_chefercam,
@@ -710,7 +706,6 @@ def main():
         print(f"GradCAM layer: {args.gradcam_layer}")
     print(f"Strategy: {args.negative_strategy}")
     print(f"Num negatives per image: {args.num_negatives}")
-    print(f"Seed: {args.seed}")
     print(f"Threshold: {args.threshold}")
     print(f"{'='*60}\n")
     
@@ -780,7 +775,6 @@ def main():
             'threshold': args.threshold,
             'num_negatives': args.num_negatives,
             'negative_strategy': args.negative_strategy,
-            'seed': args.seed,
             'limit': args.limit if args.limit > 0 else 'all',
             'model_name': args.model_name,
             'pretrained': args.pretrained,
@@ -806,7 +800,6 @@ def main():
     --mat_file {args.mat_file} \\
     --n_trials 100 \\
     --limit {args.limit if args.limit > 0 else 1000} \\
-    --seed {args.seed} \\
     --negative_strategy {args.negative_strategy} \\
     --num_negatives {args.num_negatives} \\
     --composite_lambda {args.composite_lambda} \\
