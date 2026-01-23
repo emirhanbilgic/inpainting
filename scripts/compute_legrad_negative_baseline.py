@@ -498,11 +498,24 @@ def main():
     print(f"  --baseline_wrong_miou {results['wrong']['miou']:.2f}")
     print(f"  --baseline_composite {composite:.2f}")
     
+    # Helper function to convert numpy types to Python native types for JSON
+    def convert_to_native(obj):
+        if isinstance(obj, dict):
+            return {k: convert_to_native(v) for k, v in obj.items()}
+        elif isinstance(obj, (list, tuple)):
+            return [convert_to_native(v) for v in obj]
+        elif isinstance(obj, (np.floating, np.float32, np.float64)):
+            return float(obj)
+        elif isinstance(obj, (np.integer, np.int32, np.int64)):
+            return int(obj)
+        else:
+            return obj
+    
     # Save results
     output = {
-        'correct': results['correct'],
-        'wrong': results['wrong'],
-        'composite': composite,
+        'correct': convert_to_native(results['correct']),
+        'wrong': convert_to_native(results['wrong']),
+        'composite': float(composite),
         'settings': {
             'threshold': args.threshold,
             'num_negatives': args.num_negatives,
