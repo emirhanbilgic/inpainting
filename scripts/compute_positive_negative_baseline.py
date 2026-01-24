@@ -67,7 +67,7 @@ from legrad import LeWrapper, LePreprocess
 import open_clip
 
 # Import functions from benchmark_segmentation
-from benchmark_segmentation import (
+from benchmark_segmentation_v2 import (
     load_imagenet_class_index,
     build_wnid_to_label_map,
     get_synset_name,
