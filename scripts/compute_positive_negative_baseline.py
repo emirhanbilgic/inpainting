@@ -187,6 +187,7 @@ def compute_chefercam(model, image, text_emb_1x):
             
             attn_weights = (q @ k.transpose(-2, -1)) * attn.scale
             attn_weights = attn_weights.softmax(dim=-1) # [B, heads, N, N]
+            attn_weights.requires_grad_(True)
             
             attn_out = (attn_weights @ v).transpose(1, 2).reshape(B, N, C)
             attn_out = attn.proj(attn_out)
@@ -311,6 +312,7 @@ def compute_chefercam(model, image, text_emb_1x):
             scale = float(head_dim) ** -0.5
             attn_weights = torch.bmm(q * scale, k.transpose(-2, -1))
             attn_weights = F.softmax(attn_weights, dim=-1)  # [bsz*heads, N, N]
+            attn_weights.requires_grad_(True)
             
             # Compute attention output
             attn_output = torch.bmm(attn_weights, v)
@@ -469,6 +471,7 @@ def compute_transformer_attribution(model, image, text_emb_1x, start_layer=1):
                     
                     attn_weights = (q @ k.transpose(-2, -1)) * attn.scale
                     attn_weights = attn_weights.softmax(dim=-1)
+                    attn_weights.requires_grad_(True)
                     all_attn_weights.append(attn_weights) # [B, heads, N, N]
                     
                     attn_out = (attn_weights @ v).transpose(1, 2).reshape(B, N, C)
@@ -574,6 +577,7 @@ def compute_transformer_attribution(model, image, text_emb_1x, start_layer=1):
                     scale = float(head_dim) ** -0.5
                     attn_weights = torch.bmm(q * scale, k.transpose(-2, -1))
                     attn_weights = F.softmax(attn_weights, dim=-1)  # [bsz*heads, N, N]
+                    attn_weights.requires_grad_(True)
                     all_attn_weights.append(attn_weights)
                     
                     attn_output = torch.bmm(attn_weights, v)
