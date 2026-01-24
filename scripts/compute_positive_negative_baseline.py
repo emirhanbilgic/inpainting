@@ -589,9 +589,11 @@ def compute_transformer_attribution(model, image, text_emb_1x, start_layer=1):
         for i, (grad, attn_weights) in enumerate(zip(grads, all_attn_weights)):
             num_heads = blocks[start_layer + i].attn.num_heads
             
-            # Reshape: [bsz*heads, N, N] -> [bsz, heads, N, N]
-            grad = grad.view(bsz, num_heads, grad.shape[1], grad.shape[2])
-            attn_weights = attn_weights.view(bsz, num_heads, attn_weights.shape[1], attn_weights.shape[2])
+            # Reshape: [bsz*heads, N, N] -> [bsz, heads, N, N] if needed
+            if grad.dim() == 3:
+                grad = grad.view(bsz, num_heads, grad.shape[1], grad.shape[2])
+                attn_weights = attn_weights.view(bsz, num_heads, attn_weights.shape[1], attn_weights.shape[2])
+            # For SigLIP, it is already 4D [bsz, heads, N, N]
             
             # Apply ReLU to gradients
             grad = torch.clamp(grad, min=0)
