@@ -259,8 +259,13 @@ def compute_gradcam_heatmap(model, image, text_emb_1x, layer_index: int = -1):
         grad_gap = grad_cam.mean(dim=[1, 2], keepdim=True)  # [heads, 1, 1]
         cam = (cam * grad_gap).mean(dim=0).clamp(min=0)     # [H, W]
         
+        # FIRST normalization (before interpolation, as in official generate_cam_attn)
+        cam = (cam - cam.min()) / (cam.max() - cam.min() + 1e-8)
+        
         heatmap = cam.unsqueeze(0).unsqueeze(0)
         heatmap = F.interpolate(heatmap, size=image.shape[-2:], mode='bilinear', align_corners=False)
+        
+        # SECOND normalization (after interpolation, as in official eval_batch)
         heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
         
         return heatmap[0, 0].detach().cpu()
@@ -499,10 +504,13 @@ def compute_chefercam_heatmap(model, image, text_emb_1x):
         # Step 4 & 5 & 6: Weight cam by gradient, average over heads, then clamp
         cam = (cam * grad_gap).mean(dim=0).clamp(min=0)  # [H, W]
         
+        # FIRST normalization (inside generate_cam_attn in official code)
+        cam = (cam - cam.min()) / (cam.max() - cam.min() + 1e-8)
+        
         # Reshape to [1, 1, H, W] for interpolation
         heatmap = cam.unsqueeze(0).unsqueeze(0)
         
-        # Upsample to image size
+        # Upsample to image size (interpolate with scale_factor=16 in official, here we go to full image size)
         heatmap = F.interpolate(
             heatmap, 
             size=image.shape[-2:], 
@@ -510,7 +518,7 @@ def compute_chefercam_heatmap(model, image, text_emb_1x):
             align_corners=False
         )
         
-        # Step 7: Normalize to [0, 1]
+        # SECOND normalization (in eval_batch after interpolation in official code)
         heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
         
         return heatmap[0, 0].detach().cpu()
