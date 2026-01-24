@@ -287,12 +287,16 @@ def batch_intersection_union(predict, target, nclass=2):
     return area_inter, area_union
 
 
-def compute_chefercam_heatmap(model, image, text_emb_1x):
+def compute_chefercam_heatmap(model, image, text_emb_1x, layer_index: int = -1):
     """
-    Computes GradCAM on the last Attention layer (CheferCAM/attn_gradcam baseline).
+    Computes GradCAM on attention maps (CheferCAM/attn_gradcam baseline).
+    
+    Args:
+        layer_index: Which layer to extract attention from. Default -1 (last layer).
+                    Use 8 for potentially better results as suggested by LeGrad paper.
     
     Reference: https://github.com/hila-chefer/Transformer-Explainability
-    Method: attn_gradcam - GradCAM applied to attention maps from the last layer
+    Method: attn_gradcam - GradCAM applied to attention maps
     """
     import math
     from open_clip.timm_model import TimmModel
@@ -310,9 +314,14 @@ def compute_chefercam_heatmap(model, image, text_emb_1x):
         blocks = list(model.visual.transformer.resblocks)
         is_timm = False
     
-    last_block = blocks[-1]
-    last_attn = last_block.attn
-    num_heads = last_attn.num_heads
+    # Handle negative layer index
+    if layer_index < 0:
+        layer_index = len(blocks) + layer_index
+    layer_index = max(0, min(layer_index, len(blocks) - 1))
+    
+    target_block = blocks[layer_index]
+    target_attn = target_block.attn
+    num_heads = target_attn.num_heads
     num_prompts = text_emb_1x.shape[0]
     
     with torch.enable_grad():
@@ -407,14 +416,14 @@ def compute_chefercam_heatmap(model, image, text_emb_1x):
             
             x = x.permute(1, 0, 2)  # [N+1, B, C] for transformer
             
-            # Forward through all blocks except the last
-            for i in range(len(blocks) - 1):
+            # Forward through blocks up to target layer
+            for i in range(layer_index):
                 x = blocks[i](x)
             
-            # Manual attention for last block
-            x_normed = last_block.ln_1(x)
+            # Manual attention for target block
+            x_normed = target_block.ln_1(x)
             
-            qkv = F.linear(x_normed, last_attn.in_proj_weight, last_attn.in_proj_bias)
+            qkv = F.linear(x_normed, target_attn.in_proj_weight, target_attn.in_proj_bias)
             q, k, v = qkv.chunk(3, dim=-1)
             
             seq_len, bsz, embed_dim = q.shape
@@ -434,11 +443,15 @@ def compute_chefercam_heatmap(model, image, text_emb_1x):
             # Compute attention output
             attn_output = torch.bmm(attn_weights.reshape(bsz*num_heads, seq_len, seq_len), v)
             attn_output = attn_output.transpose(0, 1).contiguous().view(seq_len, bsz, embed_dim)
-            attn_output = last_attn.out_proj(attn_output)
+            attn_output = target_attn.out_proj(attn_output)
             
-            # Continue
+            # Continue through target block
             x = x + attn_output
-            x = x + last_block.mlp(last_block.ln_2(x))
+            x = x + target_block.mlp(target_block.ln_2(x))
+            
+            # Continue through remaining blocks
+            for i in range(layer_index + 1, len(blocks)):
+                x = blocks[i](x)
             
             # Final features
             x = x.permute(1, 0, 2)  # [B, N+1, C]
@@ -522,6 +535,7 @@ class LeGradBaselineEvaluator:
         use_gradcam=False,
         gradcam_layer=8,
         use_chefercam=False,
+        chefercam_layer=-1,
         threshold_mode='mean',
         fixed_threshold=0.5,
     ):
@@ -535,6 +549,7 @@ class LeGradBaselineEvaluator:
         self.use_gradcam = use_gradcam
         self.gradcam_layer = gradcam_layer
         self.use_chefercam = use_chefercam
+        self.chefercam_layer = chefercam_layer
         self.threshold_mode = threshold_mode
         self.fixed_threshold = fixed_threshold
         
@@ -669,7 +684,7 @@ class LeGradBaselineEvaluator:
                 def compute_metrics(text_emb_1x):
                     """Compute heatmap and metrics for standard LeGrad, GradCAM, or CheferCAM."""
                     if self.use_chefercam:
-                        heatmap = compute_chefercam_heatmap(self.model, img_t, text_emb_1x)
+                        heatmap = compute_chefercam_heatmap(self.model, img_t, text_emb_1x, layer_index=self.chefercam_layer)
                     elif self.use_gradcam:
                         heatmap = compute_gradcam_heatmap(self.model, img_t, text_emb_1x, layer_index=self.gradcam_layer)
                     else:
@@ -883,6 +898,8 @@ def main():
                         help='GradCAM layer index (default: 8)')
     parser.add_argument('--use_chefercam', action='store_true',
                         help='Use CheferCAM (attention GradCAM) instead of LeGrad')
+    parser.add_argument('--chefercam_layer', type=int, default=8,
+                        help='CheferCAM layer index (default: 8, same as GradCAM)')
     
     # Composite score calculation
     parser.add_argument('--composite_lambda', type=float, default=0.5,
@@ -950,6 +967,7 @@ def main():
         use_gradcam=args.use_gradcam,
         gradcam_layer=args.gradcam_layer,
         use_chefercam=args.use_chefercam,
+        chefercam_layer=args.chefercam_layer,
         threshold_mode=args.threshold_mode,
         fixed_threshold=args.fixed_threshold,
     )
@@ -967,7 +985,9 @@ def main():
     print(f"{'='*60}")
     print(f"Model: {args.model_name} ({args.pretrained})")
     print(f"Method: {method_name}")
-    if args.use_gradcam:
+    if args.use_chefercam:
+        print(f"CheferCAM layer: {args.chefercam_layer}")
+    elif args.use_gradcam:
         print(f"GradCAM layer: {args.gradcam_layer}")
     print(f"Strategy: {args.negative_strategy}")
     print(f"Num negatives per image: {args.num_negatives}")
