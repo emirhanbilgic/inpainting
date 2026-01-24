@@ -140,6 +140,29 @@ def compute_gradcam_for_embedding(model, image, text_emb_1x, layer_index: int = 
     return heatmap
 
 
+def batch_intersection_union(predict, target, nclass=2):
+    """
+    Batch Intersection of Union (reference implementation)
+    """
+    _, predict = torch.max(predict, 0)
+    mini = 1
+    maxi = nclass
+    nbins = nclass
+    
+    predict = predict.cpu().numpy() + 1
+    target = target.cpu().numpy() + 1
+    
+    predict = predict * (target > 0).astype(predict.dtype)
+    intersection = predict * (predict == target)
+    
+    area_inter, _ = np.histogram(intersection, bins=nbins, range=(mini, maxi))
+    area_pred, _ = np.histogram(predict, bins=nbins, range=(mini, maxi))
+    area_lab, _ = np.histogram(target, bins=nbins, range=(mini, maxi))
+    area_union = area_pred + area_lab - area_inter
+    
+    return area_inter, area_union
+
+
 def compute_chefercam_for_embedding(model, image, text_emb_1x):
     """
     Computes GradCAM on the last Attention layer (CheferCAM/attn_gradcam baseline).
@@ -476,11 +499,15 @@ class AntiHallucinationObjective:
                   correct_auroc, wrong_auroc, correct_stats, wrong_stats)
         """
         correct_results = {
-            'iou': [], 'acc': [], 'ap': [], 'auroc': [],
+            'inter': np.zeros(2), 'union': np.zeros(2),
+            'pixel_correct': 0, 'pixel_label': 0,
+            'ap': [], 'auroc': [],
             'max': [], 'mean': [], 'median': [], 'min': []
         }
         wrong_results = {
-            'iou': [], 'acc': [], 'ap': [], 'auroc': [],
+            'inter': np.zeros(2), 'union': np.zeros(2),
+            'pixel_correct': 0, 'pixel_label': 0,
+            'ap': [], 'auroc': [],
             'max': [], 'mean': [], 'median': [], 'min': []
         }
         
@@ -631,9 +658,11 @@ class AntiHallucinationObjective:
                     return iou, acc, ap, auroc, max_val, mean_val, median_val, min_val
                 
                 # === CORRECT PROMPT ===
-                iou_c, acc_c, ap_c, auroc_c, mx_c, mn_c, md_c, mi_c = compute_metrics(original_1x, class_name)
-                correct_results['iou'].append(iou_c)
-                correct_results['acc'].append(acc_c)
+                inter_c, union_c, correct_c, label_c, ap_c, auroc_c, mx_c, mn_c, md_c, mi_c = compute_metrics(original_1x, class_name)
+                correct_results['inter'] = correct_results['inter'] + inter_c
+                correct_results['union'] = correct_results['union'] + union_c
+                correct_results['pixel_correct'] += correct_c
+                correct_results['pixel_label'] += label_c
                 correct_results['ap'].append(ap_c)
                 if not np.isnan(auroc_c):
                     correct_results['auroc'].append(auroc_c)
@@ -649,9 +678,11 @@ class AntiHallucinationObjective:
                     neg_class_name = self.wnid_to_classname[neg_wnid]
                     neg_emb = self.all_text_embs[neg_idx:neg_idx + 1]
                     
-                    iou_w, acc_w, ap_w, auroc_w, mx_w, mn_w, md_w, mi_w = compute_metrics(neg_emb, neg_class_name)
-                    wrong_results['iou'].append(iou_w)
-                    wrong_results['acc'].append(acc_w)
+                    inter_w, union_w, correct_w, label_w, ap_w, auroc_w, mx_w, mn_w, md_w, mi_w = compute_metrics(neg_emb, neg_class_name)
+                    wrong_results['inter'] = wrong_results['inter'] + inter_w
+                    wrong_results['union'] = wrong_results['union'] + union_w
+                    wrong_results['pixel_correct'] += correct_w
+                    wrong_results['pixel_label'] += label_w
                     wrong_results['ap'].append(ap_w)
                     if not np.isnan(auroc_w):
                         wrong_results['auroc'].append(auroc_w)
@@ -663,16 +694,28 @@ class AntiHallucinationObjective:
             except Exception as e:
                 continue
         
-        # Compute averages
-        correct_miou = np.mean(correct_results['iou']) * 100 if correct_results['iou'] else 0.0
-        correct_macc = np.mean(correct_results['acc']) * 100 if correct_results['acc'] else 0.0
-        correct_map = np.mean(correct_results['ap']) * 100 if correct_results['ap'] else 0.0
-        correct_auroc = np.mean(correct_results['auroc']) * 100 if correct_results['auroc'] else 0.0
+        # Compute averages (Global IoU / Pixel Acc)
+        def compute_global_metrics(res_dict):
+            # mIoU
+            iou = res_dict['inter'].astype(np.float64) / (res_dict['union'].astype(np.float64) + 1e-10)
+            miou = 100.0 * iou.mean()
+            
+            # Pixel Acc
+            pix_acc = 100.0 * res_dict['pixel_correct'] / (res_dict['pixel_label'] + 1e-10)
+            
+            # mAP (still mean of APs per image)
+            map_score = np.mean(res_dict['ap']) * 100 if res_dict['ap'] else 0.0
+            
+            # AUROC
+            auroc_score = np.mean(res_dict['auroc']) * 100 if res_dict['auroc'] else 0.0
+            
+            return miou, pix_acc, map_score, auroc_score
+
+        # Correct
+        correct_miou, correct_macc, correct_map, correct_auroc = compute_global_metrics(correct_results)
         
-        wrong_miou = np.mean(wrong_results['iou']) * 100 if wrong_results['iou'] else 0.0
-        wrong_macc = np.mean(wrong_results['acc']) * 100 if wrong_results['acc'] else 0.0
-        wrong_map = np.mean(wrong_results['ap']) * 100 if wrong_results['ap'] else 0.0
-        wrong_auroc = np.mean(wrong_results['auroc']) * 100 if wrong_results['auroc'] else 0.0
+        # Wrong
+        wrong_miou, wrong_macc, wrong_map, wrong_auroc = compute_global_metrics(wrong_results)
         
         # Statistics
         correct_stats = {

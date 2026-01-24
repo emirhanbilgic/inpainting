@@ -95,6 +95,29 @@ def compute_gradcam_heatmap(model, image, text_emb_1x, layer_index: int = 8):
     return heatmap
 
 
+def batch_intersection_union(predict, target, nclass=2):
+    """
+    Batch Intersection of Union (reference implementation)
+    """
+    _, predict = torch.max(predict, 0)
+    mini = 1
+    maxi = nclass
+    nbins = nclass
+    
+    predict = predict.cpu().numpy() + 1
+    target = target.cpu().numpy() + 1
+    
+    predict = predict * (target > 0).astype(predict.dtype)
+    intersection = predict * (predict == target)
+    
+    area_inter, _ = np.histogram(intersection, bins=nbins, range=(mini, maxi))
+    area_pred, _ = np.histogram(predict, bins=nbins, range=(mini, maxi))
+    area_lab, _ = np.histogram(target, bins=nbins, range=(mini, maxi))
+    area_union = area_pred + area_lab - area_inter
+    
+    return area_inter, area_union
+
+
 def compute_chefercam_heatmap(model, image, text_emb_1x):
     """
     Computes GradCAM on the last Attention layer (CheferCAM/attn_gradcam baseline).
@@ -413,12 +436,16 @@ class LeGradBaselineEvaluator:
         - wrong: {miou, acc, map, max, mean, median, min, auroc}
         """
         correct_results = {
-            'iou': [], 'acc': [], 'ap': [], 
-            'max': [], 'mean': [], 'median': [], 'min': [], 'auroc': []
+            'inter': np.zeros(2), 'union': np.zeros(2), 
+            'pixel_correct': 0, 'pixel_label': 0,
+            'ap': [], 'auroc': [],
+            'max': [], 'mean': [], 'median': [], 'min': []
         }
         wrong_results = {
-            'iou': [], 'acc': [], 'ap': [],
-            'max': [], 'mean': [], 'median': [], 'min': [], 'auroc': []
+            'inter': np.zeros(2), 'union': np.zeros(2),
+            'pixel_correct': 0, 'pixel_label': 0,
+            'ap': [], 'auroc': [],
+            'max': [], 'mean': [], 'median': [], 'min': []
         }
         
         iterator = range(self.limit)
@@ -493,12 +520,42 @@ class LeGradBaselineEvaluator:
                         size=(H_gt, W_gt),
                         mode='bilinear',
                         align_corners=False
-                    ).squeeze().numpy()
+                    )
                     
-                    iou, acc = compute_iou_acc(heatmap_resized, gt_mask, threshold=thr)
-                    ap = compute_map_score(heatmap_resized, gt_mask)
+                    # Create binary predictions for cumulative IOU
+                    Res_1 = (heatmap_resized > thr).float()
+                    Res_0 = (heatmap_resized <= thr).float()
+                    output_tensor = torch.stack([Res_0, Res_1], dim=1).squeeze(0) # [2, H, W]
+                    gt_tensor = torch.from_numpy(gt_mask).long().to(output_tensor.device)
+                    
+                    # Compute intersection/union
+                    inter, union = batch_intersection_union(output_tensor, gt_tensor, nclass=2)
+                    
+                    # Also compute AP (standard way)
+                    ap = compute_map_score(heatmap_resized.squeeze().numpy(), gt_mask)
+                    
+                    # Pixel accuracy
+                    pred_mask = (heatmap_resized.squeeze().numpy() > thr).astype(np.uint8)
+                    correct_pixels = (pred_mask == gt_mask).sum()
+                    total_pixels = gt_mask.size
                     
                     # New metrics
+                    heatmap_np = heatmap_resized.squeeze().numpy()
+                    max_val = np.max(heatmap_np)
+                    mean_val = np.mean(heatmap_np)
+                    median_val = np.median(heatmap_np)
+                    min_val = np.min(heatmap_np)
+                    
+                    # AUROC
+                    gt_binary = (gt_mask > 0).astype(int).flatten()
+                    pred_flat = heatmap_np.flatten()
+                    
+                    if len(np.unique(gt_binary)) > 1:
+                        auroc = roc_auc_score(gt_binary, pred_flat)
+                    else:
+                        auroc = np.nan
+                    
+                    return inter, union, correct_pixels, total_pixels, ap, max_val, mean_val, median_val, min_val, auroc
                     max_val = np.max(heatmap_resized)
                     mean_val = np.mean(heatmap_resized)
                     median_val = np.median(heatmap_resized)
@@ -516,16 +573,18 @@ class LeGradBaselineEvaluator:
                     return iou, acc, ap, max_val, mean_val, median_val, min_val, auroc
                 
                 # === CORRECT PROMPT ===
-                iou, acc, ap, mx, mn, md, mi, auc = compute_metrics(text_emb)
-                correct_results['iou'].append(iou)
-                correct_results['acc'].append(acc)
-                correct_results['ap'].append(ap)
-                correct_results['max'].append(mx)
-                correct_results['mean'].append(mn)
-                correct_results['median'].append(md)
-                correct_results['min'].append(mi)
-                if not np.isnan(auc):
-                    correct_results['auroc'].append(auc)
+                inter_c, union_c, correct_c, label_c, ap_c, mx_c, mn_c, md_c, mi_c, auroc_c = compute_metrics(text_emb)
+                correct_results['inter'] = correct_results['inter'] + inter_c
+                correct_results['union'] = correct_results['union'] + union_c
+                correct_results['pixel_correct'] += correct_c
+                correct_results['pixel_label'] += label_c
+                correct_results['ap'].append(ap_c)
+                if not np.isnan(auroc_c):
+                    correct_results['auroc'].append(auroc_c)
+                correct_results['max'].append(mx_c)
+                correct_results['mean'].append(mn_c)
+                correct_results['median'].append(md_c)
+                correct_results['min'].append(mi_c)
                 
                 # DEBUG: Print per-image correct metrics (first 3 only)
                 if idx < 3:
@@ -550,16 +609,18 @@ class LeGradBaselineEvaluator:
                     neg_wnid = self.idx_to_wnid[neg_idx]
                     neg_class = self.wnid_to_classname[neg_wnid]
                     
-                    iou, acc, ap, mx, mn, md, mi, auc = compute_metrics(neg_emb)
-                    wrong_results['iou'].append(iou)
-                    wrong_results['acc'].append(acc)
-                    wrong_results['ap'].append(ap)
-                    wrong_results['max'].append(mx)
-                    wrong_results['mean'].append(mn)
-                    wrong_results['median'].append(md)
-                    wrong_results['min'].append(mi)
-                    if not np.isnan(auc):
-                        wrong_results['auroc'].append(auc)
+                    inter_w, union_w, correct_w, label_w, ap_w, mx_w, mn_w, md_w, mi_w, auroc_w = compute_metrics(neg_emb)
+                    wrong_results['inter'] = wrong_results['inter'] + inter_w
+                    wrong_results['union'] = wrong_results['union'] + union_w
+                    wrong_results['pixel_correct'] += correct_w
+                    wrong_results['pixel_label'] += label_w
+                    wrong_results['ap'].append(ap_w)
+                    if not np.isnan(auroc_w):
+                        wrong_results['auroc'].append(auroc_w)
+                    wrong_results['max'].append(mx_w)
+                    wrong_results['mean'].append(mn_w)
+                    wrong_results['median'].append(md_w)
+                    wrong_results['min'].append(mi_w)
                     
                     # DEBUG: Print per-image wrong metrics and comparison (first 3 only)
                     if idx < 3:
@@ -571,19 +632,54 @@ class LeGradBaselineEvaluator:
                 print(f"[Warning] Error processing image {idx}: {e}")
                 continue
         
-        # Compute averages
-        results = {
+        # Compute averages (Global IoU / Pixel Acc)
+        def compute_global_metrics(res_dict):
+            # mIoU
+            iou = res_dict['inter'].astype(np.float64) / (res_dict['union'].astype(np.float64) + 1e-10)
+            miou = 100.0 * iou.mean()
+            
+            # Pixel Acc
+            pix_acc = 100.0 * res_dict['pixel_correct'] / (res_dict['pixel_label'] + 1e-10)
+            
+            # mAP (still mean of APs per image)
+            map_score = np.mean(res_dict['ap']) * 100 if res_dict['ap'] else 0.0
+            
+            # AUROC
+            auroc_score = np.mean(res_dict['auroc']) * 100 if res_dict['auroc'] else 0.0
+            
+            return miou, pix_acc, map_score, auroc_score
+
+        # Correct
+        correct_miou, correct_acc, correct_map, correct_auroc = compute_global_metrics(correct_results)
+        
+        # Wrong
+        wrong_miou, wrong_acc, wrong_map, wrong_auroc = compute_global_metrics(wrong_results)
+        
+        # Statistics
+        correct_stats = {
+            'max': np.mean(correct_results['max']) if correct_results['max'] else 0.0,
+            'mean': np.mean(correct_results['mean']) if correct_results['mean'] else 0.0,
+            'median': np.mean(correct_results['median']) if correct_results['median'] else 0.0,
+            'min': np.mean(correct_results['min']) if correct_results['min'] else 0.0,
+            'n_samples': len(correct_results['ap']),
+        }
+        wrong_stats = {
+            'max': np.mean(wrong_results['max']) if wrong_results['max'] else 0.0,
+            'mean': np.mean(wrong_results['mean']) if wrong_results['mean'] else 0.0,
+            'median': np.mean(wrong_results['median']) if wrong_results['median'] else 0.0,
+            'min': np.mean(wrong_results['min']) if wrong_results['min'] else 0.0,
+            'n_samples': len(wrong_results['ap']),
+        }
+        return {
             'correct': {
-                'miou': np.mean(correct_results['iou']) * 100 if correct_results['iou'] else 0.0,
-                'acc': np.mean(correct_results['acc']) * 100 if correct_results['acc'] else 0.0,
-                'map': np.mean(correct_results['ap']) * 100 if correct_results['ap'] else 0.0,
-                'max': np.mean(correct_results['max']) if correct_results['max'] else 0.0,
-                'mean': np.mean(correct_results['mean']) if correct_results['mean'] else 0.0,
-                'median': np.mean(correct_results['median']) if correct_results['median'] else 0.0,
-                'min': np.mean(correct_results['min']) if correct_results['min'] else 0.0,
-                'auroc': np.mean(correct_results['auroc']) * 100 if correct_results['auroc'] else 0.0,
-                'n_samples': len(correct_results['iou']),
+                'miou': correct_miou, 'acc': correct_acc, 'map': correct_map, 'auroc': correct_auroc,
+                **correct_stats
             },
+            'wrong': {
+                'miou': wrong_miou, 'acc': wrong_acc, 'map': wrong_map, 'auroc': wrong_auroc,
+                **wrong_stats
+            }
+        }
             'wrong': {
                 'miou': np.mean(wrong_results['iou']) * 100 if wrong_results['iou'] else 0.0,
                 'acc': np.mean(wrong_results['acc']) * 100 if wrong_results['acc'] else 0.0,
