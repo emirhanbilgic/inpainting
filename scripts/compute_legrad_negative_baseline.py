@@ -680,20 +680,7 @@ class LeGradBaselineEvaluator:
                 **wrong_stats
             }
         }
-            'wrong': {
-                'miou': np.mean(wrong_results['iou']) * 100 if wrong_results['iou'] else 0.0,
-                'acc': np.mean(wrong_results['acc']) * 100 if wrong_results['acc'] else 0.0,
-                'map': np.mean(wrong_results['ap']) * 100 if wrong_results['ap'] else 0.0,
-                'max': np.mean(wrong_results['max']) if wrong_results['max'] else 0.0,
-                'mean': np.mean(wrong_results['mean']) if wrong_results['mean'] else 0.0,
-                'median': np.mean(wrong_results['median']) if wrong_results['median'] else 0.0,
-                'min': np.mean(wrong_results['min']) if wrong_results['min'] else 0.0,
-                'auroc': np.mean(wrong_results['auroc']) * 100 if wrong_results['auroc'] else 0.0,
-                'n_samples': len(wrong_results['iou']),
-            },
-        }
-        
-        return results
+
 
 
 def main():
