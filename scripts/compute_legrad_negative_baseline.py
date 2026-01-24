@@ -588,9 +588,14 @@ class LeGradBaselineEvaluator:
                 
                 # DEBUG: Print per-image correct metrics (first 3 only)
                 if idx < 3:
-                    auc_str = f"{auc:.4f}" if not np.isnan(auc) else "nan"
-                    print(f"  CORRECT IoU: {iou:.4f}, Acc: {acc:.4f}, mAP: {ap:.4f}, AUROC: {auc_str}")
-                correct_iou_this_image = iou
+                    # Compute local metrics for visualization
+                    iou_local = inter_c[1] / (union_c[1] + 1e-10)
+                    acc_local = 100.0 * correct_c / (label_c + 1e-10)
+                    auc_str = f"{auroc_c:.4f}" if not np.isnan(auroc_c) else "nan"
+                    print(f"  CORRECT IoU: {iou_local:.4f}, Acc: {acc_local:.2f}%, mAP: {ap_c:.4f}, AUROC: {auc_str}")
+                
+                # Store for comparison
+                correct_iou_this_image = inter_c[1] / (union_c[1] + 1e-10)
                 
                 # === WRONG PROMPTS ===
                 neg_indices = self._sample_negative_indices(cls_idx)
@@ -624,8 +629,9 @@ class LeGradBaselineEvaluator:
                     
                     # DEBUG: Print per-image wrong metrics and comparison (first 3 only)
                     if idx < 3:
-                        comparison = "GOOD (correct > wrong)" if correct_iou_this_image > iou else "BAD (wrong > correct)"
-                        print(f"  WRONG IoU ({neg_class}): {iou:.4f} -- {comparison}")
+                        iou_local_w = inter_w[1] / (union_w[1] + 1e-10)
+                        comparison = "GOOD (correct > wrong)" if correct_iou_this_image > iou_local_w else "BAD (wrong > correct)"
+                        print(f"  WRONG IoU ({neg_class}): {iou_local_w:.4f} -- {comparison}")
                 
                 
             except Exception as e:
