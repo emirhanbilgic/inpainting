@@ -259,16 +259,9 @@ def compute_gradcam_heatmap(model, image, text_emb_1x, layer_index: int = -1):
         grad_gap = grad_cam.mean(dim=[1, 2], keepdim=True)  # [heads, 1, 1]
         cam = (cam * grad_gap).mean(dim=0).clamp(min=0)     # [H, W]
         
-        # FIRST normalization (before interpolation, as in official generate_cam_attn)
-        cam = (cam - cam.min()) / (cam.max() - cam.min() + 1e-8)
-        
-        heatmap = cam.unsqueeze(0).unsqueeze(0)
-        heatmap = F.interpolate(heatmap, size=image.shape[-2:], mode='bilinear', align_corners=False)
-        
-        # SECOND normalization (after interpolation, as in official eval_batch)
-        heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
-        
-        return heatmap[0, 0].detach().cpu()
+        # Return at feature map size (grid_size x grid_size), like CheferCAM and LeGrad
+        # Let compute_metrics handle interpolation and normalization
+        return cam.detach().cpu()
 
 
 def batch_intersection_union(predict, target, nclass=2):
@@ -504,24 +497,9 @@ def compute_chefercam_heatmap(model, image, text_emb_1x):
         # Step 4 & 5 & 6: Weight cam by gradient, average over heads, then clamp
         cam = (cam * grad_gap).mean(dim=0).clamp(min=0)  # [H, W]
         
-        # FIRST normalization (inside generate_cam_attn in official code)
-        cam = (cam - cam.min()) / (cam.max() - cam.min() + 1e-8)
-        
-        # Reshape to [1, 1, H, W] for interpolation
-        heatmap = cam.unsqueeze(0).unsqueeze(0)
-        
-        # Upsample to image size (interpolate with scale_factor=16 in official, here we go to full image size)
-        heatmap = F.interpolate(
-            heatmap, 
-            size=image.shape[-2:], 
-            mode='bilinear', 
-            align_corners=False
-        )
-        
-        # SECOND normalization (in eval_batch after interpolation in official code)
-        heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
-        
-        return heatmap[0, 0].detach().cpu()
+        # Return at feature map size (grid_size x grid_size), just like LeGrad
+        # Let compute_metrics handle interpolation and normalization
+        return cam.detach().cpu()
 
 
 class LeGradBaselineEvaluator:
@@ -697,9 +675,12 @@ class LeGradBaselineEvaluator:
                     else:
                         heatmap = compute_legrad_heatmap(self.model, img_t, text_emb_1x)
                     
-                    # Resize heatmap to GT size FIRST (matching official Chefer implementation)
+                    # Get actual heatmap dimensions (may be feature size or image size depending on method)
+                    H_hm, W_hm = heatmap.shape[-2], heatmap.shape[-1]
+                    
+                    # Resize heatmap to GT size (matching official Chefer implementation)
                     heatmap_resized = F.interpolate(
-                        heatmap.view(1, 1, H_feat, W_feat),
+                        heatmap.view(1, 1, H_hm, W_hm),
                         size=(H_gt, W_gt),
                         mode='bilinear',
                         align_corners=False
