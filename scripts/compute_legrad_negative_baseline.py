@@ -85,14 +85,185 @@ def compute_legrad_heatmap(model, image, text_emb_1x):
     return logits
 
 
-def compute_gradcam_heatmap(model, image, text_emb_1x, layer_index: int = 8):
-    """Compute GradCAM heatmap for a single text embedding."""
-    if hasattr(model, "starting_depth"):
-        layer_index = max(layer_index, int(model.starting_depth))
+def compute_gradcam_heatmap(model, image, text_emb_1x, layer_index: int = -1):
+    """
+    Compute GradCAM heatmap for a single text embedding.
+    
+    This follows the official Chefer implementation approach:
+    - Extracts attention from CLS to patches at specified layer
+    - Applies Global Average Pooled gradients as weights
+    - Averages over heads, then clamps
+    
+    Reference: https://github.com/hila-chefer/Transformer-Explainability
+    """
+    import math
+    from open_clip.timm_model import TimmModel
+    
+    model.zero_grad()
+    
+    # Determine model type and get blocks
+    if isinstance(model.visual, TimmModel):
+        blocks = list(model.visual.trunk.blocks)
+        is_timm = True
+    else:
+        blocks = list(model.visual.transformer.resblocks)
+        is_timm = False
+    
+    # Handle negative layer index
+    if layer_index < 0:
+        layer_index = len(blocks) + layer_index
+    layer_index = max(0, min(layer_index, len(blocks) - 1))
+    
+    target_block = blocks[layer_index]
+    target_attn = target_block.attn
+    num_heads = target_attn.num_heads
+    num_prompts = text_emb_1x.shape[0]
+    
     with torch.enable_grad():
-        heatmap = model.compute_gradcam(image=image, text_embedding=text_emb_1x, layer_index=layer_index)
-    heatmap = heatmap[0, 0].clamp(0, 1).detach().cpu()
-    return heatmap
+        if is_timm:
+            # --- SigLIP Forward Pass ---
+            x = model.visual.trunk.patch_embed(image)
+            if model.visual.trunk.pos_embed is not None:
+                x = x + model.visual.trunk.pos_embed
+            
+            B, N, C = x.shape
+            attn_weights = None
+            
+            for i, block in enumerate(blocks):
+                if i == layer_index:
+                    # Manual attention for target layer
+                    x_normed = block.norm1(x)
+                    attn = block.attn
+                    qkv = attn.qkv(x_normed).reshape(B, N, 3, attn.num_heads, attn.head_dim).permute(2, 0, 3, 1, 4)
+                    q, k, v = qkv.unbind(0)
+                    q, k = attn.q_norm(q), attn.k_norm(k)
+                    
+                    attn_weights = (q @ k.transpose(-2, -1)) * attn.scale
+                    attn_weights = attn_weights.softmax(dim=-1)  # [B, heads, N, N]
+                    
+                    attn_out = (attn_weights @ v).transpose(1, 2).reshape(B, N, C)
+                    attn_out = attn.proj(attn_out)
+                    attn_out = attn.proj_drop(attn_out)
+                    x = x + attn_out
+                    x = x + block.mlp(block.norm2(x))
+                else:
+                    x = block(x)
+            
+            # Attentional Pooler
+            pooler = model.visual.trunk.attn_pool
+            if pooler.pos_embed is not None:
+                x = x + pooler.pos_embed.unsqueeze(0).to(x.dtype)
+            
+            q_latent = pooler.latent.expand(B, -1, -1)
+            q = pooler.q(q_latent).reshape(B, pooler.latent_len, pooler.num_heads, pooler.head_dim).transpose(1, 2)
+            kv = pooler.kv(x).reshape(B, N, 2, pooler.num_heads, pooler.head_dim).permute(2, 0, 3, 1, 4)
+            k, v = kv.unbind(0)
+            q, k = pooler.q_norm(q), pooler.k_norm(k)
+            
+            pool_attn = (q * pooler.scale) @ k.transpose(-2, -1)
+            pool_attn = pool_attn.softmax(dim=-1)
+            x_pool = (pool_attn @ v).transpose(1, 2).reshape(B, pooler.latent_len, C)
+            x_pool = pooler.proj(x_pool)
+            x_pool = pooler.proj_drop(x_pool)
+            x_pool = x_pool + pooler.mlp(pooler.norm(x_pool))
+            
+            pooled_feat = x_pool[:, 0] if pooler.pool == 'token' else x_pool.mean(1)
+            image_features = F.normalize(pooled_feat, dim=-1)
+            
+            # For SigLIP, use mean attention across all patches
+            cam = attn_weights[0].mean(dim=2)  # [heads, N] - average over query positions
+            grid_size = int(math.sqrt(N))
+            
+        else:
+            # --- CLIP Forward Pass ---
+            x = model.visual.conv1(image)
+            x = x.reshape(x.shape[0], x.shape[1], -1).permute(0, 2, 1)
+            
+            batch_size = x.shape[0]
+            class_token = model.visual.class_embedding.unsqueeze(0).unsqueeze(0).expand(batch_size, -1, -1)
+            x = torch.cat([class_token, x], dim=1)
+            
+            num_patches = x.shape[1] - 1
+            pos_embed = getattr(model.visual, 'original_pos_embed', model.visual.positional_embedding)
+            
+            if pos_embed.shape[0] != x.shape[1]:
+                cls_pos = pos_embed[:1]
+                patch_pos = pos_embed[1:]
+                orig_size = int(math.sqrt(patch_pos.shape[0]))
+                patch_pos = patch_pos.reshape(1, orig_size, orig_size, -1).permute(0, 3, 1, 2)
+                new_size = int(math.sqrt(num_patches))
+                patch_pos = F.interpolate(patch_pos, size=(new_size, new_size), mode='bilinear', align_corners=False)
+                patch_pos = patch_pos.permute(0, 2, 3, 1).reshape(-1, pos_embed.shape[1])
+                pos_embed = torch.cat([cls_pos, patch_pos], dim=0)
+            
+            x = x + pos_embed.unsqueeze(0).to(x.dtype)
+            if hasattr(model.visual, 'ln_pre'):
+                x = model.visual.ln_pre(x)
+            
+            x = x.permute(1, 0, 2)
+            attn_weights = None
+            
+            for i, block in enumerate(blocks):
+                if i == layer_index:
+                    x_normed = block.ln_1(x)
+                    attn = block.attn
+                    qkv = F.linear(x_normed, attn.in_proj_weight, attn.in_proj_bias)
+                    q, k, v = qkv.chunk(3, dim=-1)
+                    
+                    seq_len, bsz, embed_dim = q.shape
+                    head_dim = embed_dim // num_heads
+                    
+                    q = q.contiguous().view(seq_len, bsz * num_heads, head_dim).transpose(0, 1)
+                    k = k.contiguous().view(seq_len, bsz * num_heads, head_dim).transpose(0, 1)
+                    v = v.contiguous().view(seq_len, bsz * num_heads, head_dim).transpose(0, 1)
+                    
+                    scale = float(head_dim) ** -0.5
+                    attn_weights = torch.bmm(q * scale, k.transpose(-2, -1))
+                    attn_weights = F.softmax(attn_weights, dim=-1)
+                    attn_weights = attn_weights.view(bsz, num_heads, seq_len, seq_len)
+                    
+                    attn_out = torch.bmm(attn_weights.reshape(bsz*num_heads, seq_len, seq_len), v)
+                    attn_out = attn_out.transpose(0, 1).contiguous().view(seq_len, bsz, embed_dim)
+                    attn_out = attn.out_proj(attn_out)
+                    
+                    x = x + attn_out
+                    x = x + block.mlp(block.ln_2(x))
+                else:
+                    x = block(x)
+            
+            x = x.permute(1, 0, 2)
+            image_features = model.visual.ln_post(x[:, 0, :]) @ model.visual.proj
+            image_features = F.normalize(image_features, dim=-1)
+            
+            # Extract CLS -> patches attention
+            cam = attn_weights[0, :, 0, 1:]  # [heads, num_patches]
+            grid_size = int(math.sqrt(cam.shape[-1]))
+        
+        # Compute similarity and gradients
+        sim = text_emb_1x @ image_features.transpose(-1, -2)
+        one_hot = F.one_hot(torch.arange(0, num_prompts)).float().requires_grad_(True).to(text_emb_1x.device)
+        s = torch.sum(one_hot * sim)
+        
+        grad = torch.autograd.grad(s, [attn_weights], retain_graph=False, create_graph=False)[0]
+        
+        if is_timm:
+            grad_cam = grad[0].mean(dim=2)  # [heads, N]
+        else:
+            grad_cam = grad[0, :, 0, 1:]    # [heads, num_patches]
+        
+        # Reshape to spatial grid: [heads, H, W]
+        cam = cam.reshape(-1, grid_size, grid_size)
+        grad_cam = grad_cam.reshape(-1, grid_size, grid_size)
+        
+        # Official Chefer method: GAP over spatial dims, then weight
+        grad_gap = grad_cam.mean(dim=[1, 2], keepdim=True)  # [heads, 1, 1]
+        cam = (cam * grad_gap).mean(dim=0).clamp(min=0)     # [H, W]
+        
+        heatmap = cam.unsqueeze(0).unsqueeze(0)
+        heatmap = F.interpolate(heatmap, size=image.shape[-2:], mode='bilinear', align_corners=False)
+        heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
+        
+        return heatmap[0, 0].detach().cpu()
 
 
 def batch_intersection_union(predict, target, nclass=2):
@@ -276,7 +447,16 @@ def compute_chefercam_heatmap(model, image, text_emb_1x):
             image_features = model.visual.ln_post(x[:, 0, :]) @ model.visual.proj
             image_features = F.normalize(image_features, dim=-1)
         
-        # --- Common Cam Calculation ---
+        # --- Official Chefer GradCAM Calculation ---
+        # Reference: generate_cam_attn in ViT_explanation_generator.py
+        #
+        #   grad = self.model.blocks[-1].attn.get_attn_gradients()
+        #   cam = self.model.blocks[-1].attn.get_attention_map()
+        #   cam = cam[0, :, 0, 1:].reshape(-1, 14, 14)   # [heads, H, W] - CLS to patches
+        #   grad = grad[0, :, 0, 1:].reshape(-1, 14, 14)
+        #   grad = grad.mean(dim=[1, 2], keepdim=True)   # GAP over spatial dims -> 1 scalar/head
+        #   cam = (cam * grad).mean(0).clamp(min=0)      # weight, average heads, then clamp
+        
         # Compute similarity
         sim = text_emb_1x @ image_features.transpose(-1, -2)  # [1, 1]
         one_hot = F.one_hot(torch.arange(0, num_prompts)).float().requires_grad_(True).to(text_emb_1x.device)
@@ -284,41 +464,43 @@ def compute_chefercam_heatmap(model, image, text_emb_1x):
         
         # Compute gradient w.r.t. attention weights
         grad = torch.autograd.grad(s, [attn_weights], retain_graph=False, create_graph=False)[0]
-        
-        # Apply ReLU
-        grad = torch.clamp(grad, min=0)
-        
-        # Weight attention map by gradients
-        cam = grad * attn_weights  # [batch, heads, N, N]
-        
-        # Average over heads
-        cam = cam.mean(dim=1)  # [batch, N, N]
-        
-        # Extract attention to patches
-        # For CLIP: row 0 is CLS, cols 1: are patches
-        # For SigLIP: no CLS token usually, purely spatial. But check architecture.
-        # SigLIP doesn't use CLS token for pooling, it uses MAP (Multi-head Attention Pooling)
-        # However, timm implementation might differ.
+        # grad shape: [B, heads, N, N] for CLIP or [B, heads, latent_len, N] for SigLIP
         
         if is_timm:
             # SigLIP (Attentional Pooler)
-            # cam shape: [B, latent_len, N]
-            # Average over latents/queries to get importance of spatial tokens
-            cam = cam.mean(dim=1) # [B, N]
+            # attn_weights shape: [B, heads, latent_len, N]
+            # Average over latent queries to get spatial importance  
+            cam = attn_weights[0].mean(dim=1)  # [heads, N] - average over latent queries
+            grad_cam = grad[0].mean(dim=1)     # [heads, N]
+            
+            num_patches = cam.shape[-1]
+            grid_size = int(math.sqrt(num_patches))
+            
+            # Reshape to spatial: [heads, H, W]
+            cam = cam.reshape(-1, grid_size, grid_size)
+            grad_cam = grad_cam.reshape(-1, grid_size, grid_size)
         else:
             # CLIP (Self Attention)
-            # cam shape: [B, N+1, N+1]
-            # Extract CLS token attention to patches (row 0, cols 1:)
-            cam = cam[:, 0, 1:]  # [batch, num_patches]
+            # attn_weights shape: [B, heads, N+1, N+1]
+            # Step 1: Extract CLS token (row 0) attention to patches (cols 1:)
+            cam = attn_weights[0, :, 0, 1:]    # [heads, num_patches]
+            grad_cam = grad[0, :, 0, 1:]       # [heads, num_patches]
             
-        # Reshape to spatial grid
-        num_patches = cam.shape[-1]
-        grid_size = int(math.sqrt(num_patches))
+            num_patches = cam.shape[-1]
+            grid_size = int(math.sqrt(num_patches))
+            
+            # Step 2: Reshape to spatial: [heads, H, W]
+            cam = cam.reshape(-1, grid_size, grid_size)
+            grad_cam = grad_cam.reshape(-1, grid_size, grid_size)
         
-        # Handle non-square if needed, but usually square
-        w = h = grid_size
+        # Step 3: GAP over spatial dimensions for gradients (1 scalar per head)
+        grad_gap = grad_cam.mean(dim=[1, 2], keepdim=True)  # [heads, 1, 1]
         
-        heatmap = cam.reshape(text_emb_1x.shape[0], 1, h, w)
+        # Step 4 & 5 & 6: Weight cam by gradient, average over heads, then clamp
+        cam = (cam * grad_gap).mean(dim=0).clamp(min=0)  # [H, W]
+        
+        # Reshape to [1, 1, H, W] for interpolation
+        heatmap = cam.unsqueeze(0).unsqueeze(0)
         
         # Upsample to image size
         heatmap = F.interpolate(
@@ -328,7 +510,7 @@ def compute_chefercam_heatmap(model, image, text_emb_1x):
             align_corners=False
         )
         
-        # Normalize to [0, 1]
+        # Step 7: Normalize to [0, 1]
         heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
         
         return heatmap[0, 0].detach().cpu()
@@ -507,20 +689,22 @@ class LeGradBaselineEvaluator:
                     else:
                         heatmap = compute_legrad_heatmap(self.model, img_t, text_emb_1x)
                     
-                    # Normalize heatmap [0, 1] - essential for fair comparison with benchmark script
-                    heatmap_norm = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
-                    
-                    if self.threshold_mode == 'mean':
-                        thr = heatmap_norm.mean().item()
-                    else:
-                        thr = self.fixed_threshold
-                    
+                    # Resize heatmap to GT size FIRST (matching official Chefer implementation)
                     heatmap_resized = F.interpolate(
-                        heatmap_norm.view(1, 1, H_feat, W_feat),
+                        heatmap.view(1, 1, H_feat, W_feat),
                         size=(H_gt, W_gt),
                         mode='bilinear',
                         align_corners=False
                     )
+                    
+                    # Normalize AFTER resizing (as in official implementation)
+                    heatmap_resized = (heatmap_resized - heatmap_resized.min()) / (heatmap_resized.max() - heatmap_resized.min() + 1e-8)
+                    
+                    # Compute threshold on the RESIZED normalized heatmap (official Chefer method)
+                    if self.threshold_mode == 'mean':
+                        thr = heatmap_resized.mean().item()
+                    else:
+                        thr = self.fixed_threshold
                     
                     # Create binary predictions for cumulative IOU
                     Res_1 = (heatmap_resized > thr).float()
@@ -539,7 +723,7 @@ class LeGradBaselineEvaluator:
                     correct_pixels = (pred_mask == gt_mask).sum()
                     total_pixels = gt_mask.size
                     
-                    # New metrics
+                    # Heatmap statistics
                     heatmap_np = heatmap_resized.squeeze().numpy()
                     max_val = np.max(heatmap_np)
                     mean_val = np.mean(heatmap_np)
@@ -556,21 +740,7 @@ class LeGradBaselineEvaluator:
                         auroc = np.nan
                     
                     return inter, union, correct_pixels, total_pixels, ap, max_val, mean_val, median_val, min_val, auroc
-                    max_val = np.max(heatmap_resized)
-                    mean_val = np.mean(heatmap_resized)
-                    median_val = np.median(heatmap_resized)
-                    min_val = np.min(heatmap_resized)
-                    
-                    # AUROC
-                    gt_binary = (gt_mask > 0).astype(int).flatten()
-                    pred_flat = heatmap_resized.flatten()
-                    
-                    if len(np.unique(gt_binary)) > 1:
-                        auroc = roc_auc_score(gt_binary, pred_flat)
-                    else:
-                        auroc = np.nan
-                    
-                    return iou, acc, ap, max_val, mean_val, median_val, min_val, auroc
+
                 
                 # === CORRECT PROMPT ===
                 inter_c, union_c, correct_c, label_c, ap_c, mx_c, mn_c, md_c, mi_c, auroc_c = compute_metrics(text_emb)
