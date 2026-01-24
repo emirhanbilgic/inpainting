@@ -155,6 +155,12 @@ def compute_chefercam(model, image, text_emb_1x):
             
             # Trunk Forward Pass
             x = model.visual.trunk.patch_embed(image)
+            
+            # Flatten if NHWC (LeWrapper sets flatten=False)
+            if x.dim() == 4:
+                B, H, W, C = x.shape
+                x = x.reshape(B, H*W, C)
+                
             if model.visual.trunk.pos_embed is not None:
                 x = x + model.visual.trunk.pos_embed
             
@@ -436,6 +442,12 @@ def compute_transformer_attribution(model, image, text_emb_1x, start_layer=1):
         if is_timm:
             # --- SigLIP Forward ---
             x = model.visual.trunk.patch_embed(image)
+            
+            # Flatten if NHWC (LeWrapper sets flatten=False)
+            if x.dim() == 4:
+                B, H, W, C = x.shape
+                x = x.reshape(B, H*W, C)
+                
             if model.visual.trunk.pos_embed is not None:
                 x = x + model.visual.trunk.pos_embed
                 
