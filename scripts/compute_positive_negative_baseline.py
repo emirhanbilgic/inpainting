@@ -66,13 +66,12 @@ except ImportError:
 from legrad import LeWrapper, LePreprocess
 import open_clip
 
-# Import functions from benchmark_segmentation
+# Import functions from benchmark_segmentation_v2
 from benchmark_segmentation_v2 import (
     load_imagenet_class_index,
     build_wnid_to_label_map,
     get_synset_name,
-    compute_iou_acc,
-    compute_map_score,
+    get_ap_scores,
 )
 
 
@@ -672,13 +671,17 @@ class LeGradBaselineEvaluator:
                     Res_1 = (heatmap_norm > thr).float()
                     Res_0 = (heatmap_norm <= thr).float()
                     output_tensor = torch.stack([Res_0, Res_1], dim=0)  # [2, H, W]
+                    output_AP = torch.stack([1.0 - heatmap_norm, heatmap_norm], dim=0) # [2, H, W] for AP
                     gt_tensor = torch.from_numpy(gt_mask).long().to(output_tensor.device)
                     
                     # Compute intersection/union
+                    # Using local batch_intersection_union which matches reference
                     inter, union = batch_intersection_union(output_tensor, gt_tensor, nclass=2)
                     
                     # Also compute AP (standard way)
-                    ap = compute_map_score(heatmap_norm.numpy(), gt_mask)
+                    # Use get_ap_scores from v2 which expects [C,H,W] prob tensor and [H,W] target tensor
+                    ap_list = get_ap_scores(output_AP, gt_tensor)
+                    ap = ap_list[0] if ap_list else 0.0
                     
                     # Pixel accuracy
                     pred_mask = (heatmap_norm.numpy() > thr).astype(np.uint8)
