@@ -64,15 +64,21 @@ from legrad import LeWrapper, LePreprocess
 import open_clip
 
 # Import functions from benchmark_segmentation
-from benchmark_segmentation import (
+# Import functions from benchmark_segmentation_v2
+from benchmark_segmentation_v2 import (
     load_imagenet_class_index,
     build_wnid_to_label_map,
     get_synset_name,
-    compute_iou_acc,
-    compute_map_score,
-    compute_map_for_embedding,
+    batch_intersection_union,
+    get_ap_scores,
+    batch_pix_accuracy,
+)
+
+# Import sparse functions from sparse_encoding
+from sparse_encoding import (
     omp_sparse_residual,
     wordnet_neighbors_configured,
+    compute_map_for_embedding,
 )
 
 
@@ -127,10 +133,10 @@ def get_distant_class_indices(class_idx: int, all_wnids: list, wnid_to_idx: dict
     return distant_indices
 
 
-def compute_gradcam_for_embedding(model, image, text_emb_1x, layer_index: int = 8):
-    """
-    Compute a GradCAM heatmap (normalized to [0, 1]) for a single text embedding.
-    Returns: 2D tensor [H, W] on CPU.
+def compute_gradcam_heatmap(model, image, text_emb_1x, layer_index: int = 8):
+    """Compute a GradCAM heatmap (normalized to [0, 1]) for a single text embedding.
+    
+    Matches benchmark_segmentation_v2.py's compute_gradcam_for_embedding.
     """
     if hasattr(model, "starting_depth"):
         layer_index = max(layer_index, int(model.starting_depth))
@@ -140,32 +146,17 @@ def compute_gradcam_for_embedding(model, image, text_emb_1x, layer_index: int = 
     return heatmap
 
 
-def batch_intersection_union(predict, target, nclass=2):
-    """
-    Batch Intersection of Union (reference implementation)
-    """
-    _, predict = torch.max(predict, 0)
-    mini = 1
-    maxi = nclass
-    nbins = nclass
-    
-    predict = predict.cpu().numpy() + 1
-    target = target.cpu().numpy() + 1
-    
-    predict = predict * (target > 0).astype(predict.dtype)
-    intersection = predict * (predict == target)
-    
-    area_inter, _ = np.histogram(intersection, bins=nbins, range=(mini, maxi))
-    area_pred, _ = np.histogram(predict, bins=nbins, range=(mini, maxi))
-    area_lab, _ = np.histogram(target, bins=nbins, range=(mini, maxi))
-    area_union = area_pred + area_lab - area_inter
-    
-    return area_inter, area_union
+# batch_intersection_union removed (imported from benchmark_segmentation_v2)
 
 
-def compute_chefercam_for_embedding(model, image, text_emb_1x):
+def compute_chefercam(model, image, text_emb_1x):
     """
-    Computes GradCAM on the last Attention layer (CheferCAM/attn_gradcam baseline).
+    Computes GradCAM on the last Attention layer (attn_gradcam baseline).
+    
+    Reference: https://github.com/hila-chefer/Transformer-Explainability
+    Method: attn_gradcam - GradCAM applied to attention maps from the last layer
+    
+    Matches benchmark_segmentation_v2.py's compute_chefercam.
     """
     import math
     from open_clip.timm_model import TimmModel
@@ -177,16 +168,14 @@ def compute_chefercam_for_embedding(model, image, text_emb_1x):
         # SigLIP / Timm model
         blocks = list(model.visual.trunk.blocks)
         is_timm = True
+        # Timm blocks have 'attn' attribute directly
     else:
         # CLIP / Standard VisionTransformer
         blocks = list(model.visual.transformer.resblocks)
         is_timm = False
     
-    last_block = blocks[-1]
-    last_attn = last_block.attn
-    num_heads = last_attn.num_heads
-    num_prompts = text_emb_1x.shape[0]
-    
+    # Forward pass - need to do this in a way that keeps attention maps in the graph
+    # We'll manually forward through the model to capture attention with gradients
     with torch.enable_grad():
         if is_timm:
             # --- SigLIP (Attentional Pooler) ---
@@ -195,20 +184,62 @@ def compute_chefercam_for_embedding(model, image, text_emb_1x):
             
             # Trunk Forward Pass
             x = model.visual.trunk.patch_embed(image)
+            
+            # Flatten if NHWC (LeWrapper sets flatten=False)
+            if x.dim() == 4:
+                B, H, W, C = x.shape
+                x = x.reshape(B, H*W, C)
+                
             if model.visual.trunk.pos_embed is not None:
                 x = x + model.visual.trunk.pos_embed
             
-            for block in blocks:
+            # Forward all blocks EXCEPT last
+            for i, block in enumerate(blocks[:-1]):
                 x = block(x)
-            
-            # --- Attentional Pooler Manual Forward ---
+                
+            # Manual forward for LAST block to capture attention
+            last_block = blocks[-1]
             B, N, C = x.shape
             
+            # SigLIP Block Structure:
+            # x = x + attn(ln1(x))
+            # x = x + mlp(ln2(x))
+            
+            x_normed = last_block.norm1(x)
+            attn = last_block.attn
+            
+            # Manual Attention Forward
+            # qkv = attn.qkv(x).reshape(B, N, 3, num_heads, head_dim).permute(2, 0, 3, 1, 4)
+            qkv = attn.qkv(x_normed).reshape(B, N, 3, attn.num_heads, attn.head_dim).permute(2, 0, 3, 1, 4)
+            q, k, v = qkv.unbind(0)
+            q, k = attn.q_norm(q), attn.k_norm(k)
+            
+            attn_weights = (q @ k.transpose(-2, -1)) * attn.scale
+            attn_weights = attn_weights.softmax(dim=-1) # [B, heads, N, N]
+            attn_weights.requires_grad_(True)
+            
+            attn_out = (attn_weights @ v).transpose(1, 2).reshape(B, N, C)
+            attn_out = attn.proj(attn_out)
+            attn_out = attn.proj_drop(attn_out)
+            
+            # Apply LayerScale if present (ls1)
+            if hasattr(last_block, 'ls1'):
+               attn_out = last_block.ls1(attn_out)
+               
+            x = x + attn_out
+            
+            # MLP Part
+            x_mlp = last_block.mlp(last_block.norm2(x))
+            if hasattr(last_block, 'ls2'):
+                x_mlp = last_block.ls2(x_mlp)
+            x = x + x_mlp
+            
+            # --- Attentional Pooler Manual Forward ---
             # 1. Pos embed (if any)
             if pooler.pos_embed is not None:
                 x = x + pooler.pos_embed.unsqueeze(0).to(x.dtype)
             
-            # 2. Compute Q, K, V
+            # 2. Compute Q, K, V for pooler
             # q from latent
             q_latent = pooler.latent.expand(B, -1, -1)
             q = pooler.q(q_latent).reshape(B, pooler.latent_len, pooler.num_heads, pooler.head_dim).transpose(1, 2)
@@ -220,13 +251,12 @@ def compute_chefercam_for_embedding(model, image, text_emb_1x):
             # Norm
             q, k = pooler.q_norm(q), pooler.k_norm(k)
             
-            # Attention
+            # Attention (Pooler)
             q = q * pooler.scale
-            attn_weights = q @ k.transpose(-2, -1)
-            attn_weights = attn_weights.softmax(dim=-1) # [B, num_heads, latent_len, N]
+            pool_attn_weights = q @ k.transpose(-2, -1)
+            pool_attn_weights = pool_attn_weights.softmax(dim=-1)
             
-            # Output
-            x_pool = attn_weights @ v # [B, heads, latent_len, head_dim]
+            x_pool = pool_attn_weights @ v 
             x_pool = x_pool.transpose(1, 2).reshape(B, pooler.latent_len, C)
             x_pool = pooler.proj(x_pool)
             x_pool = pooler.proj_drop(x_pool)
@@ -238,12 +268,18 @@ def compute_chefercam_for_embedding(model, image, text_emb_1x):
             elif pooler.pool == 'avg':
                 pooled_feat = x_pool.mean(1)
             else:
-                pooled_feat = x_pool[:, 0] # fallback
+                pooled_feat = x_pool[:, 0]
                 
             image_features = F.normalize(pooled_feat, dim=-1)
-           
+            
+            # SigLIP Attn-GradCAM uses trunk attention
+            # attn_weights: [B, heads, N, N]
+            seq_len = N
+            num_heads = attn.num_heads
+            bsz = B
+            
         else:
-            # --- CLIP Forward Pass ---
+            # CLIP
             # Forward through visual encoder
             x = model.visual.conv1(image)  # [B, C, H', W']
             x = x.reshape(x.shape[0], x.shape[1], -1)  # [B, C, N]
@@ -283,36 +319,40 @@ def compute_chefercam_for_embedding(model, image, text_emb_1x):
             for i in range(len(blocks) - 1):
                 x = blocks[i](x)
             
-            # Manual attention for last block
+            # For the last block, we need to capture attention with gradients
+            # Manually compute attention for the last layer
+            last_block = blocks[-1]
+            last_attn = last_block.attn
             x_normed = last_block.ln_1(x)
             
+            # Compute Q, K, V
             qkv = F.linear(x_normed, last_attn.in_proj_weight, last_attn.in_proj_bias)
             q, k, v = qkv.chunk(3, dim=-1)
             
             seq_len, bsz, embed_dim = q.shape
             head_dim = embed_dim // num_heads
+            num_heads = last_attn.num_heads
             
             q = q.contiguous().view(seq_len, bsz * num_heads, head_dim).transpose(0, 1)
             k = k.contiguous().view(seq_len, bsz * num_heads, head_dim).transpose(0, 1)
             v = v.contiguous().view(seq_len, bsz * num_heads, head_dim).transpose(0, 1)
             
+            # Compute attention weights (this is what we need gradients for)
             scale = float(head_dim) ** -0.5
             attn_weights = torch.bmm(q * scale, k.transpose(-2, -1))
             attn_weights = F.softmax(attn_weights, dim=-1)  # [bsz*heads, N, N]
-            
-            # Convert to [B, heads, N, N] for consistency
-            attn_weights = attn_weights.view(bsz, num_heads, seq_len, seq_len)
+            attn_weights.requires_grad_(True)
             
             # Compute attention output
-            attn_output = torch.bmm(attn_weights.reshape(bsz*num_heads, seq_len, seq_len), v)
+            attn_output = torch.bmm(attn_weights, v)
             attn_output = attn_output.transpose(0, 1).contiguous().view(seq_len, bsz, embed_dim)
             attn_output = last_attn.out_proj(attn_output)
             
-            # Continue
+            # Continue forward
             x = x + attn_output
             x = x + last_block.mlp(last_block.ln_2(x))
             
-            # Final features
+            # Get final image features
             x = x.permute(1, 0, 2)  # [B, N+1, C]
             image_features = model.visual.ln_post(x[:, 0, :]) @ model.visual.proj
             image_features = F.normalize(image_features, dim=-1)
@@ -326,7 +366,11 @@ def compute_chefercam_for_embedding(model, image, text_emb_1x):
         # Compute gradient w.r.t. attention weights
         grad = torch.autograd.grad(s, [attn_weights], retain_graph=False, create_graph=False)[0]
         
-        # Apply ReLU
+        # Reshape: [bsz*heads, N, N] -> [bsz, heads, N, N]
+        grad = grad.view(bsz, num_heads, seq_len, seq_len)
+        attn_weights = attn_weights.view(bsz, num_heads, seq_len, seq_len)
+        
+        # Apply ReLU to gradients (GradCAM standard)
         grad = torch.clamp(grad, min=0)
         
         # Weight attention map by gradients
@@ -336,29 +380,308 @@ def compute_chefercam_for_embedding(model, image, text_emb_1x):
         cam = cam.mean(dim=1)  # [batch, N, N]
         
         if is_timm:
-            # SigLIP (Attentional Pooler)
-            # cam shape: [B, latent_len, N]
-            # Average over latents/queries to get importance of spatial tokens
-            cam = cam.mean(dim=1) # [B, N]
+            # SigLIP: Attention is [N, N] (patches-to-patches)
+            # Need to average over query patches to get importance of key patches
+            # Similar to how we handle it in GradCAM
+            cam = cam.mean(dim=1) # [batch, N] - Importance of each patch
         else:
-            # CLIP (Self Attention)
-            # cam shape: [B, N+1, N+1]
-            # Extract CLS token attention to patches (row 0, cols 1:)
+            # CLIP: Attention is [N+1, N+1] (cls+patches)
+            # Extract CLS token attention to patches (row 0, columns 1:)
             cam = cam[:, 0, 1:]  # [batch, num_patches]
-            
+        
         # Reshape to spatial grid
         num_patches = cam.shape[-1]
         grid_size = int(math.sqrt(num_patches))
+        if grid_size * grid_size != num_patches:
+            w = h = int(math.sqrt(num_patches))
+            if w * h != num_patches:
+                raise RuntimeError(f"Cannot reshape {num_patches} patches to square grid")
+        else:
+            w = h = grid_size
         
-        w = h = grid_size
-        
-        heatmap = cam.reshape(text_emb_1x.shape[0], 1, h, w)
+        heatmap = cam.reshape(bsz, 1, h, w)
         
         # Upsample to image size
         heatmap = F.interpolate(
             heatmap, 
             size=image.shape[-2:], 
             mode='bilinear', 
+            align_corners=False
+        )
+        
+        # Normalize to [0, 1]
+        heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
+        
+        return heatmap[0, 0].detach().cpu()
+
+
+def compute_transformer_attribution(model, image, text_emb_1x, start_layer=1):
+    """
+    Computes Transformer Attribution (full LRP-based method from Chefer et al.).
+    
+    Reference: https://github.com/hila-chefer/Transformer-Explainability
+    Method: transformer_attribution - Full LRP-based method with start_layer
+    
+    This is the main method from Chefer et al. (2021), not the baseline.
+    The reference uses full LRP rules to propagate relevance through transformer layers.
+    
+    IMPORTANT LIMITATIONS:
+    - The reference implementation uses a Supervised ViT with full LRP implementation
+    - This implementation uses CLIP and approximates LRP with gradient-weighted attention
+    - For exact reproduction of reported results, you need:
+      1. A Supervised ViT (e.g., from timm) instead of CLIP
+      2. The full LRP implementation from the reference repository
+    - This simplified version aggregates gradient-weighted attention across layers,
+      which approximates the LRP propagation but is not identical
+    
+    Args:
+        model: LeWrapper model
+        image: Input image tensor [1, 3, H, W]
+        text_emb_1x: Text embedding [1, embed_dim]
+        start_layer: Layer to start attribution from (default 1, as in reference)
+    
+    Returns:
+        Heatmap tensor [H, W] normalized to [0, 1]
+    
+    Matches benchmark_segmentation_v2.py's compute_transformer_attribution.
+    """
+    import math
+    from open_clip.timm_model import TimmModel
+    
+    model.zero_grad()
+    
+    # Determine model type and get blocks
+    if isinstance(model.visual, TimmModel):
+        blocks = list(model.visual.trunk.blocks)
+        is_timm = True
+    else:
+        blocks = list(model.visual.transformer.resblocks)
+        is_timm = False
+    
+    num_layers = len(blocks)
+    
+    # Ensure start_layer is valid
+    if start_layer < 0:
+        start_layer = num_layers + start_layer
+    start_layer = max(0, min(start_layer, num_layers - 1))
+    
+    num_prompts = text_emb_1x.shape[0]
+    
+    # Forward pass with gradients enabled to capture attention maps
+    with torch.enable_grad():
+        all_attn_weights = []
+        
+        if is_timm:
+            # --- SigLIP Forward ---
+            x = model.visual.trunk.patch_embed(image)
+            
+            # Flatten if NHWC (LeWrapper sets flatten=False)
+            if x.dim() == 4:
+                B, H, W, C = x.shape
+                x = x.reshape(B, H*W, C)
+                
+            if model.visual.trunk.pos_embed is not None:
+                x = x + model.visual.trunk.pos_embed
+                
+            pooler = model.visual.trunk.attn_pool
+            
+            B, N, C = x.shape
+            
+            for i, block in enumerate(blocks):
+                if i < start_layer:
+                    x = block(x)
+                else:
+                    # Manual Attention Forward
+                    x_normed = block.norm1(x)
+                    attn = block.attn
+                    
+                    qkv = attn.qkv(x_normed).reshape(B, N, 3, attn.num_heads, attn.head_dim).permute(2, 0, 3, 1, 4)
+                    q, k, v = qkv.unbind(0)
+                    q, k = attn.q_norm(q), attn.k_norm(k)
+                    
+                    attn_weights = (q @ k.transpose(-2, -1)) * attn.scale
+                    attn_weights = attn_weights.softmax(dim=-1)
+                    attn_weights.requires_grad_(True)
+                    all_attn_weights.append(attn_weights) # [B, heads, N, N]
+                    
+                    attn_out = (attn_weights @ v).transpose(1, 2).reshape(B, N, C)
+                    attn_out = attn.proj(attn_out)
+                    attn_out = attn.proj_drop(attn_out)
+                    
+                    if hasattr(block, 'ls1'):
+                        attn_out = block.ls1(attn_out)
+                        
+                    x = x + attn_out
+                    
+                    x_mlp = block.mlp(block.norm2(x))
+                    if hasattr(block, 'ls2'):
+                        x_mlp = block.ls2(x_mlp)
+                    x = x + x_mlp
+            
+            # Attentional Pooler Forward
+            if pooler.pos_embed is not None:
+                x = x + pooler.pos_embed.unsqueeze(0).to(x.dtype)
+            
+            q_latent = pooler.latent.expand(B, -1, -1)
+            q = pooler.q(q_latent).reshape(B, pooler.latent_len, pooler.num_heads, pooler.head_dim).transpose(1, 2)
+            kv = pooler.kv(x).reshape(B, N, 2, pooler.num_heads, pooler.head_dim).permute(2, 0, 3, 1, 4)
+            k, v = kv.unbind(0)
+            q, k = pooler.q_norm(q), pooler.k_norm(k)
+            
+            pool_attn = (q * pooler.scale) @ k.transpose(-2, -1)
+            pool_attn = pool_attn.softmax(dim=-1)
+            
+            x_pool = (pool_attn @ v).transpose(1, 2).reshape(B, pooler.latent_len, C)
+            x_pool = pooler.proj(x_pool)
+            x_pool = pooler.proj_drop(x_pool)
+            x_pool = x_pool + pooler.mlp(pooler.norm(x_pool))
+            
+            if pooler.pool == 'token':
+                pooled_feat = x_pool[:, 0]
+            elif pooler.pool == 'avg':
+                pooled_feat = x_pool.mean(1)
+            else:
+                pooled_feat = x_pool[:, 0]
+                
+            image_features = F.normalize(pooled_feat, dim=-1)
+            bsz = B
+            
+        else:
+            # --- CLIP Forward ---
+            # Forward through visual encoder
+            x = model.visual.conv1(image)
+            x = x.reshape(x.shape[0], x.shape[1], -1)
+            x = x.permute(0, 2, 1)
+            
+            batch_size = x.shape[0]
+            bsz = batch_size
+            class_token = model.visual.class_embedding.unsqueeze(0).unsqueeze(0)
+            class_token = class_token.expand(batch_size, -1, -1)
+            x = torch.cat([class_token, x], dim=1)
+            
+            # Add positional embedding
+            num_patches = x.shape[1] - 1
+            if hasattr(model.visual, 'original_pos_embed'):
+                pos_embed = model.visual.original_pos_embed
+            else:
+                pos_embed = model.visual.positional_embedding
+            
+            if pos_embed.shape[0] != x.shape[1]:
+                cls_pos = pos_embed[:1]
+                patch_pos = pos_embed[1:]
+                orig_size = int(math.sqrt(patch_pos.shape[0]))
+                patch_pos = patch_pos.reshape(1, orig_size, orig_size, -1).permute(0, 3, 1, 2)
+                new_size = int(math.sqrt(num_patches))
+                patch_pos = F.interpolate(patch_pos, size=(new_size, new_size), mode='bilinear', align_corners=False)
+                patch_pos = patch_pos.permute(0, 2, 3, 1).reshape(-1, pos_embed.shape[1])
+                pos_embed = torch.cat([cls_pos, patch_pos], dim=0)
+            
+            x = x + pos_embed.unsqueeze(0).to(x.dtype)
+            
+            if hasattr(model.visual, 'ln_pre'):
+                x = model.visual.ln_pre(x)
+            
+            x = x.permute(1, 0, 2)
+            
+            # Forward through blocks and collect attention maps from start_layer onwards
+            for i, block in enumerate(blocks):
+                if i < start_layer:
+                    # Forward normally for layers before start_layer
+                    x = block(x)
+                else:
+                    # For layers from start_layer, capture attention weights
+                    attn_module = block.attn
+                    x_normed = block.ln_1(x)
+                    
+                    qkv = F.linear(x_normed, attn_module.in_proj_weight, attn_module.in_proj_bias)
+                    q, k, v = qkv.chunk(3, dim=-1)
+                    
+                    seq_len, bsz, embed_dim = q.shape
+                    num_heads = attn_module.num_heads
+                    head_dim = embed_dim // num_heads
+                    
+                    q = q.contiguous().view(seq_len, bsz * num_heads, head_dim).transpose(0, 1)
+                    k = k.contiguous().view(seq_len, bsz * num_heads, head_dim).transpose(0, 1)
+                    v = v.contiguous().view(seq_len, bsz * num_heads, head_dim).transpose(0, 1)
+                    
+                    scale = float(head_dim) ** -0.5
+                    attn_weights = torch.bmm(q * scale, k.transpose(-2, -1))
+                    attn_weights = F.softmax(attn_weights, dim=-1)  # [bsz*heads, N, N]
+                    attn_weights.requires_grad_(True)
+                    all_attn_weights.append(attn_weights)
+                    
+                    attn_output = torch.bmm(attn_weights, v)
+                    attn_output = attn_output.transpose(0, 1).contiguous().view(seq_len, bsz, embed_dim)
+                    attn_output = attn_module.out_proj(attn_output)
+                    
+                    x = x + attn_output
+                    x = x + block.mlp(block.ln_2(x))
+            
+            # Get final image features
+            x = x.permute(1, 0, 2)
+            image_features = model.visual.ln_post(x[:, 0, :]) @ model.visual.proj
+            image_features = F.normalize(image_features, dim=-1)
+        
+        # Compute similarity
+        sim = text_emb_1x @ image_features.transpose(-1, -2)
+        one_hot = F.one_hot(torch.arange(0, num_prompts)).float().requires_grad_(True).to(text_emb_1x.device)
+        s = torch.sum(one_hot * sim)
+        
+        # Compute gradients for all attention layers
+        grads = torch.autograd.grad(s, all_attn_weights, retain_graph=False, create_graph=False)
+        
+        # Process each layer's gradient-weighted attention
+        layer_contributions = []
+        for i, (grad, attn_weights) in enumerate(zip(grads, all_attn_weights)):
+            num_heads = blocks[start_layer + i].attn.num_heads
+            
+            # Reshape: [bsz*heads, N, N] -> [bsz, heads, N, N] if needed
+            if grad.dim() == 3:
+                grad = grad.view(bsz, num_heads, grad.shape[1], grad.shape[2])
+                attn_weights = attn_weights.view(bsz, num_heads, attn_weights.shape[1], attn_weights.shape[2])
+            # For SigLIP, it is already 4D [bsz, heads, N, N]
+            
+            # Apply ReLU to gradients
+            grad = torch.clamp(grad, min=0)
+            
+            # Weight attention by gradients
+            weighted_attn = grad * attn_weights  # [batch, heads, N, N]
+            
+            # Average over heads
+            weighted_attn = weighted_attn.mean(dim=1)  # [batch, N, N]
+            
+            if is_timm:
+                # SigLIP: Attention is [N, N]
+                # Aggregate over query patches (rows) to get importance of keys (columns)
+                cls_to_patches = weighted_attn.mean(dim=1) # [batch, N]
+            else:
+                # CLIP: Attention is [N+1, N+1]
+                # Extract CLS to patches
+                cls_to_patches = weighted_attn[:, 0, 1:]  # [batch, num_patches]
+            
+            layer_contributions.append(cls_to_patches)
+        
+        # Aggregate across layers (simple sum, as in reference)
+        # Note: Full LRP would use more sophisticated propagation rules
+        aggregated = sum(layer_contributions)  # [batch, num_patches]
+        
+        # Reshape to spatial grid
+        num_patches = aggregated.shape[-1]
+        grid_size = int(math.sqrt(num_patches))
+        if grid_size * grid_size != num_patches:
+            w = h = int(math.sqrt(num_patches))
+            if w * h != num_patches:
+                raise RuntimeError(f"Cannot reshape {num_patches} patches to square grid")
+        else:
+            w = h = grid_size
+        
+        heatmap = aggregated.reshape(bsz, 1, h, w)
+        
+        # Upsample to image size
+        heatmap = F.interpolate(
+            heatmap,
+            size=image.shape[-2:],
+            mode='bilinear',
             align_corners=False
         )
         
@@ -395,6 +718,8 @@ class AntiHallucinationObjective:
         use_gradcam=False,
         gradcam_layer=8,
         use_chefercam=False,
+        chefercam_method='transformer_attribution',
+        transformer_attribution_start_layer=1,
         threshold_mode='mean',
         fixed_threshold=0.5,
     ):
@@ -411,6 +736,8 @@ class AntiHallucinationObjective:
         self.use_gradcam = use_gradcam
         self.gradcam_layer = gradcam_layer
         self.use_chefercam = use_chefercam
+        self.chefercam_method = chefercam_method
+        self.transformer_attribution_start_layer = transformer_attribution_start_layer
         self.threshold_mode = threshold_mode
         self.fixed_threshold = fixed_threshold
         
@@ -543,7 +870,8 @@ class AntiHallucinationObjective:
                     interpolation=InterpolationMode.NEAREST,
                 )
                 gt_pil = target_resize(gt_pil)
-                gt_mask = np.array(gt_pil).astype(np.uint8)
+                gt_mask = np.array(gt_pil).astype(np.int32)
+                gt_tensor = torch.from_numpy(gt_mask).long()
                 H_gt, W_gt = gt_mask.shape
                 
                 # Get class info
@@ -584,7 +912,6 @@ class AntiHallucinationObjective:
                             use_hypernyms=wn_use_hypernyms,
                             use_hyponyms=wn_use_hyponyms,
                             use_siblings=wn_use_siblings,
-                            use_fallback=True,
                             limit_per_relation=8,
                         )
                         if raw_neighbors:
@@ -616,46 +943,75 @@ class AntiHallucinationObjective:
                     """Compute heatmap and metrics for a given embedding."""
                     sparse_1x = build_sparse_embedding(text_emb_1x, target_class_name)
                     
+                    method_name = 'legrad'
                     # Choose between CheferCAM, GradCAM and LeGrad (sparse)
                     if self.use_chefercam:
-                        heatmap = compute_chefercam_for_embedding(self.model, img_t, sparse_1x)
+                        if self.chefercam_method == 'transformer_attribution':
+                            heatmap = compute_transformer_attribution(
+                                self.model, img_t, sparse_1x, start_layer=self.transformer_attribution_start_layer
+                            )
+                        else:
+                            heatmap = compute_chefercam(self.model, img_t, sparse_1x)
+                        method_name = 'chefercam'
                     elif self.use_gradcam:
-                        heatmap = compute_gradcam_for_embedding(self.model, img_t, sparse_1x, layer_index=self.gradcam_layer)
+                        heatmap = compute_gradcam_heatmap(self.model, img_t, sparse_1x, layer_index=self.gradcam_layer)
+                        method_name = 'gradcam'
                     else:
                         heatmap = compute_map_for_embedding(self.model, img_t, sparse_1x)
+                        method_name = 'legrad'
                     
-                    heatmap_norm = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
+                    # Get actual heatmap dimensions
+                    H_hm, W_hm = heatmap.shape[-2], heatmap.shape[-1]
+
+                    # Resize heatmap to GT size FIRST (matching baseline)
+                    heatmap_resized = F.interpolate(
+                        heatmap.view(1, 1, H_hm, W_hm),
+                        size=(H_gt, W_gt),
+                        mode='bilinear',
+                        align_corners=False
+                    ).squeeze()
+                    
+                    # Normalize based on method (matching baseline)
+                    if method_name == 'legrad':
+                         # LeGrad is already clamped [0,1], do not re-minmax normalize 
+                         # (preserves absolute confidence)
+                         heatmap_norm = heatmap_resized
+                    else:
+                         # GradCAM/CheferCAM need re-normalization after interpolation
+                         heatmap_norm = (heatmap_resized - heatmap_resized.min()) / (heatmap_resized.max() - heatmap_resized.min() + 1e-8)
                     
                     if self.threshold_mode == 'mean':
                         thr = heatmap_norm.mean().item()
                     else:
                         thr = sparse_threshold
 
-                    heatmap_resized = F.interpolate(
-                        heatmap_norm.view(1, 1, H_feat, W_feat),
-                        size=(H_gt, W_gt),
-                        mode='bilinear',
-                        align_corners=False
-                    ).squeeze().numpy()
+                    # Create binary predictions
+                    Res_1 = (heatmap_norm > thr).float()
+                    Res_0 = (heatmap_norm <= thr).float()
                     
-                    iou, acc = compute_iou_acc(heatmap_resized, gt_mask, threshold=thr)
-                    ap = compute_map_score(heatmap_resized, gt_mask)
+                    output = torch.stack([Res_0, Res_1], dim=0)
+                    output_AP = torch.stack([1.0 - heatmap_norm, heatmap_norm], dim=0)
+                    
+                    # Metrics
+                    correct, labeled = batch_pix_accuracy(output, gt_tensor)
+                    inter, union = batch_intersection_union(output, gt_tensor, nclass=2)
+                    ap = get_ap_scores(output_AP, gt_tensor)
                     
                     # Statistics
-                    max_val = float(np.max(heatmap_resized))
-                    mean_val = float(np.mean(heatmap_resized))
-                    median_val = float(np.median(heatmap_resized))
-                    min_val = float(np.min(heatmap_resized))
+                    max_val = float(np.max(heatmap_norm.numpy()))
+                    mean_val = float(np.mean(heatmap_norm.numpy()))
+                    median_val = float(np.median(heatmap_norm.numpy()))
+                    min_val = float(np.min(heatmap_norm.numpy()))
                     
                     # AUROC
                     gt_binary = (gt_mask > 0).astype(int).flatten()
-                    pred_flat = heatmap_resized.flatten()
+                    pred_flat = heatmap_norm.numpy().flatten()
                     if len(np.unique(gt_binary)) > 1:
-                        auroc = roc_auc_score(gt_binary, pred_flat)
+                         auroc = roc_auc_score(gt_binary, pred_flat)
                     else:
-                        auroc = np.nan
+                         auroc = np.nan
                     
-                    return iou, acc, ap, auroc, max_val, mean_val, median_val, min_val
+                    return inter, union, correct, labeled, ap[0] if ap else 0.0, auroc, max_val, mean_val, median_val, min_val
                 
                 # === CORRECT PROMPT ===
                 inter_c, union_c, correct_c, label_c, ap_c, auroc_c, mx_c, mn_c, md_c, mi_c = compute_metrics(original_1x, class_name)
@@ -703,7 +1059,7 @@ class AntiHallucinationObjective:
             # Pixel Acc
             pix_acc = 100.0 * res_dict['pixel_correct'] / (res_dict['pixel_label'] + 1e-10)
             
-            # mAP (still mean of APs per image)
+            # mAP (mean of APs per image)
             map_score = np.mean(res_dict['ap']) * 100 if res_dict['ap'] else 0.0
             
             # AUROC
@@ -723,14 +1079,14 @@ class AntiHallucinationObjective:
             'mean': np.mean(correct_results['mean']) if correct_results['mean'] else 0.0,
             'median': np.mean(correct_results['median']) if correct_results['median'] else 0.0,
             'min': np.mean(correct_results['min']) if correct_results['min'] else 0.0,
-            'n_samples': len(correct_results['iou']),
+            'n_samples': len(correct_results['ap']),
         }
         wrong_stats = {
             'max': np.mean(wrong_results['max']) if wrong_results['max'] else 0.0,
             'mean': np.mean(wrong_results['mean']) if wrong_results['mean'] else 0.0,
             'median': np.mean(wrong_results['median']) if wrong_results['median'] else 0.0,
             'min': np.mean(wrong_results['min']) if wrong_results['min'] else 0.0,
-            'n_samples': len(wrong_results['iou']),
+            'n_samples': len(wrong_results['ap']),
         }
         
         return (correct_miou, wrong_miou, correct_macc, wrong_macc, correct_map, wrong_map,
