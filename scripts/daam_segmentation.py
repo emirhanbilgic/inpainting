@@ -106,7 +106,7 @@ class DAAMSegmenter:
             
             # 6. Extract Heatmap
             # Use augmented_prompt for decoding
-            global_heat_map = tc.compute_global_heat_map()
+            global_heat_map = tc.compute_global_heat_map(prompt=augmented_prompt)
             
             heatmap = None
             try:
