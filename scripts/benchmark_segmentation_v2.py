@@ -58,6 +58,11 @@ IMAGENET_CLASS_INDEX_URL = (
     "https://s3.amazonaws.com/deep-learning-models/image-models/imagenet_class_index.json"
 )
 
+try:
+    from daam_segmentation import DAAMSegmenter
+except ImportError:
+    DAAMSegmenter = None
+
 
 
 
@@ -559,7 +564,7 @@ def main():
     # Method selection
     parser.add_argument(
         '--methods', type=str, default='original,gradcam,chefercam',
-        help="Comma-separated methods: original (LeGrad), gradcam, chefercam"
+        help="Comma-separated methods: original (LeGrad), gradcam, chefercam, daam"
     )
     
     # CheferCAM/Transformer Attribution settings
@@ -584,10 +589,10 @@ def main():
 
     # Parse methods
     methods = [m.strip().lower() for m in str(args.methods).split(",") if m.strip()]
-    allowed_methods = {'original', 'gradcam', 'chefercam'}
+    allowed_methods = {'original', 'gradcam', 'chefercam', 'daam'}
     methods = [m for m in methods if m in allowed_methods]
     if not methods:
-        raise ValueError("No valid methods. Use --methods with: original,gradcam,chefercam")
+        raise ValueError("No valid methods. Use --methods with: original,gradcam,chefercam,daam")
     
     print(f"Methods to evaluate: {methods}")
     print(f"Threshold mode: {args.threshold_mode}")
@@ -611,6 +616,14 @@ def main():
         nltk.download('omw-1.4', quiet=True)
     except:
         pass
+
+    # Load DAAM if needed
+    daam_segmenter = None
+    if 'daam' in methods:
+        if DAAMSegmenter is None:
+            raise ImportError("DAAMSegmenter could not be imported. Please install daam and diffusers.")
+        print("Initializing DAAM Segmenter...")
+        daam_segmenter = DAAMSegmenter(device=args.device)
 
     # Load ImageNet mapping
     try:
@@ -756,6 +769,21 @@ def main():
                     align_corners=False
                 ).squeeze()
                 heatmaps['chefercam'] = heatmap_resized
+            
+            # --- DAAM ---
+            if 'daam' in methods and daam_segmenter is not None:
+                # Use the class prompt for DAAM
+                # DAAMSegmenter handles the forward pass and tracing
+                heatmap = daam_segmenter.predict(base_img, wnid_to_prompt[wnid])
+                
+                # Resize to GT size
+                heatmap_resized = F.interpolate(
+                    heatmap.view(1, 1, heatmap.shape[0], heatmap.shape[1]),
+                    size=(H_gt, W_gt),
+                    mode='bilinear',
+                    align_corners=False
+                ).squeeze()
+                heatmaps['daam'] = heatmap_resized
 
             
             # --- Compute Metrics (Reference Protocol) ---
