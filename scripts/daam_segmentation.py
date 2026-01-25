@@ -136,8 +136,15 @@ class DAAMSegmenter:
                 heatmap = word_heat_map.heatmap # [H, W] tensor
             except Exception:
                 # Fallback if specific word not found (e.g. tokenizer mismatch)
-                # Use global heatmap
-                heatmap = global_heat_map.heatmap
+                # GlobalHeatMap has .heat_maps which is [tokens, H, W]
+                # We average over all tokens to get a global attention map
+                # or we could attempt to partial match, but global average is a safe fallback
+                if hasattr(global_heat_map, 'heat_maps'):
+                    heatmap = global_heat_map.heat_maps.mean(0)
+                else:
+                    # Very old DAAM version fallback? 
+                    # But per checked source, heat_maps is the standard attribute.
+                    raise AttributeError("GlobalHeatMap missing 'heat_maps' attribute")
 
         # 7. Post-process
         # Heatmap is already 512x512 (default daam size matches latent*stride?) 
