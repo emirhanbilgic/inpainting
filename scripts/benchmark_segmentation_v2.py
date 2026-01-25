@@ -789,11 +789,12 @@ def main():
                 heatmap = daam_segmenter.predict(base_img, wnid_to_prompt[wnid])
                 
                 # Resize to GT size
+                # MATCH REFERENCE: Use 'nearest' interpolation for evaluation
                 heatmap_resized = F.interpolate(
                     heatmap.view(1, 1, heatmap.shape[0], heatmap.shape[1]),
                     size=(H_gt, W_gt),
-                    mode='bilinear',
-                    align_corners=False
+                    mode='nearest',
+                    align_corners=None # nearest doesn't support align_corners
                 ).squeeze()
                 heatmaps['daam'] = heatmap_resized
 

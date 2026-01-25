@@ -53,14 +53,17 @@ class DAAMSegmenter:
         # Reference uses index 49/50 -> almost 0 noise.
         # We'll use a very small timestep effectively.
         noise = torch.randn_like(latents)
-        # Using t=1 explicitly for low noise
-        timestep = torch.tensor([1], device=self.device)
+        # Using t=21 to match reference index 49 (checked via script)
+        timestep = torch.tensor([21], device=self.device)
         noisy_latents = self.scheduler.add_noise(latents, noise, timestep)
 
         # Extract concept from "a photo of a {class}" or just use last word
         concept = ""
         if prompt.startswith("a photo of a "):
             concept = prompt[len("a photo of a "):].strip(".").strip()
+        elif prompt.startswith("a "):
+            concept = prompt[2:].strip(".").strip()
+        
         if not concept:
             # heuristic: last word
             concept = prompt.split()[-1]
