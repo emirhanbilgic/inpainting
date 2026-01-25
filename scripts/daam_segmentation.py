@@ -6,8 +6,8 @@ import numpy as np
 try:
     from diffusers import StableDiffusionPipeline
     from daam import trace
-except ImportError:
-    print("Warning: diffusers or daam not installed. DAAMSegmenter will fail if initialized.")
+except ImportError as e:
+    print(f"Warning: diffusers or daam not installed. DAAMSegmenter will fail if initialized. Error: {e}")
     StableDiffusionPipeline = None
     trace = None
 
