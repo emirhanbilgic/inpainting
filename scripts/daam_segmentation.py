@@ -71,9 +71,9 @@ class DAAMSegmenter:
         augmented_prompt = f"{prompt}, a {concept}"
         
         # 4. Prepare Embeddings with CFG (Guidance Scale 7.0)
-        # Use AUGMENTED prompt for both encoding and UNet
+        # Use ORIGINAL prompt for encoding and UNet (matching reference mismatch)
         text_input = self.tokenizer(
-            augmented_prompt,
+            prompt,
             padding="max_length",
             max_length=self.tokenizer.model_max_length,
             truncation=True,
