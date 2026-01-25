@@ -66,6 +66,7 @@ except ImportError:
 from legrad import LeWrapper, LePreprocess
 import open_clip
 
+
 # Import functions from benchmark_segmentation_v2
 from benchmark_segmentation_v2 import (
     load_imagenet_class_index,
@@ -73,6 +74,12 @@ from benchmark_segmentation_v2 import (
     get_synset_name,
     get_ap_scores,
 )
+
+try:
+    from daam_segmentation import DAAMSegmenter
+except ImportError:
+    DAAMSegmenter = None
+
 
 
 def compute_legrad_heatmap(model, image, text_emb_1x):
@@ -685,6 +692,8 @@ class LeGradBaselineEvaluator:
         transformer_attribution_start_layer=1,
         threshold_mode='mean',
         fixed_threshold=0.5,
+        use_daam=False,
+        daam_model_id='Manojb/stable-diffusion-2-base',
     ):
         self.model = model
         self.tokenizer = tokenizer
@@ -700,6 +709,15 @@ class LeGradBaselineEvaluator:
         self.transformer_attribution_start_layer = transformer_attribution_start_layer
         self.threshold_mode = threshold_mode
         self.fixed_threshold = fixed_threshold
+        self.use_daam = use_daam
+        
+        # Initialize DAAM
+        self.daam_segmenter = None
+        if self.use_daam:
+            if DAAMSegmenter is None:
+                raise ImportError("Could not import DAAMSegmenter. Ensure scripts/daam_segmentation.py exists.")
+            print(f"[evaluator] Initializing DAAMSegmenter ({daam_model_id})...")
+            self.daam_segmenter = DAAMSegmenter(model_id=daam_model_id, device=device)
         
         # Load dataset
         self.f = h5py.File(dataset_file, 'r')
@@ -829,15 +847,19 @@ class LeGradBaselineEvaluator:
                     print(f"  CORRECT class: {correct_class}")
                     print(f"  CORRECT prompt: {correct_prompt}")
                 
-                def compute_metrics(text_emb_1x, method_name='legrad'):
-                    """Compute heatmap and metrics for standard LeGrad, GradCAM, or CheferCAM.
+                def compute_metrics(text_emb_1x, prompt_text=None, method_name='legrad'):
+                    """Compute heatmap and metrics for standard LeGrad, GradCAM, CheferCAM, or DAAM.
                     
-                    Matches benchmark_segmentation_v2.py's metric computation:
-                    - LeGrad: fixed 0.5 threshold, no re-normalization
-                    - CheferCAM: uses transformer_attribution (default) or attn_gradcam based on chefercam_method
-                    - GradCAM: mean threshold, normalization after resize
+                    Matches benchmark_segmentation_v2.py's metric computation.
                     """
-                    if self.use_chefercam:
+                    if self.use_daam:
+                        if prompt_text is None:
+                            raise ValueError("DAAM requires 'prompt_text' to be provided.")
+                        # DAAM returns heatmap in [0, 1] usually
+                        # Pass prompt "a {label}" or similar
+                        heatmap = self.daam_segmenter.predict(base_img, prompt_text, size=512)
+                        method_name = 'daam'
+                    elif self.use_chefercam:
                         if self.chefercam_method == 'transformer_attribution':
                             heatmap = compute_transformer_attribution(
                                 self.model, img_t, text_emb_1x,
@@ -922,7 +944,12 @@ class LeGradBaselineEvaluator:
 
                 
                 # === CORRECT PROMPT ===
-                inter_c, union_c, correct_c, label_c, ap_c, mx_c, mn_c, md_c, mi_c, auroc_c = compute_metrics(text_emb)
+                # Construct prompt strictly: "a {label}" or "a photo of a {label}"?
+                # Benchmark v2 uses `wnid_to_prompt[wnid]` which is "a {label}" usually.
+                # Here `self.wnid_to_prompt` has "a photo of a {label}.". 
+                # Let's use the one in `self.wnid_to_prompt`.
+                correct_prompt_str = self.wnid_to_prompt[wnid]
+                inter_c, union_c, correct_c, label_c, ap_c, mx_c, mn_c, md_c, mi_c, auroc_c = compute_metrics(text_emb, prompt_text=correct_prompt_str)
                 correct_results['inter'] = correct_results['inter'] + inter_c
                 correct_results['union'] = correct_results['union'] + union_c
                 correct_results['pixel_correct'] += correct_c
@@ -962,8 +989,9 @@ class LeGradBaselineEvaluator:
                     neg_emb = self.all_text_embs[neg_idx:neg_idx + 1]
                     neg_wnid = self.idx_to_wnid[neg_idx]
                     neg_class = self.wnid_to_classname[neg_wnid]
+                    neg_prompt_str = self.wnid_to_prompt[neg_wnid]
                     
-                    inter_w, union_w, correct_w, label_w, ap_w, mx_w, mn_w, md_w, mi_w, auroc_w = compute_metrics(neg_emb)
+                    inter_w, union_w, correct_w, label_w, ap_w, mx_w, mn_w, md_w, mi_w, auroc_w = compute_metrics(neg_emb, prompt_text=neg_prompt_str)
                     wrong_results['inter'] = wrong_results['inter'] + inter_w
                     wrong_results['union'] = wrong_results['union'] + union_w
                     wrong_results['pixel_correct'] += correct_w
@@ -1081,6 +1109,12 @@ def main():
     parser.add_argument('--transformer_attribution_start_layer', type=int, default=1,
                         help='Start layer for transformer attribution (default 1, as in reference)')
     
+    # DAAM settings
+    parser.add_argument('--use_daam', action='store_true',
+                        help='Use DAAM (Stable Diffusion Attention) instead of LeGrad')
+    parser.add_argument('--daam_model_id', type=str, default='Manojb/stable-diffusion-2-base',
+                        help='Stable Diffusion model ID for DAAM')
+    
     # Composite score calculation
     parser.add_argument('--composite_lambda', type=float, default=0.5,
                         help='Weight for wrong-prompt penalty in composite score')
@@ -1151,6 +1185,8 @@ def main():
         transformer_attribution_start_layer=args.transformer_attribution_start_layer,
         threshold_mode=args.threshold_mode,
         fixed_threshold=args.fixed_threshold,
+        use_daam=args.use_daam,
+        daam_model_id=args.daam_model_id,
     )
     
     # Run evaluation

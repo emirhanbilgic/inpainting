@@ -198,3 +198,4 @@ outputs/segmentation_vis_v2/seg_vis_0001.png
 .gitignore
 outputs/segmentation_vis_v2/seg_vis_0000.png
 outputs/segmentation_vis_v2/seg_vis_0002.png
+test_daam_baseline.json
