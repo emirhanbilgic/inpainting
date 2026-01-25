@@ -34,27 +34,15 @@ class DAAMSegmenter:
     def predict(self, image_pil, prompt, size=512):
         """
         Run DAAM on a real image by adding noise and tracing the restoration.
-        
-        Args:
-            image_pil: PIL Image
-            prompt: Text prompt (e.g. "a photo of a cat")
-            size: processing size (default 512 for SD)
-            
-        Returns:
-            heatmap: torch.Tensor [H_original, W_original] normalized to [0, 1]
         """
         w, h = image_pil.size
         
         # 1. Preprocess image for VAE
-        # Resize to 512x512 (standard for SD v2) implementation
         img_resized = image_pil.resize((size, size), resample=Image.BICUBIC)
         img_arr = np.array(img_resized).astype(np.float32) / 255.0
         img_arr = img_arr * 2.0 - 1.0  # [0, 1] -> [-1, 1]
         img_tensor = torch.from_numpy(img_arr).permute(2, 0, 1).unsqueeze(0).to(self.device).half()
-        # VAE expects float32 or float16 depending on model, usually float32 is safer unless fp16 model
-        # The pipeline is likely float32 unless specified otherwise. Let's match pipeline dtype.
-        dtype = self.pipeline.unet.dtype
-        img_tensor = img_tensor.to(dtype)
+        img_tensor = img_tensor.to(self.pipeline.unet.dtype)
 
         # 2. Encode to latents
         with torch.no_grad():
@@ -62,28 +50,15 @@ class DAAMSegmenter:
             latents = latents * 0.18215
 
         # 3. Add Noise
-        # Using timestep ~50 (out of 1000) or similar low noise level as per reference
-        # Reference uses index 49 out of 50 inference steps, which is very little noise?
-        # Actually in the reference 'run_daam_sd2.py': 
-        #   noise = randn_tensor(...)
-        #   init_latents = self.pipeline.scheduler.add_noise(init_latents, noise, timestep)
-        #   where timestep is gathered from scheduler.timesteps
-        # We will replicate a standard "add small noise" approach. 
-        # If we use the scheduler directly with integer timestep:
+        # Reference uses index 49/50 -> almost 0 noise.
+        # We'll use a very small timestep effectively.
         noise = torch.randn_like(latents)
-        # Timestep: Low noise to keep structure. Reference used index 1 (or close to 0) in reverse?
-        # Let's pick a timestep that corresponds to "almost clean". 
-        # Standard SD scheduler usually goes 999 -> 0. 
-        # A small timestep (e.g. 100) means little noise. 
-        # Reference used `timestep = torch.tensor([10], device=self.device)` sort of logic or 
-        # scheduler.timesteps[len(metrics)-1]. 
-        # Let's stick to a fixed small timestep for "segmentation of real image"
-        timestep = torch.tensor([50], device=self.device)  # 50/1000 is small noise
-        
+        # Using t=1 explicitly for low noise
+        timestep = torch.tensor([1], device=self.device)
         noisy_latents = self.scheduler.add_noise(latents, noise, timestep)
 
-        # 4. Prepare Embeddings
-        # We need the full prompt embedding
+        # 4. Prepare Embeddings with CFG (Guidance Scale 7.0)
+        # CFG requires concatenating conditioning and unconditional embeddings
         text_input = self.tokenizer(
             prompt,
             padding="max_length",
@@ -94,63 +69,90 @@ class DAAMSegmenter:
         with torch.no_grad():
             text_embeddings = self.text_encoder(text_input.input_ids.to(self.device))[0]
 
+        # Unconditional embedding (empty string)
+        max_length = text_input.input_ids.shape[-1]
+        uncond_input = self.tokenizer(
+            [""], padding="max_length", max_length=max_length, return_tensors="pt"
+        )
+        with torch.no_grad():
+            uncond_embeddings = self.text_encoder(uncond_input.input_ids.to(self.device))[0]
+            
+        # Cat for CFG
+        prompt_embeds = torch.cat([uncond_embeddings, text_embeddings])
+        latent_model_input = torch.cat([noisy_latents] * 2)
+
         # 5. Trace and Forward Pass
-        # We trace the pipeline, but we manually call unet to ensure we control inputs
-        # Actually daam.trace(pipeline) patches the UNet in the pipeline.
-        # So we can just call self.unet inside the context.
-        
         with trace(self.pipeline) as tc:
             with torch.no_grad():
+                # Perform forward pass with CFG inputs
                 _ = self.unet(
-                    noisy_latents,
+                    latent_model_input,
                     timestep,
-                    encoder_hidden_states=text_embeddings
+                    encoder_hidden_states=prompt_embeds
                 ).sample
             
             # 6. Extract Heatmap
-            # DAAM accumulates attention.
-            # We want the heatmap for the object class.
-            # The prompt is usually "a photo of a {class}". 
-            # We want the heat map for the class word.
-            # Simple heuristic: last word if it's "a photo of a {class}"
-            # Or we can just use the global heatmap if the prompt is specific.
-            # But the reference uses `compute_word_heat_map(concept_word)`.
+            # DAAM usually captures the conditional part (or both). 
+            # We want to focus on the concept tokens.
             
-            # Let's extract the object name from the prompt.
-            # Prompt format from benchmark: "a photo of a {class}."
-            # We can try to parse it or just take the global heatmap.
-            # If we take global, it highlights everything in prompt.
-            # Ideally we pass the concept word.
-            
-            # Attempt to parse concept from "a photo of a {class}."
+            # Extract concept from "a photo of a {class}" or just use last word
+            concept = ""
             if prompt.startswith("a photo of a "):
                 concept = prompt[len("a photo of a "):].strip(".").strip()
-            else:
-                # Fallback: use the whole prompt or last word
+            if not concept:
+                # heuristic: last word
                 concept = prompt.split()[-1]
 
             global_heat_map = tc.compute_global_heat_map()
-            # DAAM handles token matching. 
+            
+            heatmap = None
             try:
+                # Try exact concept match first
                 word_heat_map = global_heat_map.compute_word_heat_map(concept)
-                heatmap = word_heat_map.heatmap # [H, W] tensor
+                heatmap = word_heat_map.heatmap 
             except Exception:
-                # Fallback if specific word not found (e.g. tokenizer mismatch)
-                # GlobalHeatMap has .heat_maps which is [tokens, H, W]
-                # We average over all tokens to get a global attention map
-                # or we could attempt to partial match, but global average is a safe fallback
-                if hasattr(global_heat_map, 'heat_maps'):
-                    heatmap = global_heat_map.heat_maps.mean(0)
-                else:
-                    # Very old DAAM version fallback? 
-                    # But per checked source, heat_maps is the standard attribute.
-                    raise AttributeError("GlobalHeatMap missing 'heat_maps' attribute")
+                # Fallback: manually select tokens that are NOT special or "a", "photo", "of"
+                # This is much safer than global average
+                try:
+                    # Tokenize prompt to see indices
+                    tokens = self.tokenizer.encode(prompt)
+                    # common IDs: 49406 (start), 49407 (end), 320(a), 1125(photo), 539(of)
+                    # We want to avoid these if possible.
+                    
+                    # Alternatively, just grab the heatmaps for the concept words
+                    # Split concept into words (if multi-word class like "great white shark")
+                    sub_words = concept.split()
+                    sub_heatmaps = []
+                    for sw in sub_words:
+                        try:
+                            whm = global_heat_map.compute_word_heat_map(sw).heatmap
+                            sub_heatmaps.append(whm)
+                        except:
+                            pass
+                    
+                    if sub_heatmaps:
+                        # Average the heatmaps of the constituent words
+                        heatmap = torch.stack(sub_heatmaps).mean(0)
+                        
+                except Exception:
+                    pass
+
+            # Final Fallback: use average of last few tokens (likely the object)
+            if heatmap is None and hasattr(global_heat_map, 'heat_maps'):
+                 # heat_maps shape: [num_tokens, H, W]
+                 # The prompt is "a photo of a {class}". Class is at the end.
+                 # Skip start(0), a(1), photo(2), of(3), a(4)... class(5..N), end(-1)
+                 # So we take 5:-1
+                 if global_heat_map.heat_maps.shape[0] > 6:
+                     heatmap = global_heat_map.heat_maps[5:-1].mean(0)
+                 else:
+                     heatmap = global_heat_map.heat_maps.mean(0)
+            
+            if heatmap is None:
+                # Should not happen unless heat_maps is missing
+                 heatmap = torch.zeros((h, w))
 
         # 7. Post-process
-        # Heatmap is already 512x512 (default daam size matches latent*stride?) 
-        # Actually DAAM returns image-sized heatmap if configured, or latent sized.
-        # Let's interpolate to be safe and match input PIL size.
-        
         heatmap = heatmap.unsqueeze(0).unsqueeze(0).float() # [1, 1, H, W]
         heatmap = F.interpolate(heatmap, size=(h, w), mode='bilinear', align_corners=False)
         heatmap = heatmap.squeeze() # [h, w]
