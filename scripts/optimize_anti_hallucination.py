@@ -1219,7 +1219,7 @@ def main():
     parser.add_argument('--study_name', type=str, default='anti_hallucination_optimization')
     parser.add_argument('--storage', type=str, default=None, help='Optuna storage URL')
     parser.add_argument('--timeout', type=int, default=None, help='Timeout in seconds')
-    parser.add_argument('--n_jobs', type=int, default=1, help='Number of parallel jobs')
+    parser.add_argument('--n_jobs', type=int, default=4, help='Number of parallel jobs')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
     
     # Output
