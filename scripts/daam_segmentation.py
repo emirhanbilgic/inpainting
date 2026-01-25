@@ -11,6 +11,7 @@ except ImportError as e:
     StableDiffusionPipeline = None
     trace = None
 
+class DAAMSegmenter:
     def __init__(self, model_id="Manojb/stable-diffusion-2-base", device='cuda'):
         if StableDiffusionPipeline is None or trace is None:
             raise ImportError("Please install 'daam' and 'diffusers' to use DAAMSegmenter.")
