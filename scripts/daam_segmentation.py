@@ -73,8 +73,8 @@ class DAAMSegmenter:
         background_str = ", ".join([f"a {bc}" for bc in background_concepts])
         augmented_prompt = f"{prompt}, a {concept}, {background_str}"
         
-        # 4. Prepare Embeddings with CFG (Guidance Scale 7.0)
-        # Use ORIGINAL prompt for encoding and UNet (matching reference mismatch)
+        # 4. Prepare Embeddings WITHOUT CFG (Matching Reference)
+        # Reference implementation does NOT concat unconditional embeddings, effectively running guidance=1.0
         text_input = self.tokenizer(
             prompt,
             padding="max_length",
@@ -85,22 +85,15 @@ class DAAMSegmenter:
         with torch.no_grad():
             text_embeddings = self.text_encoder(text_input.input_ids.to(self.device))[0]
 
-        # Unconditional embedding (empty string)
-        max_length = text_input.input_ids.shape[-1]
-        uncond_input = self.tokenizer(
-            [""], padding="max_length", max_length=max_length, return_tensors="pt"
-        )
-        with torch.no_grad():
-            uncond_embeddings = self.text_encoder(uncond_input.input_ids.to(self.device))[0]
-            
-        # Cat for CFG
-        prompt_embeds = torch.cat([uncond_embeddings, text_embeddings])
-        latent_model_input = torch.cat([noisy_latents] * 2)
+        # No Unconditional embedding / No concatenation
+        # Reference runs UNet on single batch item (conditional only)
+        prompt_embeds = text_embeddings
+        latent_model_input = noisy_latents  # No concat with itself
 
         # 5. Trace and Forward Pass
         with trace(self.pipeline) as tc:
             with torch.no_grad():
-                # Perform forward pass with CFG inputs
+                # Perform forward pass (conditional only)
                 _ = self.unet(
                     latent_model_input,
                     timestep,
