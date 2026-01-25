@@ -18,7 +18,14 @@ class DAAMSegmenter:
             
         print(f"[DAAM] Loading Stable Diffusion pipeline: {model_id}...")
         self.device = device
-        self.pipeline = StableDiffusionPipeline.from_pretrained(model_id).to(device)
+        # Use token=True to ensure we use the logged-in token. 
+        # Note: use_auth_token is deprecated in favor of token=True in newer diffusers, 
+        # but use_auth_token is what matched reference. Let's use `token=True` for modern diffusers.
+        try:
+            self.pipeline = StableDiffusionPipeline.from_pretrained(model_id, token=True).to(device)
+        except TypeError:
+             # Fallback for older diffusers
+            self.pipeline = StableDiffusionPipeline.from_pretrained(model_id, use_auth_token=True).to(device)
         self.pipeline.enable_attention_slicing()
         
         # We need the VAE and UNet for the manual forward pass
