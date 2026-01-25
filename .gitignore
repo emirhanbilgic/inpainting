@@ -194,3 +194,7 @@ test_gradcam_clip_verification.json
 test_gradcam_baseline.json
 test_gradcam_siglip.json
 results.json
+outputs/segmentation_vis_v2/seg_vis_0001.png
+.gitignore
+outputs/segmentation_vis_v2/seg_vis_0000.png
+outputs/segmentation_vis_v2/seg_vis_0002.png
