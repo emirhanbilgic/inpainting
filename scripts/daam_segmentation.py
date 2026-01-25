@@ -11,21 +11,14 @@ except ImportError as e:
     StableDiffusionPipeline = None
     trace = None
 
-class DAAMSegmenter:
-    def __init__(self, model_id="stabilityai/stable-diffusion-2-base", device='cuda'):
+    def __init__(self, model_id="Manojb/stable-diffusion-2-base", device='cuda'):
         if StableDiffusionPipeline is None or trace is None:
             raise ImportError("Please install 'daam' and 'diffusers' to use DAAMSegmenter.")
             
         print(f"[DAAM] Loading Stable Diffusion pipeline: {model_id}...")
         self.device = device
-        # Use token=True to ensure we use the logged-in token. 
-        # Note: use_auth_token is deprecated in favor of token=True in newer diffusers, 
-        # but use_auth_token is what matched reference. Let's use `token=True` for modern diffusers.
-        try:
-            self.pipeline = StableDiffusionPipeline.from_pretrained(model_id, token=True).to(device)
-        except TypeError:
-             # Fallback for older diffusers
-            self.pipeline = StableDiffusionPipeline.from_pretrained(model_id, use_auth_token=True).to(device)
+        # Use public mirror, no token needed
+        self.pipeline = StableDiffusionPipeline.from_pretrained(model_id).to(device)
         self.pipeline.enable_attention_slicing()
         
         # We need the VAE and UNet for the manual forward pass
