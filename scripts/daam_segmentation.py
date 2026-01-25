@@ -66,9 +66,12 @@ class DAAMSegmenter:
             concept = prompt.split()[-1]
 
         # Augment prompt to emphasize concept (Reference does this, potentially mismatching, but we align both)
-        # "a photo of a dog" -> "a photo of a dog, a dog"
-        # This focuses attention strongly on the class.
-        augmented_prompt = f"{prompt}, a {concept}"
+        # Reference adds background concepts which act as interference/distractors.
+        background_concepts = ["background", "floor", "tree", "person", "grass", "face"]
+        
+        # "a photo of a dog" -> "a photo of a dog, a dog, a background, a floor..."
+        background_str = ", ".join([f"a {bc}" for bc in background_concepts])
+        augmented_prompt = f"{prompt}, a {concept}, {background_str}"
         
         # 4. Prepare Embeddings with CFG (Guidance Scale 7.0)
         # Use ORIGINAL prompt for encoding and UNet (matching reference mismatch)
