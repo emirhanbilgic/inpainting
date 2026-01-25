@@ -57,10 +57,23 @@ class DAAMSegmenter:
         timestep = torch.tensor([1], device=self.device)
         noisy_latents = self.scheduler.add_noise(latents, noise, timestep)
 
+        # Extract concept from "a photo of a {class}" or just use last word
+        concept = ""
+        if prompt.startswith("a photo of a "):
+            concept = prompt[len("a photo of a "):].strip(".").strip()
+        if not concept:
+            # heuristic: last word
+            concept = prompt.split()[-1]
+
+        # Augment prompt to emphasize concept (Reference does this, potentially mismatching, but we align both)
+        # "a photo of a dog" -> "a photo of a dog, a dog"
+        # This focuses attention strongly on the class.
+        augmented_prompt = f"{prompt}, a {concept}"
+        
         # 4. Prepare Embeddings with CFG (Guidance Scale 7.0)
-        # CFG requires concatenating conditioning and unconditional embeddings
+        # Use AUGMENTED prompt for both encoding and UNet
         text_input = self.tokenizer(
-            prompt,
+            augmented_prompt,
             padding="max_length",
             max_length=self.tokenizer.model_max_length,
             truncation=True,
@@ -92,17 +105,7 @@ class DAAMSegmenter:
                 ).sample
             
             # 6. Extract Heatmap
-            # DAAM usually captures the conditional part (or both). 
-            # We want to focus on the concept tokens.
-            
-            # Extract concept from "a photo of a {class}" or just use last word
-            concept = ""
-            if prompt.startswith("a photo of a "):
-                concept = prompt[len("a photo of a "):].strip(".").strip()
-            if not concept:
-                # heuristic: last word
-                concept = prompt.split()[-1]
-
+            # Use augmented_prompt for decoding
             global_heat_map = tc.compute_global_heat_map()
             
             heatmap = None
