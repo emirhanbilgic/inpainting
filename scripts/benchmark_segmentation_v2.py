@@ -676,7 +676,8 @@ def main():
     wnid_to_prompt = {}
     for wnid in unique_wnids:
         class_label = wnid_to_label.get(wnid) or get_synset_name(wnid)
-        wnid_to_prompt[wnid] = f"a photo of a {class_label}."
+        # Reference uses simpler prompt: "a {label}"
+        wnid_to_prompt[wnid] = f"a {class_label}"
 
     all_prompts = [wnid_to_prompt[w] for w in unique_wnids]
     wnid_to_idx = {w: i for i, w in enumerate(unique_wnids)}

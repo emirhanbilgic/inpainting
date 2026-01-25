@@ -160,7 +160,8 @@ class DAAMSegmenter:
 
         # 7. Post-process
         heatmap = heatmap.unsqueeze(0).unsqueeze(0).float() # [1, 1, H, W]
-        heatmap = F.interpolate(heatmap, size=(h, w), mode='bilinear', align_corners=False)
+        # Reference uses 'nearest' neighbor interpolation which gives blocky results -> lower mIoU
+        heatmap = F.interpolate(heatmap, size=(h, w), mode='nearest')
         heatmap = heatmap.squeeze() # [h, w]
         
         # Normalize [0, 1]
