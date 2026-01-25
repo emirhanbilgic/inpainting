@@ -637,8 +637,18 @@ def main():
 
     # Open dataset
     print(f"Opening dataset {args.mat_file}...")
+    mat_path = args.mat_file
+    if not os.path.exists(mat_path):
+        # Fallback for Kaggle
+        kaggle_path = "/kaggle/input/mat-data/gtsegs_ijcv.mat"
+        if os.path.exists(kaggle_path):
+            print(f"Dataset not found at {mat_path}, using fallback: {kaggle_path}")
+            mat_path = kaggle_path
+        else:
+             print(f"Warning: Dataset not found at {mat_path} and fallback {kaggle_path} also missing.")
+
     try:
-        f = h5py.File(args.mat_file, 'r')
+        f = h5py.File(mat_path, 'r')
         imgs_refs = f['value/img']
         gts_refs = f['value/gt']
         targets_refs = f['value/target']
