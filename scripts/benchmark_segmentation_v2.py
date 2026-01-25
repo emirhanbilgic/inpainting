@@ -60,7 +60,8 @@ IMAGENET_CLASS_INDEX_URL = (
 
 try:
     from daam_segmentation import DAAMSegmenter
-except ImportError:
+except ImportError as e:
+    print(f"Warning: Failed to import DAAMSegmenter. Error: {e}")
     DAAMSegmenter = None
 
 
