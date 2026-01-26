@@ -2,6 +2,10 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 import numpy as np
+import warnings
+
+# Suppress the specific FutureWarning from daam/utils.py regarding torch.cuda.amp.autocast
+warnings.filterwarnings("ignore", category=FutureWarning, message=".*torch.cuda.amp.autocast.*")
 
 try:
     from diffusers import StableDiffusionPipeline
