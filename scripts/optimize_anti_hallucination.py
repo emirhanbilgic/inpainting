@@ -1146,6 +1146,10 @@ class AntiHallucinationObjective:
         wn_use_siblings = trial.suggest_categorical('wn_use_siblings', [True, False])
         dict_include_prompts = trial.suggest_categorical('dict_include_prompts', [True, False])
         
+        # Constraint: At least one dictionary source must be used
+        if not (wn_use_synonyms or wn_use_hypernyms or wn_use_hyponyms or wn_use_siblings or dict_include_prompts):
+            raise optuna.TrialPruned()
+        
         # Check if we are using LeGrad (no gradcam, no chefercam)
         is_legrad = not (self.use_gradcam or self.use_chefercam)
         
