@@ -1097,6 +1097,8 @@ class AntiHallucinationObjective:
                 except Exception as e:
                     if attempt < 2:
                         print(f"Retrying idx {idx} (attempt {attempt+1})... Error: {e}")
+                        import traceback
+                        traceback.print_exc()
                         time.sleep(1)
                         continue
                     print(f"Error processing idx {idx} (wnid: {self.wnids_in_seg[idx]}): {e}")
