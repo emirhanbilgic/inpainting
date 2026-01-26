@@ -107,14 +107,20 @@ def omp_sparse_residual(x_1x: torch.Tensor, D: torch.Tensor, max_atoms: int = 8,
     """
     if D is None or D.numel() == 0 or max_atoms is None or max_atoms <= 0:
         return F.normalize(x_1x, dim=-1)
-    x = x_1x.clone()  # [1, d]
-    K = D.shape[0]
+    # Force CPU execution for OMP loop to avoid CUDA lazy wrapper / context errors
+    device = x_1x.device
+    dtype = x_1x.dtype
+    x = x_1x.clone().cpu().float()  # [1, d]
+    D_cpu = D.cpu().float()         # [K, d]
+    
+    K = D_cpu.shape[0]
     max_atoms = int(min(max_atoms, K))
     selected = []
     r = x.clone()  # residual starts as x
+    
     for _ in range(max_atoms):
         # correlations with residual
-        c = (r @ D.t()).squeeze(0)  # [K]
+        c = (r @ D_cpu.t()).squeeze(0)  # [K]
         c_abs = c.abs()
         # mask already selected
         if len(selected) > 0:
@@ -124,22 +130,32 @@ def omp_sparse_residual(x_1x: torch.Tensor, D: torch.Tensor, max_atoms: int = 8,
             break
         selected.append(idx)
         # Solve least squares on selected atoms: s = argmin ||x - s^T D_S||^2
-        D_S = D[selected, :]  # [t, d]
+        D_S = D_cpu[selected, :]  # [t, d]
         G = D_S @ D_S.t()     # [t, t]
         b = (D_S @ x.t())     # [t, 1]
-        # Regularize G slightly for stability
-        I = torch.eye(G.shape[0], device=G.device, dtype=G.dtype)
-        # Use Cholesky solve for better stability and to avoid "lazy wrapper" errors
-        L = torch.linalg.cholesky(G + 1e-6 * I)
-        s = torch.cholesky_solve(b, L)  # [t,1]
-        x_hat = (s.t() @ D_S).to(x.dtype)  # [1, d]
+        
+        # Use simple solve on CPU (stable enough for small matrices)
+        I = torch.eye(G.shape[0])
+        # Try-catch specifically for singular matrix cases
+        try:
+            L = torch.linalg.cholesky(G + 1e-6 * I)
+            s = torch.cholesky_solve(b, L)
+        except RuntimeError:
+             # Fallback to slower but robust lstsq if Cholesky fails
+            s = torch.linalg.lstsq(G + 1e-6 * I, b).solution
+            
+        x_hat = (s.t() @ D_S)  # [1, d]
         r = (x - x_hat)
+        
         # Early stop if residual very small
         if float(torch.norm(r) <= tol):
             break
+            
     # Return normalized residual (fallback to x if degenerate)
+    # Move back to original device/dtype
+    r = r.to(device=device, dtype=dtype)
     if torch.norm(r) <= tol:
-        return F.normalize(x, dim=-1)
+        return F.normalize(x_1x, dim=-1)
     return F.normalize(r, dim=-1)
 
 
