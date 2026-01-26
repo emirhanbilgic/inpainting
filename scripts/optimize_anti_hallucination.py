@@ -398,7 +398,10 @@ def compute_chefercam(model, image, text_emb_1x):
         s = torch.sum(one_hot * sim)
         
         # Compute gradient w.r.t. attention weights
-        grad = torch.autograd.grad(s, [attn_weights], retain_graph=False, create_graph=False)[0]
+        grad = torch.autograd.grad(s, [attn_weights], retain_graph=False, create_graph=False, allow_unused=True)[0]
+        
+        if grad is None:
+            grad = torch.zeros_like(attn_weights)
         
         # Reshape: [bsz*heads, N, N] -> [bsz, heads, N, N]
         grad = grad.view(bsz, num_heads, seq_len, seq_len)
@@ -662,11 +665,14 @@ def compute_transformer_attribution(model, image, text_emb_1x, start_layer=1):
         s = torch.sum(one_hot * sim)
         
         # Compute gradients for all attention layers
-        grads = torch.autograd.grad(s, all_attn_weights, retain_graph=False, create_graph=False)
+        grads = torch.autograd.grad(s, all_attn_weights, retain_graph=False, create_graph=False, allow_unused=True)
         
         # Process each layer's gradient-weighted attention
         layer_contributions = []
         for i, (grad, attn_weights) in enumerate(zip(grads, all_attn_weights)):
+            if grad is None:
+                grad = torch.zeros_like(attn_weights)
+
             num_heads = blocks[start_layer + i].attn.num_heads
             
             # Reshape: [bsz*heads, N, N] -> [bsz, heads, N, N] if needed
