@@ -213,7 +213,9 @@ class LeWrapper(nn.Module):
         
         # Compute gradients with respect to intermediate tokens
         self.visual.zero_grad()
-        grads = torch.autograd.grad(s, [intermediate_tokens], retain_graph=False)[0]  # [num_tokens, batch, dim]
+        grads = torch.autograd.grad(s, [intermediate_tokens], retain_graph=False, allow_unused=True)[0]  # [num_tokens, batch, dim]
+        if grads is None:
+            grads = torch.zeros_like(intermediate_tokens)
         
         # Permute to [batch, num_tokens, dim]
         grads = grads.permute(1, 0, 2)
@@ -298,7 +300,9 @@ class LeWrapper(nn.Module):
         
         # Compute gradients
         self.zero_grad()
-        grads = torch.autograd.grad(s, [intermediate_tokens], retain_graph=False)[0]
+        grads = torch.autograd.grad(s, [intermediate_tokens], retain_graph=False, allow_unused=True)[0]
+        if grads is None:
+            grads = torch.zeros_like(intermediate_tokens)
         
         # Average gradients across tokens
         w = grads.mean(dim=1, keepdim=True)  # [batch, 1, dim]
@@ -369,7 +373,9 @@ class LeWrapper(nn.Module):
         
         # Compute gradients
         self.visual.zero_grad()
-        grads = torch.autograd.grad(s, [intermediate_tokens], retain_graph=False)[0]
+        grads = torch.autograd.grad(s, [intermediate_tokens], retain_graph=False, allow_unused=True)[0]
+        if grads is None:
+            grads = torch.zeros_like(intermediate_tokens)
         
         # Permute to [batch, num_tokens, dim]
         grads = grads.permute(1, 0, 2)
@@ -442,8 +448,10 @@ class LeWrapper(nn.Module):
             attn_map = blocks_list[self.starting_depth + layer].attn.attention_maps  # [b, num_heads, N, N]
 
             # -------- Get explainability map --------
-            grad = torch.autograd.grad(one_hot, [attn_map], retain_graph=True, create_graph=True)[
+            grad = torch.autograd.grad(one_hot, [attn_map], retain_graph=True, create_graph=True, allow_unused=True)[
                 0]  # [batch_size * num_heads, N, N]
+            if grad is None:
+                grad = torch.zeros_like(attn_map)
             grad = rearrange(grad, '(b h) n m -> b h n m', b=num_prompts)  # separate batch and attn heads
             grad = torch.clamp(grad, min=0.)
 
@@ -493,8 +501,10 @@ class LeWrapper(nn.Module):
             attn_map = self.visual.attn_pool.attn.attention_maps  # [num_heads, num_latent, num_patch]
 
             # -------- Get explainability map --------
-            grad = torch.autograd.grad(one_hot, [attn_map], retain_graph=True, create_graph=True)[
+            grad = torch.autograd.grad(one_hot, [attn_map], retain_graph=True, create_graph=True, allow_unused=True)[
                 0]  # [num_heads, num_latent, num_patch]
+            if grad is None:
+                grad = torch.zeros_like(attn_map)
             grad = torch.clamp(grad, min=0.)
 
             image_relevance = grad.mean(dim=0)[0, 1:]  # average attn over heads + select first latent
@@ -547,7 +557,9 @@ class LeWrapper(nn.Module):
             sim = text_embedding @ pooled_feat.transpose(-1, -2)  # [num_mask, num_mask]
             one_hot = torch.sum(sim)
             grad = torch.autograd.grad(one_hot, [self.visual.trunk.attn_pool.attn_probs], retain_graph=True,
-                                       create_graph=True)[0]
+                                       create_graph=True, allow_unused=True)[0]
+            if grad is None:
+                grad = torch.zeros_like(self.visual.trunk.attn_pool.attn_probs)
             grad = torch.clamp(grad, min=0.)
 
             image_relevance = grad.mean(dim=1)[:, 0]  # average attn over [CLS] + patch tokens
@@ -560,7 +572,9 @@ class LeWrapper(nn.Module):
                 one_hot_empty = torch.sum(sim_empty)
                 grad_empty = \
                     torch.autograd.grad(one_hot_empty, [self.visual.trunk.attn_pool.attn_probs], retain_graph=True,
-                                        create_graph=True)[0]
+                                        create_graph=True, allow_unused=True)[0]
+                if grad_empty is None:
+                    grad_empty = torch.zeros_like(self.visual.trunk.attn_pool.attn_probs)
                 grad_empty = torch.clamp(grad_empty, min=0.)
 
                 image_relevance_empty = grad_empty.mean(dim=1)[:, 0]  # average attn over heads + select query's row
