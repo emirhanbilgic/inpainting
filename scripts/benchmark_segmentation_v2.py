@@ -48,6 +48,19 @@ except ImportError:
 from legrad import LeWrapper, LePreprocess
 import open_clip
 
+# Import sparse encoding helpers
+try:
+    from sparse_encoding import (
+        omp_sparse_residual,
+        wordnet_neighbors_configured,
+    )
+except ImportError:
+    # If running from root without proper path setup, try relative import or just warn
+    print("Warning: Could not import sparse_encoding. Sparse LeGrad may fail.")
+    omp_sparse_residual = None
+    wordnet_neighbors_configured = None
+
+
 
 
 # Constants
@@ -544,6 +557,87 @@ def compute_legrad_for_embedding(model, image, text_emb_1x):
     return logits
 
 
+def build_sparse_embedding_v2(
+    target_wnid, 
+    target_text_emb_1x, 
+    all_text_embs, 
+    unique_wnids, 
+    wnid_to_label, 
+    tokenizer, 
+    model, 
+    args
+):
+    """
+    Build sparse residual embedding similar to optimize_anti_hallucination.py.
+    """
+    if omp_sparse_residual is None:
+        raise ImportError("sparse_encoding module not found, cannot build sparse embedding.")
+
+    parts = []
+    
+    # 1) Other class prompts
+    # Find index of target in the global list
+    try:
+        emb_idx = unique_wnids.index(target_wnid)
+    except ValueError:
+        emb_idx = None
+
+    if args.dict_include_prompts:
+        if len(unique_wnids) > 1 and emb_idx is not None:
+             if emb_idx > 0:
+                 parts.append(all_text_embs[:emb_idx])
+             if emb_idx + 1 < len(unique_wnids):
+                 parts.append(all_text_embs[emb_idx + 1:])
+        elif emb_idx is None:
+             # Just use all if target not in list (shouldn't happen in standard bench)
+             parts.append(all_text_embs)
+
+    # 2) WordNet neighbors
+    use_wn = any([args.wn_use_synonyms, args.wn_use_hypernyms, args.wn_use_hyponyms, args.wn_use_siblings])
+    if use_wn:
+        # Get class name
+        target_class_name = wnid_to_label.get(target_wnid) or get_synset_name(target_wnid)
+        
+        target_prompt = f"a photo of a {target_class_name}."
+        raw_neighbors = wordnet_neighbors_configured(
+            target_class_name,
+            use_synonyms=args.wn_use_synonyms,
+            use_hypernyms=args.wn_use_hypernyms,
+            use_hyponyms=args.wn_use_hyponyms,
+            use_siblings=args.wn_use_siblings,
+            limit_per_relation=8,
+        )
+        if raw_neighbors:
+            neighbor_prompts = [target_prompt.replace(target_class_name, w) for w in raw_neighbors]
+            n_tok = tokenizer(neighbor_prompts).to(args.device)
+            with torch.no_grad():
+                n_emb = model.encode_text(n_tok)
+                n_emb = F.normalize(n_emb, dim=-1)
+            parts.append(n_emb)
+
+    # Combine dictionary
+    if len(parts) > 0:
+        D = torch.cat(parts, dim=0)
+        D = F.normalize(D, dim=-1)
+
+        # Filter by cosine similarity
+        if 0.0 < args.max_dict_cos_sim < 1.0:
+            sim = (D @ target_text_emb_1x.t()).squeeze(-1).abs()
+            keep = sim < args.max_dict_cos_sim
+            D = D[keep]
+    else:
+        D = target_text_emb_1x.new_zeros((0, target_text_emb_1x.shape[-1]))
+
+    # OMP sparse residual
+    if D.shape[0] == 0:
+        # Fallback if dictionary is empty
+        return target_text_emb_1x
+
+    sparse_1x = omp_sparse_residual(target_text_emb_1x, D, max_atoms=args.atoms)
+    return sparse_1x
+
+
+
 
 # =============================================================================
 # Main Evaluation
@@ -585,6 +679,16 @@ def main():
     # Visualization
     parser.add_argument('--vis_first_k', type=int, default=0)
     parser.add_argument('--vis_output_dir', type=str, default='outputs/segmentation_vis_v2')
+
+    # Sparse / LeGrad optimization parameters
+    parser.add_argument('--wn_use_synonyms', type=int, default=0)
+    parser.add_argument('--wn_use_hypernyms', type=int, default=0)
+    parser.add_argument('--wn_use_hyponyms', type=int, default=0)
+    parser.add_argument('--wn_use_siblings', type=int, default=0)
+    parser.add_argument('--dict_include_prompts', type=int, default=1)
+    parser.add_argument('--atoms', type=int, default=8)
+    parser.add_argument('--max_dict_cos_sim', type=float, default=1.0)
+
     
     args = parser.parse_args()
 
@@ -677,7 +781,7 @@ def main():
     for wnid in unique_wnids:
         class_label = wnid_to_label.get(wnid) or get_synset_name(wnid)
         # Reference uses simpler prompt: "a {label}"
-        wnid_to_prompt[wnid] = f"a {class_label}"
+        wnid_to_prompt[wnid] = f"a photo of a {class_label}."
 
     all_prompts = [wnid_to_prompt[w] for w in unique_wnids]
     wnid_to_idx = {w: i for i, w in enumerate(unique_wnids)}
@@ -738,7 +842,28 @@ def main():
             
             # --- ORIGINAL (LeGrad) ---
             if 'original' in methods:
-                heatmap = compute_legrad_for_embedding(model, img_t, text_emb_1x)
+                 # Check if we should use sparse embedding
+                use_sparse = (
+                    args.wn_use_synonyms or args.wn_use_hypernyms or
+                    args.wn_use_hyponyms or args.wn_use_siblings or
+                    not args.dict_include_prompts or
+                    args.atoms != 8 or args.max_dict_cos_sim < 0.99
+                )
+                
+                final_emb = text_emb_1x
+                if use_sparse:
+                     final_emb = build_sparse_embedding_v2(
+                        target_wnid=wnid,
+                        target_text_emb_1x=text_emb_1x,
+                        all_text_embs=all_text_embs,
+                        unique_wnids=unique_wnids,
+                        wnid_to_label=wnid_to_label,
+                        tokenizer=tokenizer,
+                        model=model,
+                        args=args
+                     )
+                
+                heatmap = compute_legrad_for_embedding(model, img_t, final_emb)
                 heatmap_resized = F.interpolate(
                     heatmap.view(1, 1, H_feat, W_feat),
                     size=(H_gt, W_gt),

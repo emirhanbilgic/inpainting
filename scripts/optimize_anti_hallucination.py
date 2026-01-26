@@ -24,6 +24,7 @@ Usage:
     python scripts/optimize_anti_hallucination.py --n_trials 50 --composite_lambda 1.0
 """
 
+import time
 import sys
 import os
 import argparse
@@ -115,6 +116,39 @@ def get_superclass(class_idx: int) -> str:
         if class_idx in indices:
             return superclass
     return 'other'
+
+
+# Defined baselines for relative optimization
+BASELINES = {
+    'CLIP': {
+        'LeGrad': {
+            'correct': {'miou': 59.98, 'acc': 78.67, 'map': 83.86},
+            'wrong': {'miou': 41.28, 'acc': 64.45, 'map': 68.03}
+        },
+        'GradCAM': {
+            'correct': {'miou': 44.68, 'acc': 69.48, 'map': 74.94},
+            'wrong': {'miou': 33.78, 'acc': 58.80, 'map': 67.36}
+        },
+        'CheferCAM': {
+            'correct': {'miou': 48.71, 'acc': 69.32, 'map': 80.36},
+            'wrong': {'miou': 44.95, 'acc': 66.51, 'map': 78.77}
+        }
+    },
+    'SigLIP': {
+        'LeGrad': {
+            'correct': {'miou': 49.51, 'acc': 73.28, 'map': 78.32},
+            'wrong': {'miou': 37.58, 'acc': 63.70, 'map': 63.95}
+        },
+        'GradCAM': {
+            'correct': {'miou': 38.69, 'acc': 57.78, 'map': 71.43},
+            'wrong': {'miou': 34.66, 'acc': 54.55, 'map': 68.50}
+        },
+        'CheferCAM': {
+            'correct': {'miou': 43.38, 'acc': 65.39, 'map': 77.25},
+            'wrong': {'miou': 41.69, 'acc': 63.71, 'map': 76.09}
+        }
+    }
+}
 
 
 def get_distant_class_indices(class_idx: int, all_wnids: list, wnid_to_idx: dict) -> list:
@@ -722,6 +756,7 @@ class AntiHallucinationObjective:
         transformer_attribution_start_layer=1,
         threshold_mode='mean',
         fixed_threshold=0.5,
+        baseline_metrics=None,
     ):
         self.model = model
         self.tokenizer = tokenizer
@@ -740,6 +775,7 @@ class AntiHallucinationObjective:
         self.transformer_attribution_start_layer = transformer_attribution_start_layer
         self.threshold_mode = threshold_mode
         self.fixed_threshold = fixed_threshold
+        self.baseline_metrics = baseline_metrics
         
         # Load dataset
         self.f = h5py.File(dataset_file, 'r')
@@ -843,213 +879,221 @@ class AntiHallucinationObjective:
             iterator = tqdm(iterator, desc="Evaluating")
         
         for idx in iterator:
-            try:
-                # Load Image
-                img_ref = self.imgs_refs[idx, 0]
-                img_obj = np.array(self.f[img_ref])
-                img_np = img_obj.transpose(2, 1, 0)
-                base_img = Image.fromarray(img_np)
+            for attempt in range(3):
+                try:
+                    # Load Image
+                    img_ref = self.imgs_refs[idx, 0]
+                    img_obj = np.array(self.f[img_ref])
+                    img_np = img_obj.transpose(2, 1, 0)
+                    base_img = Image.fromarray(img_np)
                 
-                img_t = self.preprocess(base_img).unsqueeze(0).to(self.device)
-                H_feat, W_feat = img_t.shape[-2:]
+                    img_t = self.preprocess(base_img).unsqueeze(0).to(self.device)
+                    H_feat, W_feat = img_t.shape[-2:]
                 
-                # Load GT
-                gt_ref = self.gts_refs[idx, 0]
-                gt_wrapper = self.f[gt_ref]
-                if gt_wrapper.dtype == 'object':
-                    real_gt_ref = gt_wrapper[0, 0]
-                    real_gt = np.array(self.f[real_gt_ref])
-                    gt_mask = real_gt.transpose(1, 0)
-                else:
-                    gt_mask = np.zeros((base_img.height, base_img.width), dtype=np.uint8)
-                
-                # Resize GT
-                gt_pil = Image.fromarray(gt_mask.astype(np.uint8))
-                target_resize = transforms.Resize(
-                    (self.image_size, self.image_size),
-                    interpolation=InterpolationMode.NEAREST,
-                )
-                gt_pil = target_resize(gt_pil)
-                gt_mask = np.array(gt_pil).astype(np.int32)
-                gt_tensor = torch.from_numpy(gt_mask).long()
-                H_gt, W_gt = gt_mask.shape
-                
-                # Get class info
-                wnid = self.wnids_in_seg[idx]
-                class_name = self.wnid_to_classname[wnid]
-                prompt = self.wnid_to_prompt[wnid]
-                cls_idx = self.wnid_to_idx[wnid]
-                original_1x = self.all_text_embs[cls_idx:cls_idx + 1]
-                
-                # Build sparse dictionary
-                def build_sparse_embedding(text_emb_1x, target_class_name):
-                    """Build sparse residual embedding for a given text embedding."""
-                    parts = []
-                    
-                    # 1) Other class prompts
-                    emb_idx = None
-                    for i, w in enumerate(self.unique_wnids):
-                        if self.wnid_to_classname[w] == target_class_name:
-                            emb_idx = i
-                            break
-                    
-                    if dict_include_prompts and len(self.unique_wnids) > 1:
-                        if emb_idx is not None:
-                            if emb_idx > 0:
-                                parts.append(self.all_text_embs[:emb_idx])
-                            if emb_idx + 1 < len(self.unique_wnids):
-                                parts.append(self.all_text_embs[emb_idx + 1:])
-                        else:
-                            parts.append(self.all_text_embs)
-                    
-                    # 2) WordNet neighbors
-                    use_wn = any([wn_use_synonyms, wn_use_hypernyms, wn_use_hyponyms, wn_use_siblings])
-                    if use_wn:
-                        target_prompt = f"a photo of a {target_class_name}."
-                        raw_neighbors = wordnet_neighbors_configured(
-                            target_class_name,
-                            use_synonyms=wn_use_synonyms,
-                            use_hypernyms=wn_use_hypernyms,
-                            use_hyponyms=wn_use_hyponyms,
-                            use_siblings=wn_use_siblings,
-                            limit_per_relation=8,
-                        )
-                        if raw_neighbors:
-                            neighbor_prompts = [target_prompt.replace(target_class_name, w) for w in raw_neighbors]
-                            n_tok = self.tokenizer(neighbor_prompts).to(self.device)
-                            with torch.no_grad():
-                                n_emb = self.model.encode_text(n_tok)
-                                n_emb = F.normalize(n_emb, dim=-1)
-                            parts.append(n_emb)
-                    
-                    # Combine dictionary
-                    if len(parts) > 0:
-                        D = torch.cat(parts, dim=0)
-                        D = F.normalize(D, dim=-1)
-                        
-                        # Filter by cosine similarity
-                        if 0.0 < max_dict_cos_sim < 1.0:
-                            sim = (D @ text_emb_1x.t()).squeeze(-1).abs()
-                            keep = sim < max_dict_cos_sim
-                            D = D[keep]
+                    # Load GT
+                    gt_ref = self.gts_refs[idx, 0]
+                    gt_wrapper = self.f[gt_ref]
+                    if gt_wrapper.dtype == 'object':
+                        real_gt_ref = gt_wrapper[0, 0]
+                        real_gt = np.array(self.f[real_gt_ref])
+                        gt_mask = real_gt.transpose(1, 0)
                     else:
-                        D = text_emb_1x.new_zeros((0, text_emb_1x.shape[-1]))
-                    
-                    # OMP sparse residual
-                    sparse_1x = omp_sparse_residual(text_emb_1x, D, max_atoms=atoms)
-                    return sparse_1x
+                        gt_mask = np.zeros((base_img.height, base_img.width), dtype=np.uint8)
                 
-                def compute_metrics(text_emb_1x, target_class_name):
-                    """Compute heatmap and metrics for a given embedding."""
-                    sparse_1x = build_sparse_embedding(text_emb_1x, target_class_name)
+                    # Resize GT
+                    gt_pil = Image.fromarray(gt_mask.astype(np.uint8))
+                    target_resize = transforms.Resize(
+                        (self.image_size, self.image_size),
+                        interpolation=InterpolationMode.NEAREST,
+                    )
+                    gt_pil = target_resize(gt_pil)
+                    gt_mask = np.array(gt_pil).astype(np.int32)
+                    gt_tensor = torch.from_numpy(gt_mask).long()
+                    H_gt, W_gt = gt_mask.shape
+                
+                    # Get class info
+                    wnid = self.wnids_in_seg[idx]
+                    class_name = self.wnid_to_classname[wnid]
+                    prompt = self.wnid_to_prompt[wnid]
+                    cls_idx = self.wnid_to_idx[wnid]
+                    original_1x = self.all_text_embs[cls_idx:cls_idx + 1]
+                
+                    # Build sparse dictionary
+                    def build_sparse_embedding(text_emb_1x, target_class_name):
+                        """Build sparse residual embedding for a given text embedding."""
+                        parts = []
                     
-                    method_name = 'legrad'
-                    # Choose between CheferCAM, GradCAM and LeGrad (sparse)
-                    if self.use_chefercam:
-                        if self.chefercam_method == 'transformer_attribution':
-                            heatmap = compute_transformer_attribution(
-                                self.model, img_t, sparse_1x, start_layer=self.transformer_attribution_start_layer
+                        # 1) Other class prompts
+                        emb_idx = None
+                        for i, w in enumerate(self.unique_wnids):
+                            if self.wnid_to_classname[w] == target_class_name:
+                                emb_idx = i
+                                break
+                    
+                        if dict_include_prompts and len(self.unique_wnids) > 1:
+                            if emb_idx is not None:
+                                if emb_idx > 0:
+                                    parts.append(self.all_text_embs[:emb_idx])
+                                if emb_idx + 1 < len(self.unique_wnids):
+                                    parts.append(self.all_text_embs[emb_idx + 1:])
+                            else:
+                                parts.append(self.all_text_embs)
+                    
+                        # 2) WordNet neighbors
+                        use_wn = any([wn_use_synonyms, wn_use_hypernyms, wn_use_hyponyms, wn_use_siblings])
+                        if use_wn:
+                            target_prompt = f"a photo of a {target_class_name}."
+                            raw_neighbors = wordnet_neighbors_configured(
+                                target_class_name,
+                                use_synonyms=wn_use_synonyms,
+                                use_hypernyms=wn_use_hypernyms,
+                                use_hyponyms=wn_use_hyponyms,
+                                use_siblings=wn_use_siblings,
+                                limit_per_relation=8,
                             )
+                            if raw_neighbors:
+                                neighbor_prompts = [target_prompt.replace(target_class_name, w) for w in raw_neighbors]
+                                n_tok = self.tokenizer(neighbor_prompts).to(self.device)
+                                with torch.no_grad():
+                                    n_emb = self.model.encode_text(n_tok)
+                                    n_emb = F.normalize(n_emb, dim=-1)
+                                parts.append(n_emb)
+                    
+                        # Combine dictionary
+                        if len(parts) > 0:
+                            D = torch.cat(parts, dim=0)
+                            D = F.normalize(D, dim=-1)
+                        
+                            # Filter by cosine similarity
+                            if 0.0 < max_dict_cos_sim < 1.0:
+                                sim = (D @ text_emb_1x.t()).squeeze(-1).abs()
+                                keep = sim < max_dict_cos_sim
+                                D = D[keep]
                         else:
-                            heatmap = compute_chefercam(self.model, img_t, sparse_1x)
-                        method_name = 'chefercam'
-                    elif self.use_gradcam:
-                        heatmap = compute_gradcam_heatmap(self.model, img_t, sparse_1x, layer_index=self.gradcam_layer)
-                        method_name = 'gradcam'
-                    else:
-                        heatmap = compute_map_for_embedding(self.model, img_t, sparse_1x)
+                            D = text_emb_1x.new_zeros((0, text_emb_1x.shape[-1]))
+                    
+                        # OMP sparse residual
+                        sparse_1x = omp_sparse_residual(text_emb_1x, D, max_atoms=atoms)
+                        return sparse_1x
+                
+                    def compute_metrics(text_emb_1x, target_class_name):
+                        """Compute heatmap and metrics for a given embedding."""
+                        sparse_1x = build_sparse_embedding(text_emb_1x, target_class_name)
+                    
                         method_name = 'legrad'
+                        # Choose between CheferCAM, GradCAM and LeGrad (sparse)
+                        if self.use_chefercam:
+                            if self.chefercam_method == 'transformer_attribution':
+                                heatmap = compute_transformer_attribution(
+                                    self.model, img_t, sparse_1x, start_layer=self.transformer_attribution_start_layer
+                                )
+                            else:
+                                heatmap = compute_chefercam(self.model, img_t, sparse_1x)
+                            method_name = 'chefercam'
+                        elif self.use_gradcam:
+                            heatmap = compute_gradcam_heatmap(self.model, img_t, sparse_1x, layer_index=self.gradcam_layer)
+                            method_name = 'gradcam'
+                        else:
+                            heatmap = compute_map_for_embedding(self.model, img_t, sparse_1x)
+                            method_name = 'legrad'
                     
-                    # Get actual heatmap dimensions
-                    H_hm, W_hm = heatmap.shape[-2], heatmap.shape[-1]
+                        # Get actual heatmap dimensions
+                        H_hm, W_hm = heatmap.shape[-2], heatmap.shape[-1]
 
-                    # Resize heatmap to GT size FIRST (matching baseline)
-                    heatmap_resized = F.interpolate(
-                        heatmap.view(1, 1, H_hm, W_hm),
-                        size=(H_gt, W_gt),
-                        mode='bilinear',
-                        align_corners=False
-                    ).squeeze()
+                        # Resize heatmap to GT size FIRST (matching baseline)
+                        heatmap_resized = F.interpolate(
+                            heatmap.view(1, 1, H_hm, W_hm),
+                            size=(H_gt, W_gt),
+                            mode='bilinear',
+                            align_corners=False
+                        ).squeeze()
                     
-                    # Normalize based on method (matching baseline)
-                    if method_name == 'legrad':
-                         # LeGrad is already clamped [0,1], do not re-minmax normalize 
-                         # (preserves absolute confidence)
-                         heatmap_norm = heatmap_resized
-                    else:
-                         # GradCAM/CheferCAM need re-normalization after interpolation
-                         heatmap_norm = (heatmap_resized - heatmap_resized.min()) / (heatmap_resized.max() - heatmap_resized.min() + 1e-8)
+                        # Normalize based on method (matching baseline)
+                        if method_name == 'legrad':
+                             # LeGrad is already clamped [0,1], do not re-minmax normalize 
+                             # (preserves absolute confidence)
+                             heatmap_norm = heatmap_resized
+                        else:
+                             # GradCAM/CheferCAM need re-normalization after interpolation
+                             heatmap_norm = (heatmap_resized - heatmap_resized.min()) / (heatmap_resized.max() - heatmap_resized.min() + 1e-8)
                     
-                    if self.threshold_mode == 'mean':
-                        thr = heatmap_norm.mean().item()
-                    else:
-                        thr = sparse_threshold
+                        if method_name == 'legrad':
+                            thr = 0.5
+                        elif self.threshold_mode == 'mean':
+                            thr = heatmap_norm.mean().item()
+                        else:
+                            thr = sparse_threshold
 
-                    # Create binary predictions
-                    Res_1 = (heatmap_norm > thr).float()
-                    Res_0 = (heatmap_norm <= thr).float()
+                        # Create binary predictions
+                        Res_1 = (heatmap_norm > thr).float()
+                        Res_0 = (heatmap_norm <= thr).float()
                     
-                    output = torch.stack([Res_0, Res_1], dim=0)
-                    output_AP = torch.stack([1.0 - heatmap_norm, heatmap_norm], dim=0)
+                        output = torch.stack([Res_0, Res_1], dim=0)
+                        output_AP = torch.stack([1.0 - heatmap_norm, heatmap_norm], dim=0)
                     
-                    # Metrics
-                    correct, labeled = batch_pix_accuracy(output, gt_tensor)
-                    inter, union = batch_intersection_union(output, gt_tensor, nclass=2)
-                    ap = get_ap_scores(output_AP, gt_tensor)
+                        # Metrics
+                        correct, labeled = batch_pix_accuracy(output, gt_tensor)
+                        inter, union = batch_intersection_union(output, gt_tensor, nclass=2)
+                        ap = get_ap_scores(output_AP, gt_tensor)
                     
-                    # Statistics
-                    max_val = float(np.max(heatmap_norm.numpy()))
-                    mean_val = float(np.mean(heatmap_norm.numpy()))
-                    median_val = float(np.median(heatmap_norm.numpy()))
-                    min_val = float(np.min(heatmap_norm.numpy()))
+                        # Statistics
+                        max_val = float(np.max(heatmap_norm.numpy()))
+                        mean_val = float(np.mean(heatmap_norm.numpy()))
+                        median_val = float(np.median(heatmap_norm.numpy()))
+                        min_val = float(np.min(heatmap_norm.numpy()))
                     
-                    # AUROC
-                    gt_binary = (gt_mask > 0).astype(int).flatten()
-                    pred_flat = heatmap_norm.numpy().flatten()
-                    if len(np.unique(gt_binary)) > 1:
-                         auroc = roc_auc_score(gt_binary, pred_flat)
-                    else:
-                         auroc = np.nan
+                        # AUROC
+                        gt_binary = (gt_mask > 0).astype(int).flatten()
+                        pred_flat = heatmap_norm.numpy().flatten()
+                        if len(np.unique(gt_binary)) > 1:
+                             auroc = roc_auc_score(gt_binary, pred_flat)
+                        else:
+                             auroc = np.nan
                     
-                    return inter, union, correct, labeled, ap[0] if ap else 0.0, auroc, max_val, mean_val, median_val, min_val
+                        return inter, union, correct, labeled, ap[0] if ap else 0.0, auroc, max_val, mean_val, median_val, min_val
                 
-                # === CORRECT PROMPT ===
-                inter_c, union_c, correct_c, label_c, ap_c, auroc_c, mx_c, mn_c, md_c, mi_c = compute_metrics(original_1x, class_name)
-                correct_results['inter'] = correct_results['inter'] + inter_c
-                correct_results['union'] = correct_results['union'] + union_c
-                correct_results['pixel_correct'] += correct_c
-                correct_results['pixel_label'] += label_c
-                correct_results['ap'].append(ap_c)
-                if not np.isnan(auroc_c):
-                    correct_results['auroc'].append(auroc_c)
-                correct_results['max'].append(mx_c)
-                correct_results['mean'].append(mn_c)
-                correct_results['median'].append(md_c)
-                correct_results['min'].append(mi_c)
+                    # === CORRECT PROMPT ===
+                    inter_c, union_c, correct_c, label_c, ap_c, auroc_c, mx_c, mn_c, md_c, mi_c = compute_metrics(original_1x, class_name)
+                    correct_results['inter'] = correct_results['inter'] + inter_c
+                    correct_results['union'] = correct_results['union'] + union_c
+                    correct_results['pixel_correct'] += correct_c
+                    correct_results['pixel_label'] += label_c
+                    correct_results['ap'].append(ap_c)
+                    if not np.isnan(auroc_c):
+                        correct_results['auroc'].append(auroc_c)
+                    correct_results['max'].append(mx_c)
+                    correct_results['mean'].append(mn_c)
+                    correct_results['median'].append(md_c)
+                    correct_results['min'].append(mi_c)
                 
-                # === WRONG PROMPTS ===
-                neg_indices = self._sample_negative_indices(cls_idx)
-                for neg_idx in neg_indices:
-                    neg_wnid = self.idx_to_wnid[neg_idx]
-                    neg_class_name = self.wnid_to_classname[neg_wnid]
-                    neg_emb = self.all_text_embs[neg_idx:neg_idx + 1]
+                    # === WRONG PROMPTS ===
+                    neg_indices = self._sample_negative_indices(cls_idx)
+                    for neg_idx in neg_indices:
+                        neg_wnid = self.idx_to_wnid[neg_idx]
+                        neg_class_name = self.wnid_to_classname[neg_wnid]
+                        neg_emb = self.all_text_embs[neg_idx:neg_idx + 1]
                     
-                    inter_w, union_w, correct_w, label_w, ap_w, auroc_w, mx_w, mn_w, md_w, mi_w = compute_metrics(neg_emb, neg_class_name)
-                    wrong_results['inter'] = wrong_results['inter'] + inter_w
-                    wrong_results['union'] = wrong_results['union'] + union_w
-                    wrong_results['pixel_correct'] += correct_w
-                    wrong_results['pixel_label'] += label_w
-                    wrong_results['ap'].append(ap_w)
-                    if not np.isnan(auroc_w):
-                        wrong_results['auroc'].append(auroc_w)
-                    wrong_results['max'].append(mx_w)
-                    wrong_results['mean'].append(mn_w)
-                    wrong_results['median'].append(md_w)
-                    wrong_results['min'].append(mi_w)
+                        inter_w, union_w, correct_w, label_w, ap_w, auroc_w, mx_w, mn_w, md_w, mi_w = compute_metrics(neg_emb, neg_class_name)
+                        wrong_results['inter'] = wrong_results['inter'] + inter_w
+                        wrong_results['union'] = wrong_results['union'] + union_w
+                        wrong_results['pixel_correct'] += correct_w
+                        wrong_results['pixel_label'] += label_w
+                        wrong_results['ap'].append(ap_w)
+                        if not np.isnan(auroc_w):
+                            wrong_results['auroc'].append(auroc_w)
+                        wrong_results['max'].append(mx_w)
+                        wrong_results['mean'].append(mn_w)
+                        wrong_results['median'].append(md_w)
+                        wrong_results['min'].append(mi_w)
                 
-            except Exception as e:
-                continue
-        
+                    # Success, break attempt loop
+                    break
+                except Exception as e:
+                    if attempt < 2:
+                        print(f"Retrying idx {idx} (attempt {attempt+1})... Error: {e}")
+                        time.sleep(1)
+                        continue
+                    print(f"Error processing idx {idx} (wnid: {self.wnids_in_seg[idx]}): {e}")
         # Compute averages (Global IoU / Pixel Acc)
         def compute_global_metrics(res_dict):
             # mIoU
@@ -1102,10 +1146,13 @@ class AntiHallucinationObjective:
         wn_use_siblings = trial.suggest_categorical('wn_use_siblings', [True, False])
         dict_include_prompts = trial.suggest_categorical('dict_include_prompts', [True, False])
         
-        if self.threshold_mode == 'fixed':
+        # Check if we are using LeGrad (no gradcam, no chefercam)
+        is_legrad = not (self.use_gradcam or self.use_chefercam)
+        
+        if self.threshold_mode == 'fixed' and not is_legrad:
             sparse_threshold = trial.suggest_float('sparse_threshold', 0.1, 0.9, step=0.025)
         else:
-            sparse_threshold = 0.5  # Dummy value, ignored by adaptive thresholding
+            sparse_threshold = 0.5  # Fixed 0.5 for LeGrad, or ignored by adaptive thresholding
         atoms = trial.suggest_int('atoms', 1, 32)
         max_dict_cos_sim = trial.suggest_float('max_dict_cos_sim', 0.5, 1.0, step=0.05)
         
@@ -1137,18 +1184,49 @@ class AntiHallucinationObjective:
         
         # Compute multi-metric composite score for single-objective optimization
         # Objective: maximize correct metrics, minimize wrong metrics
-        composite_miou = correct_miou - self.composite_lambda * wrong_miou
-        composite_acc = correct_acc - self.composite_lambda * wrong_acc
-        composite_map = correct_map - self.composite_lambda * wrong_map
-        composite_auroc = correct_auroc - self.composite_lambda * wrong_auroc
+        # New Logic: Maximize (Current - Baseline) for correct, Maximize (Baseline - Wrong) for wrong
         
+        if self.baseline_metrics:
+            base_c = self.baseline_metrics['correct']
+            base_w = self.baseline_metrics['wrong']
+            
+            # Deltas (Positive means better than baseline)
+            d_c_miou = correct_miou - base_c['miou']
+            d_c_acc = correct_acc - base_c['acc']
+            d_c_map = correct_map - base_c['map']
+            
+            d_w_miou = base_w['miou'] - wrong_miou
+            d_w_acc = base_w['acc'] - wrong_acc
+            d_w_map = base_w['map'] - wrong_map
+            
+            # Store improvements
+            trial.set_user_attr('delta_correct_miou', d_c_miou)
+            trial.set_user_attr('delta_correct_acc', d_c_acc)
+            trial.set_user_attr('delta_correct_map', d_c_map)
+            
+            trial.set_user_attr('delta_wrong_miou', d_w_miou)
+            trial.set_user_attr('delta_wrong_acc', d_w_acc)
+            trial.set_user_attr('delta_wrong_map', d_w_map)
+            
+            composite_miou = d_c_miou + self.composite_lambda * d_w_miou
+            composite_acc = d_c_acc + self.composite_lambda * d_w_acc
+            composite_map = d_c_map + self.composite_lambda * d_w_map
+            
+        else:
+            # Fallback if no baseline (should not happen with new setup)
+            composite_miou = correct_miou - self.composite_lambda * wrong_miou
+            composite_acc = correct_acc - self.composite_lambda * wrong_acc
+            composite_map = correct_map - self.composite_lambda * wrong_map
+            composite_auroc = correct_auroc - self.composite_lambda * wrong_auroc
+
         # Sum all composite scores (each weighted equally)
-        composite = composite_miou + composite_acc + composite_map + composite_auroc
+        # AUROC excluded from optimization
+        composite = composite_miou + composite_acc + composite_map
         trial.set_user_attr('composite_score', composite)
         trial.set_user_attr('composite_miou', composite_miou)
         trial.set_user_attr('composite_acc', composite_acc)
         trial.set_user_attr('composite_map', composite_map)
-        trial.set_user_attr('composite_auroc', composite_auroc)
+        # trial.set_user_attr('composite_auroc', composite_auroc) # AUROC removed from composite
         
         # Report for pruning
         trial.report(composite, step=0)
@@ -1157,10 +1235,10 @@ class AntiHallucinationObjective:
             raise optuna.TrialPruned()
         
         if self.multi_objective:
-            # Return tuple for multi-objective: all 4 correct and wrong metrics
+            # Return tuple for multi-objective: correct/wrong metrics (excluding AUROC)
             # Directions: maximize correct, minimize wrong
-            return (correct_miou, correct_acc, correct_map, correct_auroc,
-                    wrong_miou, wrong_acc, wrong_map, wrong_auroc)
+            return (correct_miou, correct_acc, correct_map,
+                    wrong_miou, wrong_acc, wrong_map)
         else:
             # Return composite score for single-objective
             return composite
@@ -1227,27 +1305,37 @@ def main():
     
     args = parser.parse_args()
     
-    # Load baseline if provided
-    baseline_correct_miou = args.baseline_correct_miou
-    baseline_wrong_miou = args.baseline_wrong_miou
-    baseline_composite = None
+    # Determine model type
+    if args.use_siglip:
+        model_type_key = 'SigLIP'
+    else:
+        model_type_key = 'CLIP'
+        
+    # Determine method
+    if args.use_chefercam:
+        method_key = 'CheferCAM'
+    elif args.use_gradcam:
+        method_key = 'GradCAM'
+    else:
+        method_key = 'LeGrad'
+        
+    # Get baseline metrics
+    baseline_metrics = BASELINES[model_type_key][method_key]
     
+    print(f"Using baseline for {model_type_key} - {method_key}:")
+    print(f"  Correct: mIoU={baseline_metrics['correct']['miou']}, Acc={baseline_metrics['correct']['acc']}, mAP={baseline_metrics['correct']['map']}")
+    print(f"  Wrong:   mIoU={baseline_metrics['wrong']['miou']}, Acc={baseline_metrics['wrong']['acc']}, mAP={baseline_metrics['wrong']['map']}")
+
+    # Load baseline if provided (override hardcoded if JSON given, though user said use hardcoded)
     if args.baseline_json and os.path.exists(args.baseline_json):
         print(f"Loading baseline from {args.baseline_json}...")
-        with open(args.baseline_json, 'r') as f:
-            baseline_data = json.load(f)
-        if baseline_correct_miou is None:
-            baseline_correct_miou = baseline_data.get('correct', {}).get('miou')
-        if baseline_wrong_miou is None:
-            baseline_wrong_miou = baseline_data.get('wrong', {}).get('miou')
-        baseline_composite = baseline_data.get('composite')
-        print(f"  Baseline correct mIoU: {baseline_correct_miou:.2f}")
-        print(f"  Baseline wrong mIoU: {baseline_wrong_miou:.2f}")
-        if baseline_composite is not None:
-            print(f"  Baseline composite: {baseline_composite:.2f}")
+        # ... logic to override if needed, but for now we stick to requested plan
+        pass
     
-    if baseline_correct_miou is not None and baseline_composite is None:
-        baseline_composite = baseline_correct_miou - args.composite_lambda * (baseline_wrong_miou or 0)
+    # Calculate baseline composite (conceptually 0 improvement)
+    # But we can calculate what the raw score would have been
+    # baseline_composite = baseline_correct_miou - args.composite_lambda * (baseline_wrong_miou or 0)
+    # In relative mode, 0 is the baseline. Positive is improvement.
     
     # Set model defaults based on --use_siglip
     if args.use_siglip:
@@ -1311,6 +1399,7 @@ def main():
         use_chefercam=args.use_chefercam,
         threshold_mode=args.threshold_mode,
         fixed_threshold=args.fixed_threshold,
+        baseline_metrics=baseline_metrics,
     )
     
     # Create Optuna study
@@ -1318,9 +1407,9 @@ def main():
     pruner = optuna.pruners.MedianPruner(n_startup_trials=10, n_warmup_steps=0)
     
     if args.multi_objective:
-        # Multi-objective: maximize all correct metrics, minimize all wrong metrics
-        directions = ['maximize', 'maximize', 'maximize', 'maximize',  # correct: mIoU, Acc, mAP, AUROC
-                      'minimize', 'minimize', 'minimize', 'minimize']  # wrong: mIoU, Acc, mAP, AUROC
+        # Multi-objective: maximize all correct metrics, minimize all wrong metrics (excluding AUROC)
+        directions = ['maximize', 'maximize', 'maximize',  # correct: mIoU, Acc, mAP
+                      'minimize', 'minimize', 'minimize']  # wrong: mIoU, Acc, mAP
         if args.storage:
             study = optuna.create_study(
                 study_name=args.study_name,
@@ -1336,9 +1425,10 @@ def main():
                 sampler=optuna.samplers.NSGAIISampler(seed=args.seed),
             )
         print(f"\n{'='*60}")
-        print("Multi-Objective Optimization Mode (8 objectives)")
-        print("MAXIMIZE: Correct mIoU, Accuracy, mAP, AUROC")
-        print("MINIMIZE: Wrong mIoU, Accuracy, mAP, AUROC")
+        print("Multi-Objective Optimization Mode (6 objectives)")
+        print("MAXIMIZE: Correct mIoU, Accuracy, mAP")
+        print("MINIMIZE: Wrong mIoU, Accuracy, mAP")
+        print("(AUROC is calculated and printed but not optimized)")
         print(f"{'='*60}\n")
     else:
         # Single-objective with composite score
@@ -1359,8 +1449,9 @@ def main():
                 pruner=pruner,
             )
         print(f"\n{'='*60}")
-        print("Multi-Metric Composite Score Optimization")
-        print(f"Score = Σ(correct_metric - {args.composite_lambda} × wrong_metric) for mIoU, Acc, mAP, AUROC")
+        print("Multi-Metric Composite Score Optimization (Relative to Baseline)")
+        print(f"Score = Σ((Correct - BaseCorrect) + {args.composite_lambda} × (BaseWrong - Wrong))")
+        print("(AUROC is calculated and printed but not optimized)")
         print(f"{'='*60}\n")
     
     # Custom callback for detailed logging
@@ -1383,18 +1474,14 @@ def main():
             best_composite = best_trial.value
             
             # Print detailed info
+            # Print detailed info
             print(f"\n  Trial {trial.number}: "
                   f"mIoU(C/W)={correct_miou:.1f}/{wrong_miou:.1f} | "
                   f"AUROC(C/W)={correct_auroc:.1f}/{wrong_auroc:.1f} | "
-                  f"Composite={composite:.2f}")
+                  f"Composite Impr={composite:.2f}")
             print(f"  Best so far (Trial {best_trial.number}): "
                   f"Correct mIoU={best_correct:.2f} | Wrong mIoU={best_wrong:.2f} | "
-                  f"Composite={best_composite:.2f}")
-            
-            # Show baseline comparison if available
-            if baseline_composite is not None:
-                improvement = best_composite - baseline_composite
-                print(f"  vs Baseline: Composite improvement = {improvement:+.2f}")
+                  f"Composite Impr={best_composite:.2f}")
     
     # Run optimization
     if args.use_chefercam:
@@ -1410,9 +1497,8 @@ def main():
     if args.use_gradcam:
         print(f"GradCAM layer: {args.gradcam_layer}")
     print(f"Negative strategy: {args.negative_strategy}, Num negatives: {args.num_negatives}")
-    if baseline_composite is not None:
-        print(f"Baseline to beat: Correct={baseline_correct_miou:.2f} | "
-              f"Wrong={baseline_wrong_miou:.2f} | Composite={baseline_composite:.2f}")
+    print(f"Composite Lambda: {args.composite_lambda}")
+    print(f"Baseline: {model_type_key} - {method_key}")
     print(f"{'='*60}\n")
     
     study.optimize(
@@ -1444,9 +1530,11 @@ def main():
         
         for i, trial in enumerate(pareto_trials[:10], 1):
             vals = trial.values
+            c_auroc = trial.user_attrs.get('correct_auroc', 0.0)
+            w_auroc = trial.user_attrs.get('wrong_auroc', 0.0)
             print(f"\n#{i} Trial {trial.number}:")
-            print(f"  Correct: mIoU={vals[0]:.2f} | Acc={vals[1]:.2f} | mAP={vals[2]:.2f} | AUROC={vals[3]:.2f}")
-            print(f"  Wrong:   mIoU={vals[4]:.2f} | Acc={vals[5]:.2f} | mAP={vals[6]:.2f} | AUROC={vals[7]:.2f}")
+            print(f"  Correct: mIoU={vals[0]:.2f} | Acc={vals[1]:.2f} | mAP={vals[2]:.2f} | AUROC={c_auroc:.2f}")
+            print(f"  Wrong:   mIoU={vals[3]:.2f} | Acc={vals[4]:.2f} | mAP={vals[5]:.2f} | AUROC={w_auroc:.2f}")
             print(f"  Params: {trial.params}")
         
         results = {
@@ -1455,8 +1543,8 @@ def main():
             'pareto_trials': [
                 {
                     'trial_number': t.number,
-                    'correct': {'miou': t.values[0], 'acc': t.values[1], 'map': t.values[2], 'auroc': t.values[3]},
-                    'wrong': {'miou': t.values[4], 'acc': t.values[5], 'map': t.values[6], 'auroc': t.values[7]},
+                    'correct': {'miou': t.values[0], 'acc': t.values[1], 'map': t.values[2], 'auroc': t.user_attrs.get('correct_auroc')},
+                    'wrong': {'miou': t.values[3], 'acc': t.values[4], 'map': t.values[5], 'auroc': t.user_attrs.get('wrong_auroc')},
                     'params': t.params,
                 }
                 for t in pareto_trials
@@ -1485,7 +1573,10 @@ def main():
         print(f"\n{'='*60}")
         print("BEST TRIAL RESULTS")
         print(f"{'='*60}")
-        print(f"\nComposite Score: {best_trial.value:.2f}")
+        print(f"\n{'='*60}")
+        print("BEST TRIAL RESULTS")
+        print(f"{'='*60}")
+        print(f"\nComposite Improvement Score: {best_trial.value:.2f}")
         
         print(f"\n=== CORRECT PROMPTS (image class = text prompt class) ===")
         print(f"  mIoU:     {correct_metrics['miou']:.2f}")
@@ -1578,22 +1669,6 @@ def main():
             ],
         }
         
-        # Print command to reproduce best result
-        best_params = best_trial.params
-        print(f"\n{'='*60}")
-        print("Command to reproduce best result:")
-        print(f"{'='*60}")
-        cmd = f"""python scripts/benchmark_segmentation.py \\
-    --wn_use_synonyms {1 if best_params['wn_use_synonyms'] else 0} \\
-    --wn_use_hypernyms {1 if best_params['wn_use_hypernyms'] else 0} \\
-    --wn_use_hyponyms {1 if best_params['wn_use_hyponyms'] else 0} \\
-    --wn_use_siblings {1 if best_params['wn_use_siblings'] else 0} \\
-    --dict_include_prompts {1 if best_params['dict_include_prompts'] else 0} \\
-    --sparse_threshold {best_params['sparse_threshold']:.3f} \\
-    --atoms {best_params['atoms']} \\
-    --max_dict_cos_sim {best_params['max_dict_cos_sim']:.2f}"""
-        print(cmd)
-    
     try:
         with open(args.output_json, 'w') as f:
             json.dump(results, f, indent=2)
