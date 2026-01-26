@@ -129,7 +129,9 @@ def omp_sparse_residual(x_1x: torch.Tensor, D: torch.Tensor, max_atoms: int = 8,
         b = (D_S @ x.t())     # [t, 1]
         # Regularize G slightly for stability
         I = torch.eye(G.shape[0], device=G.device, dtype=G.dtype)
-        s = torch.linalg.solve(G + 1e-6 * I, b)  # [t,1]
+        # Use Cholesky solve for better stability and to avoid "lazy wrapper" errors
+        L = torch.linalg.cholesky(G + 1e-6 * I)
+        s = torch.cholesky_solve(b, L)  # [t,1]
         x_hat = (s.t() @ D_S).to(x.dtype)  # [1, d]
         r = (x - x_hat)
         # Early stop if residual very small
