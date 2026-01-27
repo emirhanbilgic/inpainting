@@ -170,17 +170,11 @@ poetry.toml
 # LSP config files
 pyrightconfig.json
 
+outputs/
+
 legrad_torch.egg-info/
 .DS_Store
 scripts/data/gtsegs_ijcv.mat
-outputs/segmentation_vis/
-outputs/omp_color_vis_t4.png
-.gitignore
-outputs/omp_color_vis.png
-outputs/omp_multiclass_vis.png
-outputs/omp_pca_vis.png
-outputs/omp_color_vis_t5.png
-outputs/omp_visualization.png
 scripts/visualize_omp_color.py
 comparison_outputs/
 external/Transformer-Explainability
@@ -189,13 +183,9 @@ scripts/KAGGLE_COMMANDS.md
 scripts/gtsegs_ijcv.mat
 legrad_negative_baseline.json
 anti_hallucination_results.json
-.gitignore
 test_gradcam_clip_verification.json
 test_gradcam_baseline.json
 test_gradcam_siglip.json
 results.json
-outputs/segmentation_vis_v2/seg_vis_0001.png
-.gitignore
-outputs/segmentation_vis_v2/seg_vis_0000.png
-outputs/segmentation_vis_v2/seg_vis_0002.png
 test_daam_baseline.json
+scripts/data/example.png
