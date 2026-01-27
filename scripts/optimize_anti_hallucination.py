@@ -1023,9 +1023,7 @@ class AntiHallucinationObjective:
                              # GradCAM/CheferCAM need re-normalization after interpolation
                              heatmap_norm = (heatmap_resized - heatmap_resized.min()) / (heatmap_resized.max() - heatmap_resized.min() + 1e-8)
                     
-                        if method_name == 'legrad':
-                            thr = 0.5
-                        elif self.threshold_mode == 'mean':
+                        if self.threshold_mode == 'mean':
                             thr = heatmap_norm.mean().item()
                         else:
                             thr = sparse_threshold
@@ -1158,13 +1156,10 @@ class AntiHallucinationObjective:
         if not (wn_use_synonyms or wn_use_hypernyms or wn_use_hyponyms or wn_use_siblings or dict_include_prompts):
             raise optuna.TrialPruned()
         
-        # Check if we are using LeGrad (no gradcam, no chefercam)
-        is_legrad = not (self.use_gradcam or self.use_chefercam)
-        
-        if self.threshold_mode == 'fixed' and not is_legrad:
+        if self.threshold_mode == 'fixed':
             sparse_threshold = trial.suggest_float('sparse_threshold', 0.1, 0.9, step=0.025)
         else:
-            sparse_threshold = 0.5  # Fixed 0.5 for LeGrad, or ignored by adaptive thresholding
+            sparse_threshold = 0.5  # Ignored by adaptive thresholding
         atoms = trial.suggest_int('atoms', 1, 32)
         max_dict_cos_sim = trial.suggest_float('max_dict_cos_sim', 0.5, 1.0, step=0.05)
         
@@ -1298,7 +1293,7 @@ def main():
                         help='Use CheferCAM (attention GradCAM) instead of LeGrad')
     
     # Threshold settings
-    parser.add_argument('--threshold_mode', type=str, default='mean',
+    parser.add_argument('--threshold_mode', type=str, default='fixed',
                         choices=['mean', 'fixed'],
                         help='Thresholding mode: "mean" (adaptive) or "fixed"')
     parser.add_argument('--fixed_threshold', type=float, default=0.5,
