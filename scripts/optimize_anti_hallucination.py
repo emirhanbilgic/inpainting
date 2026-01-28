@@ -188,6 +188,65 @@ def compute_gradcam_heatmap(model, image, text_emb_1x, layer_index: int = 8):
     return heatmap
 
 
+def compute_lrp_heatmap(model, image, text_emb_1x):
+    """
+    Compute standard LRP (Layer-wise Relevance Propagation) heatmap using Input×Gradient.
+    
+    This is the standard LRP formulation where relevance is computed as:
+    R = input × gradient(output w.r.t. input)
+    
+    This differs from CheferCAM/Transformer Attribution which uses gradient-weighted
+    attention aggregation across layers. Standard LRP typically produces less focused
+    heatmaps for CLIP-like models since the relevance is propagated from the final
+    similarity score back to the input image.
+    
+    Reference: Bach et al. (2015) "On Pixel-Wise Explanations for Non-Linear Classifier 
+    Decisions by Layer-Wise Relevance Propagation"
+    
+    Args:
+        model: LeWrapper model
+        image: Input image tensor [1, 3, H, W]
+        text_emb_1x: Text embedding [1, embed_dim]
+    
+    Returns:
+        Heatmap tensor [H, W] normalized to [0, 1]
+    """
+    import math
+    
+    model.zero_grad()
+    
+    # Need input with gradients
+    image_input = image.clone().requires_grad_(True)
+    
+    with torch.enable_grad():
+        # Forward pass to get image features
+        image_features = model.encode_image(image_input, normalize=True)
+        
+        # Compute similarity score
+        similarity = (image_features @ text_emb_1x.t()).squeeze()
+        
+        # Backward pass - compute gradient of similarity w.r.t. input image
+        similarity.backward()
+        
+        # Get gradient w.r.t. input
+        grad = image_input.grad  # [1, 3, H, W]
+        
+        # Standard LRP: Input × Gradient (element-wise product)
+        # This propagates relevance from output back to input
+        relevance = image_input * grad  # [1, 3, H, W]
+        
+        # Sum across color channels to get spatial relevance
+        relevance = relevance.sum(dim=1).squeeze(0)  # [H, W]
+        
+        # Take absolute value (both positive and negative relevance contribute)
+        relevance = relevance.abs()
+        
+        # Normalize to [0, 1]
+        relevance = (relevance - relevance.min()) / (relevance.max() - relevance.min() + 1e-8)
+        
+        return relevance.detach().cpu()
+
+
 # batch_intersection_union removed (imported from benchmark_segmentation_v2)
 
 
@@ -1001,9 +1060,7 @@ class AntiHallucinationObjective:
                         method_name = 'legrad'
                         # Choose between LRP, CheferCAM, GradCAM and LeGrad (sparse)
                         if self.use_lrp:
-                            heatmap = compute_transformer_attribution(
-                                self.model, img_t, sparse_1x, start_layer=self.lrp_start_layer
-                            )
+                            heatmap = compute_lrp_heatmap(self.model, img_t, sparse_1x)
                             method_name = 'lrp'
                         elif self.use_chefercam:
                             if self.chefercam_method == 'transformer_attribution':
