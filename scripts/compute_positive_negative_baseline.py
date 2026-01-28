@@ -106,20 +106,19 @@ def compute_gradcam_heatmap(model, image, text_emb_1x, layer_index: int = 8):
 
 def compute_lrp_heatmap(model, image, text_emb_1x):
     """
-    Compute LRP-style heatmap using class-dependent Vanilla Gradient Saliency.
+    Compute AttentionCAM heatmap using gradient-weighted attention from last layer.
     
-    This implements gradient-based attribution that IS class-dependent:
-    - Computes gradient of text-image similarity w.r.t. input image
-    - Uses raw absolute gradients (no input multiplication)
-    - Takes max across channels for noisier results
+    AttentionCAM (also called CAM-Attn) is CLASS-DEPENDENT:
+    - Forward pass to get attention maps from last transformer layer
+    - Backward pass from text-image similarity to get attention gradients
+    - Multiply attention by gradients and average across heads
     
-    This is simpler than GradCAM (no layer-specific activations) and typically
-    produces worse/noisier results, but IS class-dependent so OMP optimization
-    can differentiate between correct and wrong prompts.
+    This is simpler than full GradCAM (only uses last layer) but still 
+    class-aware, making it suitable for OMP optimization.
     
     Reference: 
-    - Simonyan et al. (2013) "Deep Inside Convolutional Networks: Visualising 
-      Image Classification Models and Saliency Maps"
+    - Chefer et al. "Transformer Interpretability Beyond Attention Visualization"
+    - LeGrad paper mentions AttentionCAM as a baseline
     
     Args:
         model: LeWrapper model
@@ -129,46 +128,92 @@ def compute_lrp_heatmap(model, image, text_emb_1x):
     Returns:
         Heatmap tensor [H, W] normalized to [0, 1]
     """
-    # Clear any existing gradients
-    model.zero_grad()
+    import torch.nn.functional as F
+    import math
     
-    # Create a fresh copy of the input with gradients enabled
-    image_input = image.detach().clone().requires_grad_(True)
-    
-    # Detach text embedding but keep for computing similarity
-    text_emb_detached = text_emb_1x.detach()
+    H_img, W_img = image.shape[-2:]
     
     try:
-        with torch.enable_grad():
-            # Forward pass to get image features
-            image_features = model.encode_image(image_input, normalize=True)
-            
-            # CLASS-DEPENDENT: Compute similarity with the specific text embedding
-            similarity = (image_features @ text_emb_detached.t()).squeeze()
-            
-            # Backward pass - gradient flows from this class-specific similarity
-            similarity.backward(retain_graph=False)
-            
-            # Get gradient w.r.t. input
-            if image_input.grad is None:
-                H, W = image.shape[-2:]
-                return torch.ones(H, W) * 0.5
-            
-            grad = image_input.grad.detach()  # [1, 3, H, W]
-            
-            # Vanilla Gradient Saliency: absolute value of gradients
-            # Using max across channels produces noisier/worse results than sum
-            relevance = grad.abs()  # [1, 3, H, W]
-            relevance = relevance.max(dim=1)[0].squeeze(0)  # [H, W]
-            
-            # Normalize to [0, 1]
-            relevance = (relevance - relevance.min()) / (relevance.max() - relevance.min() + 1e-8)
-            
-            return relevance.cpu()
-    finally:
+        # Forward pass to populate attention maps
+        image_features = model.encode_image(image, normalize=True)
+        
+        # Get blocks list based on model type
+        if hasattr(model, 'model_type'):
+            if 'clip' in model.model_type or 'coca' in model.model_type:
+                blocks_list = list(model.visual.transformer.resblocks)
+            elif 'siglip' in model.model_type:
+                blocks_list = list(model.visual.trunk.blocks)
+            else:
+                blocks_list = list(model.visual.transformer.resblocks)
+        else:
+            if hasattr(model.visual, 'transformer'):
+                blocks_list = list(model.visual.transformer.resblocks)
+            elif hasattr(model.visual, 'trunk'):
+                blocks_list = list(model.visual.trunk.blocks)
+            else:
+                return torch.ones(H_img, W_img, device='cpu') * 0.5
+        
+        # Get last block
+        last_block = blocks_list[-1]
+        
+        # Check if attention maps are available
+        if not hasattr(last_block, 'attn') or not hasattr(last_block.attn, 'attention_maps'):
+            return torch.ones(H_img, W_img, device='cpu') * 0.5
+        
+        attn_map = last_block.attn.attention_maps  # [batch*heads, N, N]
+        
+        # Compute similarity (class-dependent)
+        text_emb_detached = text_emb_1x.detach()
+        similarity = (image_features @ text_emb_detached.t()).sum()
+        
+        # Compute gradient of similarity w.r.t. attention map
         model.zero_grad()
-        if image_input.grad is not None:
-            image_input.grad = None
+        grad = torch.autograd.grad(
+            outputs=similarity,
+            inputs=[attn_map],
+            retain_graph=False,
+            create_graph=False,
+            allow_unused=True
+        )[0]
+        
+        if grad is None:
+            return torch.ones(H_img, W_img, device='cpu') * 0.5
+        
+        # attn_map shape: [batch*heads, N, N]
+        # Average gradients across all positions to get per-head weights
+        grad_weights = grad.mean(dim=[1, 2], keepdim=True)  # [batch*heads, 1, 1]
+        
+        # Gradient-weighted attention (AttentionCAM formula)
+        cam = attn_map * grad_weights  # [batch*heads, N, N]
+        
+        # Get CLS token attention to patches (row 0, columns 1:)
+        cls_attn = cam[:, 0, 1:]  # [batch*heads, num_patches]
+        
+        # Average across heads and clamp negative values
+        cls_attn = cls_attn.mean(dim=0).clamp(min=0)  # [num_patches]
+        
+        # Reshape to 2D grid
+        num_patches = cls_attn.shape[0]
+        grid_size = int(math.sqrt(num_patches))
+        
+        if grid_size * grid_size != num_patches:
+            return torch.ones(H_img, W_img, device='cpu') * 0.5
+        
+        heatmap = cls_attn.reshape(grid_size, grid_size)
+        
+        # Upsample to image size
+        heatmap = heatmap.unsqueeze(0).unsqueeze(0)  # [1, 1, grid, grid]
+        heatmap = F.interpolate(heatmap, size=(H_img, W_img), mode='bilinear', align_corners=False)
+        heatmap = heatmap.squeeze()  # [H, W]
+        
+        # Normalize to [0, 1]
+        heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
+        
+        return heatmap.detach().cpu()
+        
+    except Exception as e:
+        # Fallback on any error
+        return torch.ones(H_img, W_img, device='cpu') * 0.5
 
 
 def batch_intersection_union(predict, target, nclass=2):
