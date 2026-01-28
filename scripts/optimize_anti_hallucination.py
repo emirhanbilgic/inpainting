@@ -213,46 +213,53 @@ def compute_lrp_heatmap(model, image, text_emb_1x):
     Returns:
         Heatmap tensor [H, W] normalized to [0, 1]
     """
-    # Clear any existing gradients
-    model.zero_grad()
+    device = image.device
+    H, W = image.shape[-2:]
     
     # Create a fresh copy of the input with gradients enabled
     image_input = image.detach().clone().requires_grad_(True)
     
-    # Detach text embedding but keep for computing similarity
+    # Detach text embedding
     text_emb_detached = text_emb_1x.detach()
     
     try:
-        with torch.enable_grad():
-            # Forward pass to get image features
-            image_features = model.encode_image(image_input, normalize=True)
-            
-            # CLASS-DEPENDENT: Compute similarity with the specific text embedding
-            similarity = (image_features @ text_emb_detached.t()).squeeze()
-            
-            # Backward pass - gradient flows from this class-specific similarity
-            similarity.backward(retain_graph=False)
-            
-            # Get gradient w.r.t. input
-            if image_input.grad is None:
-                H, W = image.shape[-2:]
-                return torch.ones(H, W) * 0.5
-            
-            grad = image_input.grad.detach()  # [1, 3, H, W]
-            
-            # Vanilla Gradient Saliency: absolute value of gradients
-            # Using max across channels produces noisier/worse results than sum
-            relevance = grad.abs()  # [1, 3, H, W]
-            relevance = relevance.max(dim=1)[0].squeeze(0)  # [H, W]
-            
-            # Normalize to [0, 1]
-            relevance = (relevance - relevance.min()) / (relevance.max() - relevance.min() + 1e-8)
-            
-            return relevance.cpu()
+        # Forward pass to get image features
+        image_features = model.encode_image(image_input, normalize=True)
+        
+        # CLASS-DEPENDENT: Compute similarity with the specific text embedding
+        similarity = (image_features @ text_emb_detached.t()).sum()
+        
+        # Use torch.autograd.grad instead of backward() - more stable for repeated calls
+        grad = torch.autograd.grad(
+            outputs=similarity,
+            inputs=image_input,
+            create_graph=False,
+            retain_graph=False,
+            allow_unused=True
+        )[0]
+        
+        if grad is None:
+            return torch.ones(H, W, device='cpu') * 0.5
+        
+        # Vanilla Gradient Saliency: absolute value of gradients
+        # Using max across channels produces noisier/worse results than sum
+        relevance = grad.abs()  # [1, 3, H, W]
+        relevance = relevance.max(dim=1)[0].squeeze(0)  # [H, W]
+        
+        # Normalize to [0, 1]
+        relevance = (relevance - relevance.min()) / (relevance.max() - relevance.min() + 1e-8)
+        
+        return relevance.detach().cpu()
+        
+    except Exception as e:
+        # Fallback on any error
+        return torch.ones(H, W, device='cpu') * 0.5
     finally:
+        # Clean up
         model.zero_grad()
-        if image_input.grad is not None:
-            image_input.grad = None
+        del image_input
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
 # batch_intersection_union removed (imported from benchmark_segmentation_v2)
