@@ -106,61 +106,69 @@ def compute_gradcam_heatmap(model, image, text_emb_1x, layer_index: int = 8):
 
 def compute_lrp_heatmap(model, image, text_emb_1x):
     """
-    Compute standard LRP (Layer-wise Relevance Propagation) heatmap using Input×Gradient.
+    Compute LRP-style heatmap using class-dependent Vanilla Gradient Saliency.
     
-    This is the standard LRP formulation where relevance is computed as:
-    R = input × gradient(output w.r.t. input)
+    This implements gradient-based attribution that IS class-dependent:
+    - Computes gradient of text-image similarity w.r.t. input image
+    - Uses raw absolute gradients (no input multiplication)
+    - Takes max across channels for noisier results
     
-    This differs from CheferCAM/Transformer Attribution which uses gradient-weighted
-    attention aggregation across layers. Standard LRP typically produces less focused
-    heatmaps for CLIP-like models since the relevance is propagated from the final
-    similarity score back to the input image.
+    This is simpler than GradCAM (no layer-specific activations) and typically
+    produces worse/noisier results, but IS class-dependent so OMP optimization
+    can differentiate between correct and wrong prompts.
     
-    Reference: Bach et al. (2015) "On Pixel-Wise Explanations for Non-Linear Classifier 
-    Decisions by Layer-Wise Relevance Propagation"
+    Reference: 
+    - Simonyan et al. (2013) "Deep Inside Convolutional Networks: Visualising 
+      Image Classification Models and Saliency Maps"
     
     Args:
         model: LeWrapper model
         image: Input image tensor [1, 3, H, W]
-        text_emb_1x: Text embedding [1, embed_dim]
+        text_emb_1x: Text embedding [1, embed_dim] - USED for class-dependent gradient
     
     Returns:
         Heatmap tensor [H, W] normalized to [0, 1]
     """
-    import math
-    
+    # Clear any existing gradients
     model.zero_grad()
     
-    # Need input with gradients
-    image_input = image.clone().requires_grad_(True)
+    # Create a fresh copy of the input with gradients enabled
+    image_input = image.detach().clone().requires_grad_(True)
     
-    with torch.enable_grad():
-        # Forward pass to get image features
-        image_features = model.encode_image(image_input, normalize=True)
-        
-        # Compute similarity score
-        similarity = (image_features @ text_emb_1x.t()).squeeze()
-        
-        # Backward pass - compute gradient of similarity w.r.t. input image
-        similarity.backward()
-        
-        # Get gradient w.r.t. input
-        grad = image_input.grad  # [1, 3, H, W]
-        
-        # Standard LRP: Input × Gradient (element-wise product)
-        # This propagates relevance from output back to input
-        relevance = image_input * grad  # [1, 3, H, W]
-        
-        # Sum across color channels to get spatial relevance
-        relevance = relevance.sum(dim=1).squeeze(0)  # [H, W]
-        
-        # Take absolute value (both positive and negative relevance contribute)
-        relevance = relevance.abs()
-        
-        # Normalize to [0, 1]
-        relevance = (relevance - relevance.min()) / (relevance.max() - relevance.min() + 1e-8)
-        
-        return relevance.detach().cpu()
+    # Detach text embedding but keep for computing similarity
+    text_emb_detached = text_emb_1x.detach()
+    
+    try:
+        with torch.enable_grad():
+            # Forward pass to get image features
+            image_features = model.encode_image(image_input, normalize=True)
+            
+            # CLASS-DEPENDENT: Compute similarity with the specific text embedding
+            similarity = (image_features @ text_emb_detached.t()).squeeze()
+            
+            # Backward pass - gradient flows from this class-specific similarity
+            similarity.backward(retain_graph=False)
+            
+            # Get gradient w.r.t. input
+            if image_input.grad is None:
+                H, W = image.shape[-2:]
+                return torch.ones(H, W) * 0.5
+            
+            grad = image_input.grad.detach()  # [1, 3, H, W]
+            
+            # Vanilla Gradient Saliency: absolute value of gradients
+            # Using max across channels produces noisier/worse results than sum
+            relevance = grad.abs()  # [1, 3, H, W]
+            relevance = relevance.max(dim=1)[0].squeeze(0)  # [H, W]
+            
+            # Normalize to [0, 1]
+            relevance = (relevance - relevance.min()) / (relevance.max() - relevance.min() + 1e-8)
+            
+            return relevance.cpu()
+    finally:
+        model.zero_grad()
+        if image_input.grad is not None:
+            image_input.grad = None
 
 
 def batch_intersection_union(predict, target, nclass=2):
