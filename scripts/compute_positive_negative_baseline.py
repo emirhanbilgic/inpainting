@@ -694,6 +694,8 @@ class LeGradBaselineEvaluator:
         fixed_threshold=0.5,
         use_daam=False,
         daam_model_id='Manojb/stable-diffusion-2-base',
+        use_lrp=False,
+        lrp_start_layer=1,
     ):
         self.model = model
         self.tokenizer = tokenizer
@@ -710,6 +712,8 @@ class LeGradBaselineEvaluator:
         self.threshold_mode = threshold_mode
         self.fixed_threshold = fixed_threshold
         self.use_daam = use_daam
+        self.use_lrp = use_lrp
+        self.lrp_start_layer = lrp_start_layer
         
         # Initialize DAAM
         self.daam_segmenter = None
@@ -859,6 +863,12 @@ class LeGradBaselineEvaluator:
                         # Pass prompt "a {label}" or similar
                         heatmap = self.daam_segmenter.predict(base_img, prompt_text, size=512)
                         method_name = 'daam'
+                    elif self.use_lrp:
+                        heatmap = compute_transformer_attribution(
+                            self.model, img_t, text_emb_1x,
+                            start_layer=self.lrp_start_layer
+                        )
+                        method_name = 'lrp'
                     elif self.use_chefercam:
                         if self.chefercam_method == 'transformer_attribution':
                             heatmap = compute_transformer_attribution(
@@ -1115,6 +1125,12 @@ def main():
     parser.add_argument('--daam_model_id', type=str, default='Manojb/stable-diffusion-2-base',
                         help='Stable Diffusion model ID for DAAM')
     
+    # LRP settings
+    parser.add_argument('--use_lrp', action='store_true',
+                        help='Use LRP (Layer-wise Relevance Propagation) instead of LeGrad')
+    parser.add_argument('--lrp_start_layer', type=int, default=1,
+                        help='Start layer for LRP attribution (default: 1)')
+    
     # Composite score calculation
     parser.add_argument('--composite_lambda', type=float, default=0.5,
                         help='Weight for wrong-prompt penalty in composite score')
@@ -1187,10 +1203,16 @@ def main():
         fixed_threshold=args.fixed_threshold,
         use_daam=args.use_daam,
         daam_model_id=args.daam_model_id,
+        use_lrp=args.use_lrp,
+        lrp_start_layer=args.lrp_start_layer,
     )
     
     # Run evaluation
-    if args.use_chefercam:
+    if args.use_daam:
+        method_name = "DAAM"
+    elif args.use_lrp:
+        method_name = "LRP"
+    elif args.use_chefercam:
         method_name = "CheferCAM"
     elif args.use_gradcam:
         method_name = "GradCAM"
@@ -1206,6 +1228,8 @@ def main():
         print(f"CheferCAM method: {args.chefercam_method}")
         if args.chefercam_method == 'transformer_attribution':
             print(f"Transformer attribution start layer: {args.transformer_attribution_start_layer}")
+    elif args.use_lrp:
+        print(f"LRP start layer: {args.lrp_start_layer}")
     elif args.use_gradcam:
         print(f"GradCAM layer: {args.gradcam_layer}")
     print(f"Strategy: {args.negative_strategy}")
@@ -1294,6 +1318,8 @@ def main():
             'use_chefercam': args.use_chefercam,
             'chefercam_method': args.chefercam_method if args.use_chefercam else None,
             'transformer_attribution_start_layer': args.transformer_attribution_start_layer if args.use_chefercam else None,
+            'use_lrp': args.use_lrp,
+            'lrp_start_layer': args.lrp_start_layer if args.use_lrp else None,
         }
     }
     

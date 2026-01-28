@@ -132,6 +132,10 @@ BASELINES = {
         'CheferCAM': {
             'correct': {'miou': 48.71, 'acc': 69.32, 'map': 80.36},
             'wrong': {'miou': 44.95, 'acc': 66.51, 'map': 78.77}
+        },
+        'LRP': {
+            'correct': {'miou': 48.71, 'acc': 69.32, 'map': 80.36},
+            'wrong': {'miou': 44.95, 'acc': 66.51, 'map': 78.77}
         }
     },
     'SigLIP': {
@@ -144,6 +148,10 @@ BASELINES = {
             'wrong': {'miou': 34.66, 'acc': 54.55, 'map': 68.50}
         },
         'CheferCAM': {
+            'correct': {'miou': 43.38, 'acc': 65.39, 'map': 77.25},
+            'wrong': {'miou': 41.69, 'acc': 63.71, 'map': 76.09}
+        },
+        'LRP': {
             'correct': {'miou': 43.38, 'acc': 65.39, 'map': 77.25},
             'wrong': {'miou': 41.69, 'acc': 63.71, 'map': 76.09}
         }
@@ -763,6 +771,8 @@ class AntiHallucinationObjective:
         threshold_mode='fixed',
         fixed_threshold=0.5,
         baseline_metrics=None,
+        use_lrp=False,
+        lrp_start_layer=1,
     ):
         self.model = model
         self.tokenizer = tokenizer
@@ -782,6 +792,8 @@ class AntiHallucinationObjective:
         self.threshold_mode = threshold_mode
         self.fixed_threshold = fixed_threshold
         self.baseline_metrics = baseline_metrics
+        self.use_lrp = use_lrp
+        self.lrp_start_layer = lrp_start_layer
         
         # Load dataset
         self.f = h5py.File(dataset_file, 'r')
@@ -987,8 +999,13 @@ class AntiHallucinationObjective:
                         sparse_1x = build_sparse_embedding(text_emb_1x, target_class_name)
                     
                         method_name = 'legrad'
-                        # Choose between CheferCAM, GradCAM and LeGrad (sparse)
-                        if self.use_chefercam:
+                        # Choose between LRP, CheferCAM, GradCAM and LeGrad (sparse)
+                        if self.use_lrp:
+                            heatmap = compute_transformer_attribution(
+                                self.model, img_t, sparse_1x, start_layer=self.lrp_start_layer
+                            )
+                            method_name = 'lrp'
+                        elif self.use_chefercam:
                             if self.chefercam_method == 'transformer_attribution':
                                 heatmap = compute_transformer_attribution(
                                     self.model, img_t, sparse_1x, start_layer=self.transformer_attribution_start_layer
@@ -1161,11 +1178,11 @@ class AntiHallucinationObjective:
             raise optuna.TrialPruned()
         
         # For LeGrad, always search for best fixed threshold (not mean-based)
-        # For GradCAM/CheferCAM, use threshold_mode setting
-        if self.threshold_mode == 'fixed' or (not self.use_gradcam and not self.use_chefercam):
+        # For GradCAM/CheferCAM/LRP, use threshold_mode setting
+        if self.threshold_mode == 'fixed' or (not self.use_gradcam and not self.use_chefercam and not self.use_lrp):
             sparse_threshold = trial.suggest_float('sparse_threshold', 0.1, 0.9, step=0.025)
         else:
-            sparse_threshold = 0.5  # Ignored by adaptive thresholding for GradCAM/CheferCAM
+            sparse_threshold = 0.5  # Ignored by adaptive thresholding for GradCAM/CheferCAM/LRP
         atoms = trial.suggest_int('atoms', 1, 32)
         max_dict_cos_sim = trial.suggest_float('max_dict_cos_sim', 0.5, 1.0, step=0.05)
         
@@ -1298,6 +1315,12 @@ def main():
     parser.add_argument('--use_chefercam', action='store_true',
                         help='Use CheferCAM (attention GradCAM) instead of LeGrad')
     
+    # LRP settings
+    parser.add_argument('--use_lrp', action='store_true',
+                        help='Use LRP (Layer-wise Relevance Propagation) instead of LeGrad')
+    parser.add_argument('--lrp_start_layer', type=int, default=1,
+                        help='Start layer for LRP attribution (default: 1)')
+    
     # Threshold settings
     parser.add_argument('--threshold_mode', type=str, default='fixed',
                         choices=['mean', 'fixed'],
@@ -1325,7 +1348,9 @@ def main():
         model_type_key = 'CLIP'
         
     # Determine method
-    if args.use_chefercam:
+    if args.use_lrp:
+        method_key = 'LRP'
+    elif args.use_chefercam:
         method_key = 'CheferCAM'
     elif args.use_gradcam:
         method_key = 'GradCAM'
@@ -1413,6 +1438,8 @@ def main():
         threshold_mode=args.threshold_mode,
         fixed_threshold=args.fixed_threshold,
         baseline_metrics=baseline_metrics,
+        use_lrp=args.use_lrp,
+        lrp_start_layer=args.lrp_start_layer,
     )
     
     # Create Optuna study
@@ -1497,7 +1524,9 @@ def main():
                   f"Composite Impr={best_composite:.2f}")
     
     # Run optimization
-    if args.use_chefercam:
+    if args.use_lrp:
+        method_name = "LRP"
+    elif args.use_chefercam:
         method_name = "CheferCAM"
     elif args.use_gradcam:
         method_name = "GradCAM"
@@ -1507,7 +1536,9 @@ def main():
     print(f"Starting Optuna optimization with {args.n_trials} trials")
     print(f"Model: {args.model_name} ({args.pretrained}) [{model_type}]")
     print(f"Method: {method_name}")
-    if args.use_gradcam:
+    if args.use_lrp:
+        print(f"LRP start layer: {args.lrp_start_layer}")
+    elif args.use_gradcam:
         print(f"GradCAM layer: {args.gradcam_layer}")
     print(f"Negative strategy: {args.negative_strategy}, Num negatives: {args.num_negatives}")
     print(f"Composite Lambda: {args.composite_lambda}")
