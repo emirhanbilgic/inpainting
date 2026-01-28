@@ -137,69 +137,107 @@ def compute_lrp_heatmap(model, image, text_emb_1x):
         # Forward pass to populate attention maps
         image_features = model.encode_image(image, normalize=True)
         
-        # Get blocks list based on model type
-        if hasattr(model, 'model_type'):
-            if 'clip' in model.model_type or 'coca' in model.model_type:
-                blocks_list = list(model.visual.transformer.resblocks)
-            elif 'siglip' in model.model_type:
-                blocks_list = list(model.visual.trunk.blocks)
-            else:
-                blocks_list = list(model.visual.transformer.resblocks)
-        else:
-            if hasattr(model.visual, 'transformer'):
-                blocks_list = list(model.visual.transformer.resblocks)
-            elif hasattr(model.visual, 'trunk'):
-                blocks_list = list(model.visual.trunk.blocks)
-            else:
-                return torch.ones(H_img, W_img, device='cpu') * 0.5
-        
-        # Get last block
-        last_block = blocks_list[-1]
-        
-        # Check if attention maps are available
-        if not hasattr(last_block, 'attn') or not hasattr(last_block.attn, 'attention_maps'):
-            return torch.ones(H_img, W_img, device='cpu') * 0.5
-        
-        attn_map = last_block.attn.attention_maps  # [batch*heads, N, N]
-        
         # Compute similarity (class-dependent)
         text_emb_detached = text_emb_1x.detach()
         similarity = (image_features @ text_emb_detached.t()).sum()
         
-        # Compute gradient of similarity w.r.t. attention map
-        model.zero_grad()
-        grad = torch.autograd.grad(
-            outputs=similarity,
-            inputs=[attn_map],
-            retain_graph=False,
-            create_graph=False,
-            allow_unused=True
-        )[0]
+        # Determine model type and get appropriate attention maps
+        is_siglip = hasattr(model, 'model_type') and 'siglip' in model.model_type
         
-        if grad is None:
-            return torch.ones(H_img, W_img, device='cpu') * 0.5
-        
-        # attn_map shape: [batch*heads, N, N]
-        # Average gradients across all positions to get per-head weights
-        grad_weights = grad.mean(dim=[1, 2], keepdim=True)  # [batch*heads, 1, 1]
-        
-        # Gradient-weighted attention (AttentionCAM formula)
-        cam = attn_map * grad_weights  # [batch*heads, N, N]
-        
-        # Get CLS token attention to patches (row 0, columns 1:)
-        cls_attn = cam[:, 0, 1:]  # [batch*heads, num_patches]
-        
-        # Average across heads and clamp negative values
-        cls_attn = cls_attn.mean(dim=0).clamp(min=0)  # [num_patches]
-        
-        # Reshape to 2D grid
-        num_patches = cls_attn.shape[0]
-        grid_size = int(math.sqrt(num_patches))
-        
-        if grid_size * grid_size != num_patches:
-            return torch.ones(H_img, W_img, device='cpu') * 0.5
-        
-        heatmap = cls_attn.reshape(grid_size, grid_size)
+        if is_siglip:
+            # SigLIP: Use attentional pooler's attention probs
+            if not hasattr(model.visual.trunk, 'attn_pool') or not hasattr(model.visual.trunk.attn_pool, 'attn_probs'):
+                return torch.ones(H_img, W_img, device='cpu') * 0.5
+            
+            attn_probs = model.visual.trunk.attn_pool.attn_probs  # [batch, heads, num_latent, num_patches]
+            
+            # Compute gradient of similarity w.r.t. attention probs
+            model.zero_grad()
+            grad = torch.autograd.grad(
+                outputs=similarity,
+                inputs=[attn_probs],
+                retain_graph=False,
+                create_graph=False,
+                allow_unused=True
+            )[0]
+            
+            if grad is None:
+                return torch.ones(H_img, W_img, device='cpu') * 0.5
+            
+            # Gradient-weighted attention
+            # attn_probs: [batch, heads, num_latent, num_patches]
+            # grad: [batch, heads, num_latent, num_patches]
+            cam = attn_probs * grad
+            
+            # Average over heads and select first latent query (like LeGrad does)
+            cam = cam.mean(dim=1)[:, 0]  # [batch, num_patches]
+            cam = cam.clamp(min=0)
+            
+            # Get spatial size
+            num_patches = cam.shape[-1]
+            grid_size = int(math.sqrt(num_patches))
+            
+            if grid_size * grid_size != num_patches:
+                return torch.ones(H_img, W_img, device='cpu') * 0.5
+            
+            heatmap = cam[0].reshape(grid_size, grid_size)
+            
+        else:
+            # CLIP/CoCa: Use last block's attention maps
+            if hasattr(model, 'model_type'):
+                if 'clip' in model.model_type or 'coca' in model.model_type:
+                    blocks_list = list(model.visual.transformer.resblocks)
+                else:
+                    blocks_list = list(model.visual.transformer.resblocks)
+            else:
+                if hasattr(model.visual, 'transformer'):
+                    blocks_list = list(model.visual.transformer.resblocks)
+                else:
+                    return torch.ones(H_img, W_img, device='cpu') * 0.5
+            
+            # Get last block
+            last_block = blocks_list[-1]
+            
+            # Check if attention maps are available
+            if not hasattr(last_block, 'attn') or not hasattr(last_block.attn, 'attention_maps'):
+                return torch.ones(H_img, W_img, device='cpu') * 0.5
+            
+            attn_map = last_block.attn.attention_maps  # [batch*heads, N, N]
+            
+            # Compute gradient of similarity w.r.t. attention map
+            model.zero_grad()
+            grad = torch.autograd.grad(
+                outputs=similarity,
+                inputs=[attn_map],
+                retain_graph=False,
+                create_graph=False,
+                allow_unused=True
+            )[0]
+            
+            if grad is None:
+                return torch.ones(H_img, W_img, device='cpu') * 0.5
+            
+            # attn_map shape: [batch*heads, N, N]
+            # Average gradients across all positions to get per-head weights
+            grad_weights = grad.mean(dim=[1, 2], keepdim=True)  # [batch*heads, 1, 1]
+            
+            # Gradient-weighted attention (AttentionCAM formula)
+            cam = attn_map * grad_weights  # [batch*heads, N, N]
+            
+            # Get CLS token attention to patches (row 0, columns 1:)
+            cls_attn = cam[:, 0, 1:]  # [batch*heads, num_patches]
+            
+            # Average across heads and clamp negative values
+            cls_attn = cls_attn.mean(dim=0).clamp(min=0)  # [num_patches]
+            
+            # Reshape to 2D grid
+            num_patches = cls_attn.shape[0]
+            grid_size = int(math.sqrt(num_patches))
+            
+            if grid_size * grid_size != num_patches:
+                return torch.ones(H_img, W_img, device='cpu') * 0.5
+            
+            heatmap = cls_attn.reshape(grid_size, grid_size)
         
         # Upsample to image size
         heatmap = heatmap.unsqueeze(0).unsqueeze(0)  # [1, 1, grid, grid]
