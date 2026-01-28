@@ -760,7 +760,7 @@ class AntiHallucinationObjective:
         use_chefercam=False,
         chefercam_method='transformer_attribution',
         transformer_attribution_start_layer=1,
-        threshold_mode='mean',
+        threshold_mode='fixed',
         fixed_threshold=0.5,
         baseline_metrics=None,
     ):
@@ -1023,7 +1023,11 @@ class AntiHallucinationObjective:
                              # GradCAM/CheferCAM need re-normalization after interpolation
                              heatmap_norm = (heatmap_resized - heatmap_resized.min()) / (heatmap_resized.max() - heatmap_resized.min() + 1e-8)
                     
-                        if self.threshold_mode == 'mean':
+                        # For LeGrad, always use fixed threshold (not mean-based)
+                        # This matches compute_positive_negative_baseline.py behavior
+                        if method_name == 'legrad':
+                            thr = sparse_threshold
+                        elif self.threshold_mode == 'mean':
                             thr = heatmap_norm.mean().item()
                         else:
                             thr = sparse_threshold
@@ -1156,10 +1160,12 @@ class AntiHallucinationObjective:
         if not (wn_use_synonyms or wn_use_hypernyms or wn_use_hyponyms or wn_use_siblings or dict_include_prompts):
             raise optuna.TrialPruned()
         
-        if self.threshold_mode == 'fixed':
+        # For LeGrad, always search for best fixed threshold (not mean-based)
+        # For GradCAM/CheferCAM, use threshold_mode setting
+        if self.threshold_mode == 'fixed' or (not self.use_gradcam and not self.use_chefercam):
             sparse_threshold = trial.suggest_float('sparse_threshold', 0.1, 0.9, step=0.025)
         else:
-            sparse_threshold = 0.5  # Ignored by adaptive thresholding
+            sparse_threshold = 0.5  # Ignored by adaptive thresholding for GradCAM/CheferCAM
         atoms = trial.suggest_int('atoms', 1, 32)
         max_dict_cos_sim = trial.suggest_float('max_dict_cos_sim', 0.5, 1.0, step=0.05)
         
