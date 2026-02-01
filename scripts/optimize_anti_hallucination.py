@@ -12,18 +12,16 @@ The key insight is that we want:
 This is different from just maximizing correct, because if BOTH correct and wrong
 improve by the same amount, the GAP stays the same (no anti-hallucination benefit).
 
-Objective Function:
-    gap_baseline = baseline_correct - baseline_wrong
-    gap_current  = current_correct - current_wrong
-    gap_improvement = gap_current - gap_baseline
-    wrong_degradation = baseline_wrong - current_wrong  (positive when wrong decreases)
-    
-    composite = gap_improvement + λ × wrong_degradation
+Objective Function (Default):
+    composite = (correct_miou + correct_acc + correct_map) - (wrong_miou + wrong_acc + wrong_map)
 
-    where:
-    - gap_improvement: How much the gap between correct and wrong increased
-    - wrong_degradation: How much wrong metrics decreased (positive = good!)
-    - λ (composite_lambda): Weight for wrong degradation bonus (default 0.5)
+    This objective directly maximizes the gap between correct and wrong prompt performance.
+    
+    Legacy Objective (if --composite_lambda changed):
+    gap_baseline = baseline_correct - baseline_wrong
+    gap_improvement = gap_current - gap_baseline
+    wrong_degradation = baseline_wrong - current_wrong
+    composite = gap_improvement + λ × wrong_degradation
 
 Ideal outcomes:
     - correct improves, wrong degrades → gap_improvement >> 0 AND wrong_degradation > 0 (excellent!)
@@ -1557,38 +1555,28 @@ class AntiHallucinationObjective:
             trial.set_user_attr('gap_current_miou', gap_current_miou)
             
             # === COMPOSITE SCORE ===
+            # === COMPOSITE SCORE ===
+            # User Requested Default: (correct_miou + correct_accuracy + correct_map) - (wrong_miou + wrong_accuracy + wrong_map)
+            # This is directly: correct - wrong.
+            
+            # Note: We calculate this directly from current metrics, regardless of baseline.
+            # This replaces the previous logic that included baseline comparisons and degradation bonuses.
+            
+            composite_miou = correct_miou - wrong_miou
+            composite_acc = correct_acc - wrong_acc
+            composite_map = correct_map - wrong_map
+            
+            # If user wants the detailed legacy modes (Gap Improvement or Composite with Degradation), 
+            # they can be re-enabled here, but we default to the simple formula.
             if self.gap_only:
-                # PURE GAP OPTIMIZATION
-                # Maximize gap_improvement = gap_current - gap_baseline
-                # This is equivalent to maximizing (correct - wrong) since baseline is constant
-                #
-                # Objective: Find hyperparameters that increase the gap between
-                # correct and wrong metrics as much as possible.
-                #
-                # Example:
-                # - Baseline gap = 1.69 (SigLIP CheferCAM)
-                # - If current gap = 3.0, gap_improvement = +1.31 (good!)
-                # - If current gap = 1.0, gap_improvement = -0.69 (bad, gap shrank)
+                # Use improvement over baseline instead of raw gap
                 composite_miou = gap_improvement_miou
                 composite_acc = gap_improvement_acc
                 composite_map = gap_improvement_map
-            else:
-                # GAP + WRONG DEGRADATION
-                # Primary: Gap improvement (must be positive for good configs)
-                # Secondary: Wrong degradation weighted by lambda
-                #
-                # composite = gap_improvement + lambda * wrong_degradation
-                #
-                # where wrong_degradation = baseline_wrong - current_wrong
-                # (positive when wrong metrics DECREASE = good!)
-                #
-                # With lambda=0.5:
-                # - Gap improves by +2, wrong degrades by -3 → score = 2 + 0.5*3 = 3.5 (excellent!)
-                # - Gap improves by +2, wrong stays same → score = 2 + 0 = 2.0 (good)
-                # - Gap improves by +2, wrong increases by +1 → score = 2 + 0.5*(-1) = 1.5 (meh)
-                # - Gap shrinks by -1, wrong degrades by -3 → score = -1 + 0.5*3 = 0.5 (still gets some credit)
-                #
-                # This rewards configs that make WRONG metrics go DOWN.
+            elif self.composite_lambda != 0.5:
+                # Only if user explicitly changed lambda (assuming 0.5 was default), we might consider the old formula
+                # For now, we strictly follow the instruction to make the new formula default.
+                # But to preserve the option for manual lambda tuning:
                 composite_miou = gap_improvement_miou + self.composite_lambda * d_w_miou
                 composite_acc = gap_improvement_acc + self.composite_lambda * d_w_acc
                 composite_map = gap_improvement_map + self.composite_lambda * d_w_map
@@ -1862,12 +1850,17 @@ def main():
             print("Where: gap_improvement = (correct - wrong) - (baseline_correct - baseline_wrong)")
             print("Goal: Maximize GAP between correct and wrong metrics ONLY")
             print("(Ignores whether correct metrics improve, only cares about gap)")
-        else:
+        elif args.composite_lambda != 0.5:
             print("GAP + WRONG DEGRADATION Optimization")
             print(f"Score = Σ(gap_improvement + {args.composite_lambda} × wrong_degradation)")
             print("Where: gap_improvement = (correct - wrong) - (baseline_correct - baseline_wrong)")
             print("       wrong_degradation = baseline_wrong - current_wrong (positive when wrong ↓)")
             print("Goal: Maximize GAP AND reward configurations that reduce wrong metrics")
+        else:
+            print("SIMPLE ANTI-HALLUCINATION OPTIMIZATION (Default)")
+            print("Score = Σ(correct - wrong)")
+            print("Formula: (correct_miou + correct_acc + correct_map) - (wrong_miou + wrong_acc + wrong_map)")
+            print("Goal: Maximize the raw gap between correct and wrong metrics.")
         print("(AUROC is calculated and printed but not optimized)")
         print(f"{'='*60}\n")
     
@@ -2053,9 +2046,11 @@ def main():
         print(f"\n=== COMPOSITE BREAKDOWN ===")
         if args.gap_only:
             print(f"  mIoU:     {best_trial.user_attrs.get('composite_miou', 0):.2f}  (pure gap_improvement)")
-        else:
+        elif args.composite_lambda != 0.5:
             print(f"  mIoU:     {best_trial.user_attrs.get('composite_miou', 0):.2f}  (gap_impr + λ×wrong_degradation)")
             print(f"           gap_impr={gap_improvement_miou:+.2f}, wrong_degr={delta_w_miou:+.2f}")
+        else:
+            print(f"  mIoU:     {best_trial.user_attrs.get('composite_miou', 0):.2f}  (correct - wrong)")
         print(f"  Accuracy: {best_trial.user_attrs.get('composite_acc', 0):.2f}")
         print(f"  mAP:      {best_trial.user_attrs.get('composite_map', 0):.2f}")
         
