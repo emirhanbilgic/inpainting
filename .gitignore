@@ -171,6 +171,7 @@ poetry.toml
 pyrightconfig.json
 
 outputs/
+daam_key_space_omp/
 
 legrad_torch.egg-info/
 .DS_Store
