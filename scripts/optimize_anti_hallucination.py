@@ -104,6 +104,12 @@ from sparse_encoding import (
     compute_map_for_embedding,
 )
 
+# Import DAAM segmenter
+try:
+    from daam_segmentation import DAAMSegmenter
+except ImportError:
+    DAAMSegmenter = None
+
 
 # Define semantic superclasses for distant negative sampling
 IMAGENET_SUPERCLASSES = {
@@ -176,6 +182,13 @@ BASELINES = {
         'LRP': {
             'correct': {'miou': 43.38, 'acc': 65.39, 'map': 77.25},
             'wrong': {'miou': 41.69, 'acc': 63.71, 'map': 76.09}
+        }
+    },
+    # DAAM uses Stable Diffusion, independent of CLIP/SigLIP
+    'DAAM': {
+        'DAAM': {
+            'correct': {'miou': 65.73, 'acc': 81.34, 'map': 88.55},
+            'wrong': {'miou': 59.75, 'acc': 76.80, 'map': 86.44}
         }
     }
 }
@@ -946,6 +959,8 @@ class AntiHallucinationObjective:
         baseline_metrics=None,
         use_lrp=False,
         lrp_start_layer=1,
+        use_daam=False,
+        daam_model_id='Manojb/stable-diffusion-2-base',
     ):
         self.model = model
         self.tokenizer = tokenizer
@@ -968,6 +983,15 @@ class AntiHallucinationObjective:
         self.baseline_metrics = baseline_metrics
         self.use_lrp = use_lrp
         self.lrp_start_layer = lrp_start_layer
+        self.use_daam = use_daam
+        
+        # Initialize DAAM segmenter if needed
+        self.daam_segmenter = None
+        if self.use_daam:
+            if DAAMSegmenter is None:
+                raise ImportError("Could not import DAAMSegmenter. Ensure scripts/daam_segmentation.py exists.")
+            print(f"[optuna] Initializing DAAMSegmenter ({daam_model_id})...")
+            self.daam_segmenter = DAAMSegmenter(model_id=daam_model_id, device=device)
         
         # Load dataset
         self.f = h5py.File(dataset_file, 'r')
@@ -1046,6 +1070,7 @@ class AntiHallucinationObjective:
         sparse_threshold: float,
         atoms: int,
         max_dict_cos_sim: float,
+        omp_beta: float = 1.0,
         show_progress: bool = False,
     ):
         """
@@ -1168,29 +1193,88 @@ class AntiHallucinationObjective:
                         sparse_1x = omp_sparse_residual(text_emb_1x, D, max_atoms=atoms)
                         return sparse_1x
                 
-                    def compute_metrics(text_emb_1x, target_class_name):
+                    def compute_metrics(text_emb_1x, target_class_name, competing_class_names=None, omp_beta=1.0):
                         """Compute heatmap and metrics for a given embedding."""
-                        sparse_1x = build_sparse_embedding(text_emb_1x, target_class_name)
-                    
+                        
                         method_name = 'legrad'
-                        # Choose between LRP, CheferCAM, GradCAM and LeGrad (sparse)
-                        if self.use_lrp:
-                            heatmap = compute_lrp_heatmap(self.model, img_t, sparse_1x)
-                            method_name = 'lrp'
-                        elif self.use_chefercam:
-                            if self.chefercam_method == 'transformer_attribution':
-                                heatmap = compute_transformer_attribution(
-                                    self.model, img_t, sparse_1x, start_layer=self.transformer_attribution_start_layer
+                        
+                        # DAAM uses its own pipeline - doesn't need CLIP embeddings
+                        if self.use_daam:
+                            prompt_text = f"a photo of a {target_class_name}."
+                            
+                            # Build competing concepts from WordNet neighbors and other classes
+                            # (same hyperparameters as CLIP-based methods for fair comparison)
+                            all_competing = []
+                            
+                            # 1) Add other class names (if dict_include_prompts)
+                            if dict_include_prompts and competing_class_names:
+                                all_competing.extend(competing_class_names)
+                            
+                            # 2) Add WordNet neighbors
+                            use_wn = any([wn_use_synonyms, wn_use_hypernyms, wn_use_hyponyms, wn_use_siblings])
+                            if use_wn:
+                                raw_neighbors = wordnet_neighbors_configured(
+                                    target_class_name,
+                                    use_synonyms=wn_use_synonyms,
+                                    use_hypernyms=wn_use_hypernyms,
+                                    use_hyponyms=wn_use_hyponyms,
+                                    use_siblings=wn_use_siblings,
+                                    limit_per_relation=8,
+                                )
+                                if raw_neighbors:
+                                    # Filter out target class itself
+                                    raw_neighbors = [n for n in raw_neighbors if n.lower() != target_class_name.lower()]
+                                    all_competing.extend(raw_neighbors)
+                            
+                            # Remove duplicates while preserving order
+                            seen = set()
+                            unique_competing = []
+                            for c in all_competing:
+                                c_lower = c.lower()
+                                if c_lower not in seen and c_lower != target_class_name.lower():
+                                    seen.add(c_lower)
+                                    unique_competing.append(c)
+                            
+                            # Limit by atoms parameter (like limiting dictionary size in CLIP OMP)
+                            if atoms > 0 and len(unique_competing) > atoms:
+                                unique_competing = unique_competing[:atoms]
+                            
+                            # Use Key-Space OMP if we have competing concepts
+                            if unique_competing:
+                                heatmap = self.daam_segmenter.predict_key_space_omp(
+                                    base_img,
+                                    prompt=prompt_text,
+                                    target_concept=target_class_name,
+                                    competing_concepts=unique_competing,
+                                    size=512,
+                                    omp_beta=omp_beta
                                 )
                             else:
-                                heatmap = compute_chefercam(self.model, img_t, sparse_1x)
-                            method_name = 'chefercam'
-                        elif self.use_gradcam:
-                            heatmap = compute_gradcam_heatmap(self.model, img_t, sparse_1x, layer_index=self.gradcam_layer)
-                            method_name = 'gradcam'
+                                # Fallback to basic DAAM without OMP (baseline)
+                                heatmap = self.daam_segmenter.predict(base_img, prompt_text, size=512)
+                            method_name = 'daam'
                         else:
-                            heatmap = compute_map_for_embedding(self.model, img_t, sparse_1x)
-                            method_name = 'legrad'
+                            # CLIP-based methods use sparse embeddings
+                            sparse_1x = build_sparse_embedding(text_emb_1x, target_class_name)
+                            
+                            # Choose between LRP, CheferCAM, GradCAM and LeGrad (sparse)
+                            if self.use_lrp:
+                                heatmap = compute_lrp_heatmap(self.model, img_t, sparse_1x)
+                                method_name = 'lrp'
+                            elif self.use_chefercam:
+                                if self.chefercam_method == 'transformer_attribution':
+                                    heatmap = compute_transformer_attribution(
+                                        self.model, img_t, sparse_1x, start_layer=self.transformer_attribution_start_layer
+                                    )
+                                else:
+                                    heatmap = compute_chefercam(self.model, img_t, sparse_1x)
+                                method_name = 'chefercam'
+                            elif self.use_gradcam:
+                                heatmap = compute_gradcam_heatmap(self.model, img_t, sparse_1x, layer_index=self.gradcam_layer)
+                                method_name = 'gradcam'
+                            else:
+                                heatmap = compute_map_for_embedding(self.model, img_t, sparse_1x)
+                                method_name = 'legrad'
                     
                         # Get actual heatmap dimensions
                         H_hm, W_hm = heatmap.shape[-2], heatmap.shape[-1]
@@ -1249,8 +1333,15 @@ class AntiHallucinationObjective:
                     
                         return inter, union, correct, labeled, ap[0] if ap else 0.0, auroc, max_val, mean_val, median_val, min_val
                 
+                    # === WRONG PROMPTS (sample first to get competing concepts for DAAM OMP) ===
+                    neg_indices = self._sample_negative_indices(cls_idx)
+                    neg_class_names = [self.wnid_to_classname[self.idx_to_wnid[ni]] for ni in neg_indices]
+                    
                     # === CORRECT PROMPT ===
-                    inter_c, union_c, correct_c, label_c, ap_c, auroc_c, mx_c, mn_c, md_c, mi_c = compute_metrics(original_1x, class_name)
+                    # For DAAM, pass wrong classes as potential competing concepts (filtered by hyperparameters)
+                    inter_c, union_c, correct_c, label_c, ap_c, auroc_c, mx_c, mn_c, md_c, mi_c = compute_metrics(
+                        original_1x, class_name, competing_class_names=neg_class_names, omp_beta=omp_beta
+                    )
                     correct_results['inter'] = correct_results['inter'] + inter_c
                     correct_results['union'] = correct_results['union'] + union_c
                     correct_results['pixel_correct'] += correct_c
@@ -1264,13 +1355,17 @@ class AntiHallucinationObjective:
                     correct_results['min'].append(mi_c)
                 
                     # === WRONG PROMPTS ===
-                    neg_indices = self._sample_negative_indices(cls_idx)
                     for neg_idx in neg_indices:
                         neg_wnid = self.idx_to_wnid[neg_idx]
                         neg_class_name = self.wnid_to_classname[neg_wnid]
                         neg_emb = self.all_text_embs[neg_idx:neg_idx + 1]
+                        
+                        # For DAAM, use correct class as a competing concept for wrong prompts
+                        wrong_competing = [class_name]
                     
-                        inter_w, union_w, correct_w, label_w, ap_w, auroc_w, mx_w, mn_w, md_w, mi_w = compute_metrics(neg_emb, neg_class_name)
+                        inter_w, union_w, correct_w, label_w, ap_w, auroc_w, mx_w, mn_w, md_w, mi_w = compute_metrics(
+                            neg_emb, neg_class_name, competing_class_names=wrong_competing, omp_beta=omp_beta
+                        )
                         wrong_results['inter'] = wrong_results['inter'] + inter_w
                         wrong_results['union'] = wrong_results['union'] + union_w
                         wrong_results['pixel_correct'] += correct_w
@@ -1350,13 +1445,19 @@ class AntiHallucinationObjective:
             raise optuna.TrialPruned()
         
         # For LeGrad, always search for best fixed threshold (not mean-based)
-        # For GradCAM/CheferCAM/LRP, use threshold_mode setting
-        if self.threshold_mode == 'fixed' or (not self.use_gradcam and not self.use_chefercam and not self.use_lrp):
+        # For GradCAM/CheferCAM/LRP/DAAM, use threshold_mode setting
+        if self.threshold_mode == 'fixed' or (not self.use_gradcam and not self.use_chefercam and not self.use_lrp and not self.use_daam):
             sparse_threshold = trial.suggest_float('sparse_threshold', 0.1, 0.9, step=0.025)
         else:
             sparse_threshold = 0.5  # Ignored by adaptive thresholding for GradCAM/CheferCAM/LRP
         atoms = trial.suggest_int('atoms', 1, 32)
         max_dict_cos_sim = trial.suggest_float('max_dict_cos_sim', 0.5, 1.0, step=0.05)
+        
+        # DAAM-specific: omp_beta controls orthogonalization strength in Key-Space OMP
+        if self.use_daam:
+            omp_beta = trial.suggest_float('omp_beta', 0.0, 2.0, step=0.1)
+        else:
+            omp_beta = 1.0  # Not used for CLIP-based methods
         
         # Evaluate
         (correct_miou, wrong_miou, correct_acc, wrong_acc, correct_map, wrong_map,
@@ -1369,6 +1470,7 @@ class AntiHallucinationObjective:
             sparse_threshold=sparse_threshold,
             atoms=atoms,
             max_dict_cos_sim=max_dict_cos_sim,
+            omp_beta=omp_beta,
             show_progress=False,
         )
         
@@ -1572,6 +1674,12 @@ def main():
     parser.add_argument('--lrp_start_layer', type=int, default=1,
                         help='Start layer for LRP attribution (default: 1)')
     
+    # DAAM settings
+    parser.add_argument('--use_daam', action='store_true',
+                        help='Use DAAM (Stable Diffusion Attention) instead of LeGrad')
+    parser.add_argument('--daam_model_id', type=str, default='Manojb/stable-diffusion-2-base',
+                        help='Stable Diffusion model ID for DAAM')
+    
     # Threshold settings
     parser.add_argument('--threshold_mode', type=str, default='fixed',
                         choices=['mean', 'fixed'],
@@ -1592,21 +1700,26 @@ def main():
     
     args = parser.parse_args()
     
-    # Determine model type
-    if args.use_siglip:
-        model_type_key = 'SigLIP'
+    # Determine model type and method
+    if args.use_daam:
+        # DAAM uses its own Stable Diffusion pipeline, independent of CLIP/SigLIP
+        model_type_key = 'DAAM'
+        method_key = 'DAAM'
     else:
-        model_type_key = 'CLIP'
-        
-    # Determine method
-    if args.use_lrp:
-        method_key = 'LRP'
-    elif args.use_chefercam:
-        method_key = 'CheferCAM'
-    elif args.use_gradcam:
-        method_key = 'GradCAM'
-    else:
-        method_key = 'LeGrad'
+        if args.use_siglip:
+            model_type_key = 'SigLIP'
+        else:
+            model_type_key = 'CLIP'
+            
+        # Determine method
+        if args.use_lrp:
+            method_key = 'LRP'
+        elif args.use_chefercam:
+            method_key = 'CheferCAM'
+        elif args.use_gradcam:
+            method_key = 'GradCAM'
+        else:
+            method_key = 'LeGrad'
         
     # Get baseline metrics
     baseline_metrics = BASELINES[model_type_key][method_key]
@@ -1692,6 +1805,8 @@ def main():
         baseline_metrics=baseline_metrics,
         use_lrp=args.use_lrp,
         lrp_start_layer=args.lrp_start_layer,
+        use_daam=args.use_daam,
+        daam_model_id=args.daam_model_id,
     )
     
     # Create Optuna study
@@ -1786,7 +1901,9 @@ def main():
                   f"Composite={best_composite:.2f}")
     
     # Run optimization
-    if args.use_lrp:
+    if args.use_daam:
+        method_name = "DAAM + Key-Space OMP"
+    elif args.use_lrp:
         method_name = "LRP"
     elif args.use_chefercam:
         method_name = "CheferCAM"
@@ -1796,9 +1913,15 @@ def main():
         method_name = "LeGrad"
 
     print(f"Starting Optuna optimization with {args.n_trials} trials")
-    print(f"Model: {args.model_name} ({args.pretrained}) [{model_type}]")
+    if args.use_daam:
+        print(f"Model: {args.daam_model_id} (Stable Diffusion)")
+    else:
+        print(f"Model: {args.model_name} ({args.pretrained}) [{model_type}]")
     print(f"Method: {method_name}")
-    if args.use_lrp:
+    if args.use_daam:
+        print(f"DAAM model: {args.daam_model_id}")
+        print(f"Tuning: WordNet neighbors, omp_beta, atoms, sparse_threshold")
+    elif args.use_lrp:
         print(f"LRP start layer: {args.lrp_start_layer}")
     elif args.use_gradcam:
         print(f"GradCAM layer: {args.gradcam_layer}")
