@@ -1919,6 +1919,12 @@ def main():
     elif args.use_gradcam:
         print(f"GradCAM layer: {args.gradcam_layer}")
     print(f"Negative strategy: {args.negative_strategy}, Num negatives: {args.num_negatives}")
+    
+    # Enforce n_jobs=1 for DAAM because 'trace' context manager is not thread-safe
+    if args.use_daam and args.n_jobs > 1:
+        print(f"[WARNING] DAAM is not thread-safe due to model hooks. Forcing n_jobs=1 (was {args.n_jobs}).")
+        args.n_jobs = 1
+        
     print(f"Composite Lambda: {args.composite_lambda}")
     print(f"Baseline: {model_type_key} - {method_key}")
     print(f"{'='*60}\n")
