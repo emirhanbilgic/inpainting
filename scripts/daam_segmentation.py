@@ -38,7 +38,7 @@ class DAAMSegmenter:
         print(f"[DAAM] Loading Stable Diffusion pipeline: {model_id}...")
         self.device = device
         # Use public mirror, no token needed
-        self.pipeline = StableDiffusionPipeline.from_pretrained(model_id).to(device)
+        self.pipeline = StableDiffusionPipeline.from_pretrained(model_id, torch_dtype=torch.float16).to(device)
         self.pipeline.enable_attention_slicing()
         
         # We need the VAE and UNet for the manual forward pass

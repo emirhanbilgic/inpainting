@@ -1094,6 +1094,9 @@ class AntiHallucinationObjective:
             iterator = tqdm(iterator, desc="Evaluating")
         
         for idx in iterator:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
             for attempt in range(3):
                 try:
                     # Load Image
@@ -1379,6 +1382,9 @@ class AntiHallucinationObjective:
                     # Success, break attempt loop
                     break
                 except Exception as e:
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    import gc; gc.collect()
                     if attempt < 2:
                         print(f"Retrying idx {idx} (attempt {attempt+1})... Error: {e}")
                         import traceback
