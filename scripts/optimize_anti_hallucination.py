@@ -159,9 +159,9 @@ BASELINES = {
             'correct': {'miou': 48.71, 'acc': 69.32, 'map': 80.36},
             'wrong': {'miou': 44.95, 'acc': 66.51, 'map': 78.77}
         },
-        'LRP': {
-            'correct': {'miou': 48.71, 'acc': 69.32, 'map': 80.36},
-            'wrong': {'miou': 44.95, 'acc': 66.51, 'map': 78.77}
+        'AttentionCAM': {
+            'correct': {'miou': 40.14, 'acc': 68.67, 'map': 70.34},
+            'wrong': {'miou': 65.78, 'acc': 62.55, 'map': 65.78}
         }
     },
     'SigLIP': {
@@ -177,9 +177,9 @@ BASELINES = {
             'correct': {'miou': 43.38, 'acc': 65.39, 'map': 77.25},
             'wrong': {'miou': 41.69, 'acc': 63.71, 'map': 76.09}
         },
-        'LRP': {
-            'correct': {'miou': 43.38, 'acc': 65.39, 'map': 77.25},
-            'wrong': {'miou': 41.69, 'acc': 63.71, 'map': 76.09}
+        'AttentionCAM': {
+            'correct': {'miou': 38.95, 'acc': 65.63, 'map': 69.91},
+            'wrong': {'miou':  32.06, 'acc':  59.62, 'map': 63.36}
         }
     },
     # DAAM uses Stable Diffusion, independent of CLIP/SigLIP
@@ -955,7 +955,7 @@ class AntiHallucinationObjective:
         threshold_mode='fixed',
         fixed_threshold=0.5,
         baseline_metrics=None,
-        use_lrp=False,
+        use_attentioncam=False,
         lrp_start_layer=1,
         use_daam=False,
         daam_model_id='Manojb/stable-diffusion-2-base',
@@ -979,7 +979,7 @@ class AntiHallucinationObjective:
         self.threshold_mode = threshold_mode
         self.fixed_threshold = fixed_threshold
         self.baseline_metrics = baseline_metrics
-        self.use_lrp = use_lrp
+        self.use_attentioncam = use_attentioncam
         self.lrp_start_layer = lrp_start_layer
         self.use_daam = use_daam
         
@@ -1259,7 +1259,7 @@ class AntiHallucinationObjective:
                             sparse_1x = build_sparse_embedding(text_emb_1x, target_class_name)
                             
                             # Choose between LRP, CheferCAM, GradCAM and LeGrad (sparse)
-                            if self.use_lrp:
+                            if self.use_attentioncam:
                                 heatmap = compute_lrp_heatmap(self.model, img_t, sparse_1x)
                                 method_name = 'lrp'
                             elif self.use_chefercam:
@@ -1450,7 +1450,7 @@ class AntiHallucinationObjective:
         
         # For LeGrad, always search for best fixed threshold (not mean-based)
         # For GradCAM/CheferCAM/LRP/DAAM, use threshold_mode setting
-        if self.threshold_mode == 'fixed' or (not self.use_gradcam and not self.use_chefercam and not self.use_lrp and not self.use_daam):
+        if self.threshold_mode == 'fixed' or (not self.use_gradcam and not self.use_chefercam and not self.use_attentioncam and not self.use_daam):
             sparse_threshold = trial.suggest_float('sparse_threshold', 0.1, 0.9, step=0.025)
         else:
             sparse_threshold = 0.5  # Ignored by adaptive thresholding for GradCAM/CheferCAM/LRP
@@ -1663,8 +1663,8 @@ def main():
                         help='Use CheferCAM (attention GradCAM) instead of LeGrad')
     
     # LRP settings
-    parser.add_argument('--use_lrp', action='store_true',
-                        help='Use LRP (Layer-wise Relevance Propagation) instead of LeGrad')
+    parser.add_argument('--use_attentioncam', action='store_true',
+                        help='Use AttentionCAM instead of LeGrad')
     parser.add_argument('--lrp_start_layer', type=int, default=1,
                         help='Start layer for LRP attribution (default: 1)')
     
@@ -1706,8 +1706,8 @@ def main():
             model_type_key = 'CLIP'
             
         # Determine method
-        if args.use_lrp:
-            method_key = 'LRP'
+        if args.use_attentioncam:
+            method_key = 'AttentionCAM'
         elif args.use_chefercam:
             method_key = 'CheferCAM'
         elif args.use_gradcam:
@@ -1797,7 +1797,7 @@ def main():
         threshold_mode=args.threshold_mode,
         fixed_threshold=args.fixed_threshold,
         baseline_metrics=baseline_metrics,
-        use_lrp=args.use_lrp,
+        use_attentioncam=args.use_attentioncam,
         lrp_start_layer=args.lrp_start_layer,
         use_daam=args.use_daam,
         daam_model_id=args.daam_model_id,
@@ -1902,8 +1902,8 @@ def main():
     # Run optimization
     if args.use_daam:
         method_name = "DAAM + Key-Space OMP"
-    elif args.use_lrp:
-        method_name = "LRP"
+    elif args.use_attentioncam:
+        method_name = "AttentionCAM"
     elif args.use_chefercam:
         method_name = "CheferCAM"
     elif args.use_gradcam:
@@ -1920,8 +1920,8 @@ def main():
     if args.use_daam:
         print(f"DAAM model: {args.daam_model_id}")
         print(f"Tuning: WordNet neighbors, omp_beta, atoms, sparse_threshold")
-    elif args.use_lrp:
-        print(f"LRP start layer: {args.lrp_start_layer}")
+    elif args.use_attentioncam:
+        print(f"AttentionCAM start layer: {args.lrp_start_layer}")
     elif args.use_gradcam:
         print(f"GradCAM layer: {args.gradcam_layer}")
     print(f"Negative strategy: {args.negative_strategy}, Num negatives: {args.num_negatives}")

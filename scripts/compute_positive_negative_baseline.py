@@ -82,10 +82,12 @@ try:
     from sparse_encoding import (
         omp_sparse_residual,
         wordnet_neighbors_configured,
+        compute_map_for_embedding,
     )
 except ImportError:
     omp_sparse_residual = None
     wordnet_neighbors_configured = None
+    compute_map_for_embedding = None
 
 try:
     from daam_segmentation import DAAMSegmenter
@@ -1526,6 +1528,308 @@ class LeGradBaselineEvaluator:
             }
         }
 
+    def evaluate_legrad_omp(
+        self,
+        wn_use_synonyms: bool,
+        wn_use_hypernyms: bool,
+        wn_use_hyponyms: bool,
+        wn_use_siblings: bool,
+        dict_include_prompts: bool,
+        sparse_threshold: float,
+        atoms: int,
+        max_dict_cos_sim: float,
+        show_progress: bool = True,
+    ):
+        """
+        Evaluate LeGrad with OMP sparse encoding using specific hyperparameters.
+        
+        This matches the evaluate_sparse_config method from optimize_anti_hallucination.py
+        for LeGrad (CLIP-based) with sparse encoding.
+        
+        Args:
+            wn_use_synonyms: Include WordNet synonyms in dictionary
+            wn_use_hypernyms: Include WordNet hypernyms in dictionary
+            wn_use_hyponyms: Include WordNet hyponyms in dictionary
+            wn_use_siblings: Include WordNet siblings in dictionary
+            dict_include_prompts: Include other class prompts in dictionary
+            sparse_threshold: Threshold for binary segmentation
+            atoms: Maximum number of atoms for OMP
+            max_dict_cos_sim: Maximum cosine similarity for dictionary filtering
+            show_progress: Show progress bar
+            
+        Returns:
+            Dict with 'correct' and 'wrong' metrics (miou, acc, map, auroc, statistics)
+        """
+        if omp_sparse_residual is None or wordnet_neighbors_configured is None:
+            raise ImportError("sparse_encoding module not available. Cannot use OMP sparse encoding.")
+        
+        if compute_map_for_embedding is None:
+            raise ImportError("compute_map_for_embedding not available from sparse_encoding.")
+        
+        correct_results = {
+            'inter': np.zeros(2), 'union': np.zeros(2),
+            'pixel_correct': 0, 'pixel_label': 0,
+            'ap': [], 'auroc': [],
+            'max': [], 'mean': [], 'median': [], 'min': []
+        }
+        wrong_results = {
+            'inter': np.zeros(2), 'union': np.zeros(2),
+            'pixel_correct': 0, 'pixel_label': 0,
+            'ap': [], 'auroc': [],
+            'max': [], 'mean': [], 'median': [], 'min': []
+        }
+        
+        iterator = range(self.limit)
+        if show_progress:
+            iterator = tqdm(iterator, desc="Evaluating LeGrad OMP")
+        
+        for idx in iterator:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            try:
+                # Load Image
+                img_ref = self.imgs_refs[idx, 0]
+                img_obj = np.array(self.f[img_ref])
+                img_np = img_obj.transpose(2, 1, 0)
+                base_img = Image.fromarray(img_np)
+                
+                img_t = self.preprocess(base_img).unsqueeze(0).to(self.device)
+                
+                # Load GT
+                gt_ref = self.gts_refs[idx, 0]
+                gt_wrapper = self.f[gt_ref]
+                if gt_wrapper.dtype == 'object':
+                    real_gt_ref = gt_wrapper[0, 0]
+                    real_gt = np.array(self.f[real_gt_ref])
+                    gt_mask = real_gt.transpose(1, 0)
+                else:
+                    gt_mask = np.zeros((base_img.height, base_img.width), dtype=np.uint8)
+                
+                # Resize GT
+                gt_pil = Image.fromarray(gt_mask.astype(np.uint8))
+                target_resize = transforms.Resize(
+                    (self.image_size, self.image_size),
+                    interpolation=InterpolationMode.NEAREST,
+                )
+                gt_pil = target_resize(gt_pil)
+                gt_mask = np.array(gt_pil).astype(np.int32)
+                gt_tensor = torch.from_numpy(gt_mask).long()
+                H_gt, W_gt = gt_mask.shape
+                
+                # Get class info
+                wnid = self.wnids_in_seg[idx]
+                class_name = self.wnid_to_classname[wnid]
+                cls_idx = self.wnid_to_idx[wnid]
+                original_1x = self.all_text_embs[cls_idx:cls_idx + 1]
+                
+                def build_sparse_embedding(text_emb_1x, target_class_name):
+                    """Build sparse residual embedding using OMP."""
+                    parts = []
+                    
+                    # 1) Other class prompts
+                    emb_idx = None
+                    for i, w in enumerate(self.unique_wnids):
+                        if self.wnid_to_classname[w] == target_class_name:
+                            emb_idx = i
+                            break
+                    
+                    if dict_include_prompts and len(self.unique_wnids) > 1:
+                        if emb_idx is not None:
+                            if emb_idx > 0:
+                                parts.append(self.all_text_embs[:emb_idx])
+                            if emb_idx + 1 < len(self.unique_wnids):
+                                parts.append(self.all_text_embs[emb_idx + 1:])
+                        else:
+                            parts.append(self.all_text_embs)
+                    
+                    # 2) WordNet neighbors
+                    use_wn = any([wn_use_synonyms, wn_use_hypernyms, wn_use_hyponyms, wn_use_siblings])
+                    if use_wn:
+                        target_prompt = f"a photo of a {target_class_name}."
+                        raw_neighbors = wordnet_neighbors_configured(
+                            target_class_name,
+                            use_synonyms=wn_use_synonyms,
+                            use_hypernyms=wn_use_hypernyms,
+                            use_hyponyms=wn_use_hyponyms,
+                            use_siblings=wn_use_siblings,
+                            limit_per_relation=8,
+                        )
+                        if raw_neighbors:
+                            neighbor_prompts = [target_prompt.replace(target_class_name, w) for w in raw_neighbors]
+                            n_tok = self.tokenizer(neighbor_prompts).to(self.device)
+                            with torch.no_grad():
+                                n_emb = self.model.encode_text(n_tok)
+                                n_emb = F.normalize(n_emb, dim=-1)
+                            parts.append(n_emb)
+                    
+                    # Combine dictionary
+                    if len(parts) > 0:
+                        D = torch.cat(parts, dim=0)
+                        D = F.normalize(D, dim=-1)
+                        
+                        # Filter by cosine similarity
+                        if 0.0 < max_dict_cos_sim < 1.0:
+                            sim = (D @ text_emb_1x.t()).squeeze(-1).abs()
+                            keep = sim < max_dict_cos_sim
+                            D = D[keep]
+                    else:
+                        D = text_emb_1x.new_zeros((0, text_emb_1x.shape[-1]))
+                    
+                    # OMP sparse residual
+                    sparse_1x = omp_sparse_residual(text_emb_1x, D, max_atoms=atoms)
+                    return sparse_1x
+                
+                def compute_legrad_omp_metrics(text_emb_1x, target_class_name):
+                    """Compute LeGrad OMP heatmap and metrics."""
+                    # Build sparse embedding
+                    sparse_1x = build_sparse_embedding(text_emb_1x, target_class_name)
+                    
+                    # Compute LeGrad heatmap with sparse embedding
+                    heatmap = compute_map_for_embedding(self.model, img_t, sparse_1x)
+                    
+                    # Get heatmap dimensions
+                    H_hm, W_hm = heatmap.shape[-2], heatmap.shape[-1]
+                    
+                    # Resize heatmap to GT size
+                    heatmap_resized = F.interpolate(
+                        heatmap.view(1, 1, H_hm, W_hm),
+                        size=(H_gt, W_gt),
+                        mode='bilinear',
+                        align_corners=False
+                    ).squeeze()
+                    
+                    # LeGrad is already clamped [0,1], preserve absolute confidence
+                    heatmap_norm = heatmap_resized
+                    
+                    # Threshold for binary segmentation
+                    thr = sparse_threshold
+                    
+                    # Create binary predictions
+                    Res_1 = (heatmap_norm > thr).float()
+                    Res_0 = (heatmap_norm <= thr).float()
+                    
+                    output = torch.stack([Res_0, Res_1], dim=0)
+                    output_AP = torch.stack([1.0 - heatmap_norm, heatmap_norm], dim=0)
+                    
+                    # Metrics
+                    correct_pixels, labeled_pixels = batch_pix_accuracy(output, gt_tensor)
+                    inter, union = batch_intersection_union(output, gt_tensor, nclass=2)
+                    ap_list = get_ap_scores(output_AP, gt_tensor)
+                    ap = ap_list[0] if ap_list else 0.0
+                    
+                    # Statistics
+                    heatmap_np = heatmap_norm.numpy()
+                    max_val = float(np.max(heatmap_np))
+                    mean_val = float(np.mean(heatmap_np))
+                    median_val = float(np.median(heatmap_np))
+                    min_val = float(np.min(heatmap_np))
+                    
+                    # AUROC
+                    gt_binary = (gt_mask > 0).astype(int).flatten()
+                    pred_flat = heatmap_np.flatten()
+                    if len(np.unique(gt_binary)) > 1:
+                        auroc = roc_auc_score(gt_binary, pred_flat)
+                    else:
+                        auroc = np.nan
+                    
+                    return inter, union, correct_pixels, labeled_pixels, ap, auroc, max_val, mean_val, median_val, min_val
+                
+                # === WRONG PROMPTS (sample first) ===
+                neg_indices = self._sample_negative_indices(cls_idx)
+                
+                # === CORRECT PROMPT ===
+                inter_c, union_c, correct_c, label_c, ap_c, auroc_c, mx_c, mn_c, md_c, mi_c = compute_legrad_omp_metrics(
+                    original_1x, class_name
+                )
+                correct_results['inter'] = correct_results['inter'] + inter_c
+                correct_results['union'] = correct_results['union'] + union_c
+                correct_results['pixel_correct'] += correct_c
+                correct_results['pixel_label'] += label_c
+                correct_results['ap'].append(ap_c)
+                if not np.isnan(auroc_c):
+                    correct_results['auroc'].append(auroc_c)
+                correct_results['max'].append(mx_c)
+                correct_results['mean'].append(mn_c)
+                correct_results['median'].append(md_c)
+                correct_results['min'].append(mi_c)
+                
+                # === WRONG PROMPTS ===
+                for neg_idx in neg_indices:
+                    neg_wnid = self.idx_to_wnid[neg_idx]
+                    neg_class_name = self.wnid_to_classname[neg_wnid]
+                    neg_emb = self.all_text_embs[neg_idx:neg_idx + 1]
+                    
+                    inter_w, union_w, correct_w, label_w, ap_w, auroc_w, mx_w, mn_w, md_w, mi_w = compute_legrad_omp_metrics(
+                        neg_emb, neg_class_name
+                    )
+                    wrong_results['inter'] = wrong_results['inter'] + inter_w
+                    wrong_results['union'] = wrong_results['union'] + union_w
+                    wrong_results['pixel_correct'] += correct_w
+                    wrong_results['pixel_label'] += label_w
+                    wrong_results['ap'].append(ap_w)
+                    if not np.isnan(auroc_w):
+                        wrong_results['auroc'].append(auroc_w)
+                    wrong_results['max'].append(mx_w)
+                    wrong_results['mean'].append(mn_w)
+                    wrong_results['median'].append(md_w)
+                    wrong_results['min'].append(mi_w)
+                
+            except Exception as e:
+                print(f"[Warning] Error processing image {idx}: {e}")
+                import traceback
+                traceback.print_exc()
+                continue
+        
+        # Compute global metrics
+        def compute_global_metrics(res_dict):
+            iou = res_dict['inter'].astype(np.float64) / (res_dict['union'].astype(np.float64) + 1e-10)
+            miou = 100.0 * iou.mean()
+            pix_acc = 100.0 * res_dict['pixel_correct'] / (res_dict['pixel_label'] + 1e-10)
+            map_score = np.mean(res_dict['ap']) * 100 if res_dict['ap'] else 0.0
+            auroc_score = np.mean(res_dict['auroc']) * 100 if res_dict['auroc'] else 0.0
+            return miou, pix_acc, map_score, auroc_score
+        
+        correct_miou, correct_acc, correct_map, correct_auroc = compute_global_metrics(correct_results)
+        wrong_miou, wrong_acc, wrong_map, wrong_auroc = compute_global_metrics(wrong_results)
+        
+        correct_stats = {
+            'max': np.mean(correct_results['max']) if correct_results['max'] else 0.0,
+            'mean': np.mean(correct_results['mean']) if correct_results['mean'] else 0.0,
+            'median': np.mean(correct_results['median']) if correct_results['median'] else 0.0,
+            'min': np.mean(correct_results['min']) if correct_results['min'] else 0.0,
+            'n_samples': len(correct_results['ap']),
+        }
+        wrong_stats = {
+            'max': np.mean(wrong_results['max']) if wrong_results['max'] else 0.0,
+            'mean': np.mean(wrong_results['mean']) if wrong_results['mean'] else 0.0,
+            'median': np.mean(wrong_results['median']) if wrong_results['median'] else 0.0,
+            'min': np.mean(wrong_results['min']) if wrong_results['min'] else 0.0,
+            'n_samples': len(wrong_results['ap']),
+        }
+        
+        return {
+            'correct': {
+                'miou': correct_miou, 'acc': correct_acc, 'map': correct_map, 'auroc': correct_auroc,
+                **correct_stats
+            },
+            'wrong': {
+                'miou': wrong_miou, 'acc': wrong_acc, 'map': wrong_map, 'auroc': wrong_auroc,
+                **wrong_stats
+            },
+            'params': {
+                'wn_use_synonyms': wn_use_synonyms,
+                'wn_use_hypernyms': wn_use_hypernyms,
+                'wn_use_hyponyms': wn_use_hyponyms,
+                'wn_use_siblings': wn_use_siblings,
+                'dict_include_prompts': dict_include_prompts,
+                'sparse_threshold': sparse_threshold,
+                'atoms': atoms,
+                'max_dict_cos_sim': max_dict_cos_sim,
+            }
+        }
+
+
 
 def main():
     parser = argparse.ArgumentParser(description='Compute LeGrad Negative Baseline')
@@ -1597,6 +1901,8 @@ def main():
                         help='Maximum cosine similarity for dictionary filtering (default: 0.9)')
     parser.add_argument('--omp_beta', type=float, default=1.0,
                         help='OMP orthogonalization strength, 0.0-2.0 (default: 1.0)')
+    parser.add_argument('--use_legrad_omp', action='store_true',
+                        help='Use LeGrad with OMP sparse encoding (for CLIP, not DAAM)')
     
     # LRP settings
     parser.add_argument('--use_lrp', action='store_true',
@@ -1685,6 +1991,8 @@ def main():
         method_name = "DAAM + Key-Space OMP"
     elif args.use_daam:
         method_name = "DAAM"
+    elif args.use_legrad_omp:
+        method_name = "LeGrad + OMP Sparse Encoding"
     elif args.use_lrp:
         method_name = "LRP"
     elif args.use_chefercam:
@@ -1695,15 +2003,15 @@ def main():
         method_name = "LeGrad"
     
     print(f"\n{'='*60}")
-    if args.use_daam_omp:
+    if args.use_daam_omp or args.use_legrad_omp:
         print(f"Computing {method_name} Evaluation")
     else:
         print(f"Computing {method_name} Baseline ({model_type}, No Sparse Encoding)")
     print(f"{'='*60}")
     print(f"Model: {args.model_name} ({args.pretrained})")
     print(f"Method: {method_name}")
-    if args.use_daam_omp:
-        print(f"DAAM OMP Parameters:")
+    if args.use_daam_omp or args.use_legrad_omp:
+        print(f"OMP Sparse Encoding Parameters:")
         print(f"  wn_use_synonyms: {args.wn_use_synonyms}")
         print(f"  wn_use_hypernyms: {args.wn_use_hypernyms}")
         print(f"  wn_use_hyponyms: {args.wn_use_hyponyms}")
@@ -1712,7 +2020,9 @@ def main():
         print(f"  sparse_threshold: {args.sparse_threshold}")
         print(f"  atoms: {args.atoms}")
         print(f"  max_dict_cos_sim: {args.max_dict_cos_sim}")
-        print(f"  omp_beta: {args.omp_beta}")
+        if args.use_daam_omp:
+            print(f"  omp_beta: {args.omp_beta}")
+
     elif args.use_chefercam:
         print(f"CheferCAM method: {args.chefercam_method}")
         if args.chefercam_method == 'transformer_attribution':
@@ -1746,8 +2056,21 @@ def main():
             omp_beta=args.omp_beta,
             show_progress=True,
         )
+    elif args.use_legrad_omp:
+        results = evaluator.evaluate_legrad_omp(
+            wn_use_synonyms=args.wn_use_synonyms,
+            wn_use_hypernyms=args.wn_use_hypernyms,
+            wn_use_hyponyms=args.wn_use_hyponyms,
+            wn_use_siblings=args.wn_use_siblings,
+            dict_include_prompts=args.dict_include_prompts,
+            sparse_threshold=args.sparse_threshold,
+            atoms=args.atoms,
+            max_dict_cos_sim=args.max_dict_cos_sim,
+            show_progress=True,
+        )
     else:
         results = evaluator.evaluate()
+
     
     # Compute composite score
     composite = results['correct']['miou'] - args.composite_lambda * results['wrong']['miou']
