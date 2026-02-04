@@ -172,6 +172,10 @@ pyrightconfig.json
 
 outputs/
 daam_key_space_omp/
+HCI_animals/
+HCI_animals_comparison_v2/
+HCI_animals_restructured/
+web_application/
 
 legrad_torch.egg-info/
 .DS_Store
