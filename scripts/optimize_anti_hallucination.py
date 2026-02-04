@@ -161,7 +161,7 @@ BASELINES = {
         },
         'AttentionCAM': {
             'correct': {'miou': 40.14, 'acc': 68.67, 'map': 70.34},
-            'wrong': {'miou': 65.78, 'acc': 62.55, 'map': 65.78}
+            'wrong': {'miou': 33.40, 'acc': 62.55, 'map': 65.78}
         }
     },
     'SigLIP': {
