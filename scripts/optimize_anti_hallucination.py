@@ -1834,6 +1834,12 @@ class AntiHallucinationObjective:
             trial.set_user_attr('delta_wrong_acc', d_w_acc)
             trial.set_user_attr('delta_wrong_map', d_w_map)
             
+            # AUROC deltas (not optimized, but tracked for analysis)
+            d_c_auroc = correct_auroc - base_c.get('auroc', correct_auroc)
+            d_w_auroc = base_w.get('auroc', wrong_auroc) - wrong_auroc
+            trial.set_user_attr('delta_correct_auroc', d_c_auroc)
+            trial.set_user_attr('delta_wrong_auroc', d_w_auroc)
+            
             trial.set_user_attr('gap_improvement_miou', gap_improvement_miou)
             trial.set_user_attr('gap_improvement_acc', gap_improvement_acc)
             trial.set_user_attr('gap_improvement_map', gap_improvement_map)
@@ -2160,28 +2166,45 @@ def main():
         if trial.state != TrialState.COMPLETE:
             return
         
-        correct_miou = trial.user_attrs.get('correct_miou', 0)
-        wrong_miou = trial.user_attrs.get('wrong_miou', 0)
-        gap_improvement = trial.user_attrs.get('gap_improvement_miou', 0)
-        delta_correct = trial.user_attrs.get('delta_correct_miou', 0)
-        delta_wrong = trial.user_attrs.get('delta_wrong_miou', 0)
+        # Raw metrics
+        c_miou = trial.user_attrs.get('correct_miou', 0)
+        w_miou = trial.user_attrs.get('wrong_miou', 0)
+        c_acc = trial.user_attrs.get('correct_acc', 0)
+        w_acc = trial.user_attrs.get('wrong_acc', 0)
+        c_map = trial.user_attrs.get('correct_map', 0)
+        w_map = trial.user_attrs.get('wrong_map', 0)
+        c_auroc = trial.user_attrs.get('correct_auroc', 0)
+        w_auroc = trial.user_attrs.get('wrong_auroc', 0)
+        
+        # Deltas from baseline
+        dc_miou = trial.user_attrs.get('delta_correct_miou', 0)
+        dc_acc = trial.user_attrs.get('delta_correct_acc', 0)
+        dc_map = trial.user_attrs.get('delta_correct_map', 0)
+        dc_auroc = trial.user_attrs.get('delta_correct_auroc', 0)
+        dw_miou = trial.user_attrs.get('delta_wrong_miou', 0)
+        dw_acc = trial.user_attrs.get('delta_wrong_acc', 0)
+        dw_map = trial.user_attrs.get('delta_wrong_map', 0)
+        dw_auroc = trial.user_attrs.get('delta_wrong_auroc', 0)
+        
         composite = trial.user_attrs.get('composite_score', trial.value)
         
-        # Find best trial so far (for single-objective)
+        # Print full metrics table
+        print(f"\n{'─'*70}")
+        print(f"  Trial {trial.number} │ Score={composite:.2f}")
+        print(f"{'─'*70}")
+        print(f"  {'':>10} {'mIoU':>8} {'Acc':>8} {'mAP':>8} {'AUROC':>8}")
+        print(f"  {'Correct':>10} {c_miou:>7.1f}% {c_acc:>7.1f}% {c_map:>7.1f}% {c_auroc:>7.1f}%")
+        print(f"  {'  Δbase':>10} {dc_miou:>+7.1f}  {dc_acc:>+7.1f}  {dc_map:>+7.1f}  {dc_auroc:>+7.1f}")
+        print(f"  {'Wrong':>10} {w_miou:>7.1f}% {w_acc:>7.1f}% {w_map:>7.1f}% {w_auroc:>7.1f}%")
+        print(f"  {'  Δbase':>10} {dw_miou:>+7.1f}  {dw_acc:>+7.1f}  {dw_map:>+7.1f}  {dw_auroc:>+7.1f}")
+        print(f"  {'Gap(C-W)':>10} {c_miou-w_miou:>+7.1f}  {c_acc-w_acc:>+7.1f}  {c_map-w_map:>+7.1f}  {c_auroc-w_auroc:>+7.1f}")
+        
+        # Best trial summary (for single-objective)
         if not args.multi_objective:
-            best_trial = study.best_trial
-            best_gap_improvement = best_trial.user_attrs.get('gap_improvement_miou', 0)
-            best_composite = best_trial.value
-            
-            # Print detailed info showing gap
-            print(f"\n  Trial {trial.number}: "
-                  f"mIoU(C/W)={correct_miou:.1f}/{wrong_miou:.1f} | "
-                  f"ΔC={delta_correct:+.1f} ΔW={delta_wrong:+.1f} | "
-                  f"Gap↑={gap_improvement:+.2f} | "
-                  f"Score={composite:.2f}")
-            print(f"  Best so far (Trial {best_trial.number}): "
-                  f"Gap↑={best_gap_improvement:+.2f} | "
-                  f"Composite={best_composite:.2f}")
+            best = study.best_trial
+            b_comp = best.user_attrs.get('composite_score', best.value)
+            print(f"  Best: Trial {best.number} (Score={b_comp:.2f})")
+        print(f"{'─'*70}")
     
     # Run optimization
     if args.use_daam:
