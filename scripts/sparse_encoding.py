@@ -97,7 +97,7 @@ def overlay(ax, base_img: Image.Image, heat_01: torch.Tensor, title: str, alpha:
 
 # -------- Sparse encoding utilities --------
 
-def omp_sparse_residual(x_1x: torch.Tensor, D: torch.Tensor, max_atoms: int = 8, tol: float = 1e-6) -> torch.Tensor:
+def omp_sparse_residual(x_1x: torch.Tensor, D: torch.Tensor, max_atoms: int = 8, tol: float = 1e-6, return_indices: bool = False):
     """
     Simple Orthogonal Matching Pursuit to compute sparse coding residual without training.
     x_1x: [1, d], assumed L2-normalized
@@ -106,6 +106,8 @@ def omp_sparse_residual(x_1x: torch.Tensor, D: torch.Tensor, max_atoms: int = 8,
     If max_atoms <= 0 or D is empty, this is a no-op and just returns the original x_1x.
     """
     if D is None or D.numel() == 0 or max_atoms is None or max_atoms <= 0:
+        if return_indices:
+            return F.normalize(x_1x, dim=-1), []
         return F.normalize(x_1x, dim=-1)
     # Force CPU execution for OMP loop to avoid CUDA lazy wrapper / context errors
     device = x_1x.device
@@ -154,9 +156,12 @@ def omp_sparse_residual(x_1x: torch.Tensor, D: torch.Tensor, max_atoms: int = 8,
     # Return normalized residual (fallback to x if degenerate)
     # Move back to original device/dtype
     r = r.to(device=device, dtype=dtype)
-    if torch.norm(r) <= tol:
-        return F.normalize(x_1x, dim=-1)
-    return F.normalize(r, dim=-1)
+    
+    final_res = F.normalize(x_1x, dim=-1) if torch.norm(r) <= tol else F.normalize(r, dim=-1)
+
+    if return_indices:
+        return final_res, selected
+    return final_res
 
 
 def build_wordlist_neighbors_embedding(tokenizer, model, words: List[str], device: torch.device) -> torch.Tensor:

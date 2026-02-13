@@ -30,6 +30,9 @@ from torchvision.transforms import InterpolationMode
 import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
 import requests
+import warnings
+import copy
+from typing import List, Dict, Tuple
 
 # Add project root to path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -77,10 +80,395 @@ except ImportError as e:
     print(f"Warning: Failed to import DAAMSegmenter. Error: {e}")
     DAAMSegmenter = None
 
+# DAAM Imports
+try:
+    from diffusers import StableDiffusionPipeline
+    from diffusers.models.attention_processor import Attention
+    from daam import trace as daam_trace
+    from daam.trace import DiffusionHeatMapHooker, UNetCrossAttentionHooker
+    from daam.hook import UNetCrossAttentionLocator
+    from daam.heatmap import RawHeatMapCollection
+    from daam.utils import auto_autocast
+except ImportError:
+    print("Warning: Failed to import DAAM/Diffusers dependencies.")
 
 
 
 
+
+
+
+
+
+# ==============================================================================
+# Float32 DAAM Segmenter (for MPS/CPU compatibility)
+# ==============================================================================
+class Float32DAAMSegmenter(DAAMSegmenter):
+    """DAAMSegmenter that uses float32 to avoid NaN on MPS and mixed-precision errors."""
+    def __init__(self, model_id="Manojb/stable-diffusion-2-base", device='mps'):
+        if StableDiffusionPipeline is None:
+            raise ImportError("Please install 'daam' and 'diffusers'")
+        print(f"[DAAM-F32] Loading Stable Diffusion pipeline in float32: {model_id}...")
+        self.device = device
+        self.pipeline = StableDiffusionPipeline.from_pretrained(
+            model_id, torch_dtype=torch.float32
+        ).to(device)
+        self.pipeline.enable_attention_slicing()
+        self.vae = self.pipeline.vae
+        self.tokenizer = self.pipeline.tokenizer
+        self.text_encoder = self.pipeline.text_encoder
+        self.unet = self.pipeline.unet
+        self.scheduler = self.pipeline.scheduler
+        print("[DAAM-F32] Pipeline loaded (float32).")
+
+    def predict(self, image_pil, prompt, size=512):
+        """Override predict to use float32 tensors."""
+        if self.device == 'cuda' or self.device == 'mps':
+            if hasattr(torch.mps, 'empty_cache') and self.device == 'mps':
+                torch.mps.empty_cache()
+            elif torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        w, h = image_pil.size
+        img_resized = image_pil.resize((size, size), resample=Image.BICUBIC)
+        img_arr = np.array(img_resized).astype(np.float32) / 255.0
+        img_arr = img_arr * 2.0 - 1.0
+        # Use float32 instead of half() to avoid NaN on MPS
+        img_tensor = torch.from_numpy(img_arr).permute(2, 0, 1).unsqueeze(0).to(self.device).float()
+
+        with torch.no_grad():
+            latents = self.vae.encode(img_tensor).latent_dist.sample()
+            latents = latents * 0.18215
+
+        self.scheduler.set_timesteps(50, device=self.device)
+        noise = torch.randn_like(latents)
+        timestep = torch.tensor([21], device=self.device)
+        noisy_latents = self.scheduler.add_noise(latents, noise, timestep)
+
+        concept = ""
+        if prompt.startswith("a photo of a "):
+            concept = prompt[len("a photo of a "):].strip(".").strip()
+        elif prompt.startswith("a "):
+            concept = prompt[2:].strip(".").strip()
+        if not concept:
+            concept = prompt.split()[-1]
+
+        background_concepts = ["background", "floor", "tree", "person", "grass", "face"]
+        background_str = ", ".join([f"a {bc}" for bc in background_concepts])
+        augmented_prompt = f"{prompt}, a {concept}, {background_str}"
+
+        text_input = self.tokenizer(
+            prompt, padding="max_length", max_length=self.tokenizer.model_max_length,
+            truncation=True, return_tensors="pt"
+        )
+        with torch.no_grad():
+            text_embeddings = self.text_encoder(text_input.input_ids.to(self.device))[0]
+
+        prompt_embeds = text_embeddings
+        latent_model_input = noisy_latents
+
+        from daam import trace
+        with trace(self.pipeline) as tc:
+            with torch.no_grad():
+                _ = self.unet(latent_model_input, timestep, encoder_hidden_states=prompt_embeds).sample
+            global_heat_map = tc.compute_global_heat_map(prompt=augmented_prompt)
+
+            heatmap = None
+            try:
+                word_heat_map = global_heat_map.compute_word_heat_map(concept)
+                heatmap = word_heat_map.heatmap
+            except Exception:
+                sub_words = concept.split()
+                sub_heatmaps = []
+                for sw in sub_words:
+                    try:
+                        whm = global_heat_map.compute_word_heat_map(sw).heatmap
+                        sub_heatmaps.append(whm)
+                    except Exception:
+                        pass
+                if sub_heatmaps:
+                    heatmap = torch.stack(sub_heatmaps).mean(0)
+
+            if heatmap is None and hasattr(global_heat_map, 'heat_maps'):
+                if global_heat_map.heat_maps.shape[0] > 6:
+                    heatmap = global_heat_map.heat_maps[5:-1].mean(0)
+                else:
+                    heatmap = global_heat_map.heat_maps.mean(0)
+
+            if heatmap is None:
+                heatmap = torch.zeros((h, w)).to(self.device)
+
+        heatmap = heatmap.unsqueeze(0).unsqueeze(0).float()
+        heatmap = F.interpolate(heatmap, size=(h, w), mode='bilinear', align_corners=False)
+        heatmap = heatmap.squeeze()
+        heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
+        return heatmap.cpu()
+
+# ==============================================================================
+# True Key-Space OMP Components (from daam_omp_comparison.py)
+# ==============================================================================
+
+class KeySpaceOMPProcessor:
+    """
+    Custom attention processor that orthogonalizes the target token's key vector
+    against distractor token keys in the cross-attention layers of the UNet.
+    """
+    
+    def __init__(
+        self, 
+        target_token_indices: List[int],
+        distractor_token_indices: List[List[int]],
+        beta: float = 1.0,
+        heat_maps: RawHeatMapCollection = None,
+        layer_idx: int = 0,
+        latent_hw: int = 4096,
+        context_size: int = 77,
+        parent_trace=None,
+    ):
+        self.target_token_indices = target_token_indices
+        self.distractor_token_indices = distractor_token_indices
+        self.beta = beta
+        self.heat_maps = heat_maps
+        self.layer_idx = layer_idx
+        self.latent_hw = latent_hw
+        self.context_size = context_size
+        self.parent_trace = parent_trace
+    
+    def _orthogonalize_keys(self, key: torch.Tensor, n_heads: int) -> torch.Tensor:
+        key = key.clone()
+        
+        # For each target token index
+        for target_idx in self.target_token_indices:
+            target_key = key[:, target_idx, :]
+            
+            # Collect all distractor key vectors
+            for dist_indices in self.distractor_token_indices:
+                for dist_idx in dist_indices:
+                    dist_key = key[:, dist_idx, :]
+                    
+                    # Normalize distractor key
+                    dist_norm = dist_key / (dist_key.norm(dim=-1, keepdim=True) + 1e-8)
+                    
+                    # Project target onto distractor and subtract
+                    projection = (target_key * dist_norm).sum(dim=-1, keepdim=True) * dist_norm
+                    target_key = target_key - self.beta * projection
+            
+            # Write back orthogonalized key
+            key[:, target_idx, :] = target_key
+        
+        return key
+    
+    @torch.no_grad()
+    def _unravel_attn(self, x):
+        h = w = int(math.sqrt(x.size(1)))
+        maps = []
+        x = x.permute(2, 0, 1)
+        
+        with auto_autocast(dtype=torch.float32):
+            for map_ in x:
+                map_ = map_.view(map_.size(0), h, w)
+                map_ = map_[map_.size(0) // 2:]  # Filter out unconditional
+                maps.append(map_)
+        
+        maps = torch.stack(maps, 0)
+        return maps.permute(1, 0, 2, 3).contiguous()
+    
+    def __call__(
+        self,
+        attn: Attention,
+        hidden_states,
+        encoder_hidden_states=None,
+        attention_mask=None,
+    ):
+        """Custom attention forward with key-space OMP."""
+        batch_size, sequence_length, _ = hidden_states.shape
+        attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
+        
+        query = attn.to_q(hidden_states)
+        
+        if encoder_hidden_states is None:
+            encoder_hidden_states = hidden_states
+        elif attn.norm_cross is not None:
+            encoder_hidden_states = attn.norm_cross(encoder_hidden_states)
+        
+        key = attn.to_k(encoder_hidden_states)
+        value = attn.to_v(encoder_hidden_states)
+        
+        query = attn.head_to_batch_dim(query)
+        key = attn.head_to_batch_dim(key)
+        value = attn.head_to_batch_dim(value)
+        
+        # KEY-SPACE OMP
+        is_cross_attention = (key.shape[1] == self.context_size)
+        if is_cross_attention and self.beta > 0:
+            key = self._orthogonalize_keys(key, attn.heads)
+        
+        attention_probs = attn.get_attention_scores(query, key, attention_mask)
+        
+        # Store heat maps
+        factor = int(math.sqrt(self.latent_hw // attention_probs.shape[1])) if attention_probs.shape[1] > 0 else 8
+        if self.parent_trace is not None:
+            self.parent_trace._gen_idx += 1
+        
+        if self.heat_maps is not None and attention_probs.shape[-1] == self.context_size and factor != 8:
+            maps = self._unravel_attn(attention_probs)
+            for head_idx, heatmap in enumerate(maps):
+                self.heat_maps.update(factor, self.layer_idx, head_idx, heatmap)
+        
+        hidden_states = torch.bmm(attention_probs, value)
+        hidden_states = attn.batch_to_head_dim(hidden_states)
+        hidden_states = attn.to_out[0](hidden_states)
+        hidden_states = attn.to_out[1](hidden_states)
+        
+        return hidden_states
+
+
+def get_token_indices(tokenizer, prompt: str, concept: str) -> List[int]:
+    """Get token indices for a concept within a prompt."""
+    tokens = tokenizer.tokenize(prompt)
+    concept_tokens = tokenizer.tokenize(concept)
+    
+    indices = []
+    for i in range(len(tokens)):
+        if tokens[i:i+len(concept_tokens)] == concept_tokens:
+            # +1 because of the SOS token
+            indices.extend(range(i + 1, i + 1 + len(concept_tokens)))
+            break
+    
+    if not indices:
+        for i, tok in enumerate(tokens):
+            for ct in concept_tokens:
+                if ct in tok or tok in ct:
+                    indices.append(i + 1)
+        
+    return indices
+
+
+def run_daam_with_key_space_omp(
+    segmenter: DAAMSegmenter,
+    image_pil: Image.Image,
+    target_concept: str,
+    competing_concepts: List[str],
+    beta: float = 1.0,
+    size: int = 512,
+) -> torch.Tensor:
+    """Run DAAM with true key-space OMP intervention."""
+    pipeline = segmenter.pipeline
+    tokenizer = segmenter.tokenizer
+    text_encoder = segmenter.text_encoder
+    vae = segmenter.vae
+    unet = segmenter.unet
+    scheduler = segmenter.scheduler
+    device = segmenter.device
+    
+    w, h = image_pil.size
+    
+    img_resized = image_pil.resize((size, size), resample=Image.BICUBIC)
+    img_arr = np.array(img_resized).astype(np.float32) / 255.0
+    img_arr = img_arr * 2.0 - 1.0
+    img_tensor = torch.from_numpy(img_arr).permute(2, 0, 1).unsqueeze(0).to(device).float()
+    
+    with torch.no_grad():
+        latents = vae.encode(img_tensor).latent_dist.sample()
+        latents = latents * 0.18215
+    
+    all_concepts = [target_concept] + competing_concepts
+    combined_prompt = f"a photo of a {', a '.join(all_concepts)}."
+    
+    target_indices = get_token_indices(tokenizer, combined_prompt, target_concept)
+    distractor_indices = [
+        get_token_indices(tokenizer, combined_prompt, comp)
+        for comp in competing_concepts
+    ]
+    
+    if not target_indices:
+        return segmenter.predict(image_pil, f"a photo of a {target_concept}.", size=size)
+    
+    text_input = tokenizer(
+        combined_prompt,
+        padding="max_length",
+        max_length=tokenizer.model_max_length,
+        truncation=True,
+        return_tensors="pt"
+    )
+    with torch.no_grad():
+        text_embeddings = text_encoder(text_input.input_ids.to(device))[0]
+    
+    scheduler.set_timesteps(50, device=device)
+    noise = torch.randn_like(latents)
+    timestep = torch.tensor([21], device=device)
+    noisy_latents = scheduler.add_noise(latents, noise, timestep)
+    
+    heat_maps = RawHeatMapCollection()
+    locator = UNetCrossAttentionLocator(restrict=None, locate_middle_block=False)
+    cross_attn_modules = locator.locate(unet)
+    
+    latent_hw = 4096
+    
+    class GenIdxTracker:
+        def __init__(self):
+            self._gen_idx = 0
+    tracker = GenIdxTracker()
+    
+    original_processors = {}
+    for idx, module in enumerate(cross_attn_modules):
+        original_processors[idx] = module.processor
+        module.set_processor(KeySpaceOMPProcessor(
+            target_token_indices=target_indices,
+            distractor_token_indices=distractor_indices,
+            beta=beta,
+            heat_maps=heat_maps,
+            layer_idx=idx,
+            latent_hw=latent_hw,
+            context_size=77,
+            parent_trace=tracker,
+        ))
+    
+    try:
+        with torch.no_grad():
+            _ = unet(
+                noisy_latents,
+                timestep,
+                encoder_hidden_states=text_embeddings
+            ).sample
+    finally:
+        for idx, module in enumerate(cross_attn_modules):
+            module.set_processor(original_processors[idx])
+    
+    x = int(np.sqrt(latent_hw))
+    factors = {0, 1, 2, 4, 8, 16, 32, 64}
+    
+    all_merges = []
+    with auto_autocast(dtype=torch.float32):
+        for (factor, layer, head), heat_map in heat_maps:
+            if factor in factors and factor != 8:
+                heat_map = heat_map.unsqueeze(1)
+                all_merges.append(F.interpolate(heat_map, size=(x, x), mode='bicubic').clamp_(min=0))
+    
+    if not all_merges:
+        return segmenter.predict(image_pil, f"a photo of a {target_concept}.", size=size)
+    
+    maps = torch.stack(all_merges, dim=0)
+    maps = maps.mean(0)[:, 0]
+    
+    target_maps = []
+    for tidx in target_indices:
+        if tidx < maps.shape[0]:
+            target_maps.append(maps[tidx])
+    
+    if not target_maps:
+        return segmenter.predict(image_pil, f"a photo of a {target_concept}.", size=size)
+    
+    heatmap = torch.stack(target_maps).mean(0)
+    
+    # Resize to original image dimensions
+    heatmap = heatmap.unsqueeze(0).unsqueeze(0).float()
+    heatmap = F.interpolate(heatmap, size=(h, w), mode='bilinear', align_corners=False)
+    heatmap = heatmap.squeeze()
+    
+    # Normalize to [0, 1]
+    heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
+    return heatmap.cpu()
 
 
 def compute_chefercam(model, image, text_emb_1x):
@@ -616,25 +1004,52 @@ def build_sparse_embedding_v2(
             parts.append(n_emb)
 
     # Combine dictionary
+    d_words = []
     if len(parts) > 0:
         D = torch.cat(parts, dim=0)
         D = F.normalize(D, dim=-1)
 
         # Filter by cosine similarity
+        # TODO: Need to filter associated words if we filter D
+        # For now, we only collect d_words for sparse_residual call if dictionary is used
+        # Re-implementing parts of sparse_encoding.py logic here to get words
+        
+        # Re-collect words to pass back
+        if args.dict_include_prompts:
+            if len(unique_wnids) > 1 and emb_idx is not None:
+                 if emb_idx > 0:
+                     for i in range(emb_idx):
+                         d_words.append(wnid_to_label.get(unique_wnids[i]) or get_synset_name(unique_wnids[i]))
+                 if emb_idx + 1 < len(unique_wnids):
+                     for i in range(emb_idx + 1, len(unique_wnids)):
+                         d_words.append(wnid_to_label.get(unique_wnids[i]) or get_synset_name(unique_wnids[i]))
+        
+        if use_wn and raw_neighbors:
+             d_words.extend(raw_neighbors)
+
         if 0.0 < args.max_dict_cos_sim < 1.0:
             sim = (D @ target_text_emb_1x.t()).squeeze(-1).abs()
             keep = sim < args.max_dict_cos_sim
             D = D[keep]
+            # Filter d_words
+            d_words = [d_words[i] for i in range(len(d_words)) if keep[i]]
+            
     else:
         D = target_text_emb_1x.new_zeros((0, target_text_emb_1x.shape[-1]))
 
     # OMP sparse residual
     if D.shape[0] == 0:
         # Fallback if dictionary is empty
-        return target_text_emb_1x
+        return target_text_emb_1x, []
 
-    sparse_1x = omp_sparse_residual(target_text_emb_1x, D, max_atoms=args.atoms)
-    return sparse_1x
+    # sparse_1x = omp_sparse_residual(target_text_emb_1x, D, max_atoms=args.atoms)
+    # Use return_indices=True to get indices of selected atoms
+    sparse_1x, selected_indices = omp_sparse_residual(target_text_emb_1x, D, max_atoms=args.atoms, return_indices=True)
+    
+    # Get selected words
+    selected_words = [d_words[i] for i in selected_indices if i < len(d_words)]
+    
+    return sparse_1x, selected_words
 
 
 
@@ -658,8 +1073,8 @@ def main():
     
     # Method selection
     parser.add_argument(
-        '--methods', type=str, default='original,gradcam,chefercam',
-        help="Comma-separated methods: original (LeGrad), gradcam, chefercam, daam"
+        '--methods', type=str, default='original,gradcam,chefercam,daam,daam_omp',
+        help="Comma-separated methods: original (LeGrad), gradcam, chefercam, daam, daam_omp"
     )
     
     # CheferCAM/Transformer Attribution settings
@@ -694,7 +1109,8 @@ def main():
 
     # Parse methods
     methods = [m.strip().lower() for m in str(args.methods).split(",") if m.strip()]
-    allowed_methods = {'original', 'gradcam', 'chefercam', 'daam'}
+
+    allowed_methods = {'original', 'gradcam', 'chefercam', 'daam', 'daam_omp'}
     methods = [m for m in methods if m in allowed_methods]
     if not methods:
         raise ValueError("No valid methods. Use --methods with: original,gradcam,chefercam,daam")
@@ -727,8 +1143,15 @@ def main():
     if 'daam' in methods:
         if DAAMSegmenter is None:
             raise ImportError("DAAMSegmenter could not be imported. Please install daam and diffusers.")
-        print("Initializing DAAM Segmenter...")
-        daam_segmenter = DAAMSegmenter(device=args.device)
+        print("Initializing DAAM Segmenter (Float32)...")
+        daam_segmenter = Float32DAAMSegmenter(device=args.device)
+
+    if 'daam_omp' in methods:
+        if DAAMSegmenter is None:
+             raise ImportError("DAAMSegmenter needed for DAAM OMP.")
+        if daam_segmenter is None:
+             print("Initializing DAAM Segmenter (Float32) for OMP...")
+             daam_segmenter = Float32DAAMSegmenter(device=args.device)
 
     # Load ImageNet mapping
     try:
@@ -852,7 +1275,7 @@ def main():
                 
                 final_emb = text_emb_1x
                 if use_sparse:
-                     final_emb = build_sparse_embedding_v2(
+                     final_emb, _ = build_sparse_embedding_v2(
                         target_wnid=wnid,
                         target_text_emb_1x=text_emb_1x,
                         all_text_embs=all_text_embs,
@@ -914,14 +1337,48 @@ def main():
                 heatmap = daam_segmenter.predict(base_img, wnid_to_prompt[wnid])
                 
                 # Resize to GT size
-                # MATCH REFERENCE: Use 'nearest' interpolation for evaluation
                 heatmap_resized = F.interpolate(
                     heatmap.view(1, 1, heatmap.shape[0], heatmap.shape[1]),
                     size=(H_gt, W_gt),
-                    mode='nearest',
-                    align_corners=None # nearest doesn't support align_corners
+                    mode='bilinear',
+                    align_corners=False
                 ).squeeze()
                 heatmaps['daam'] = heatmap_resized
+
+            # --- DAAM OMP ---
+            if 'daam_omp' in methods and daam_segmenter is not None:
+                # 1. Get distractor concepts using sparse encoding logic
+                _, selected_words = build_sparse_embedding_v2(
+                    target_wnid=wnid,
+                    target_text_emb_1x=text_emb_1x,
+                    all_text_embs=all_text_embs,
+                    unique_wnids=unique_wnids,
+                    wnid_to_label=wnid_to_label,
+                    tokenizer=tokenizer,
+                    model=model,
+                    args=args
+                )
+                
+                target_concept = wnid_to_label.get(wnid) or get_synset_name(wnid)
+                
+                # 2. Run Key-Space OMP
+                heatmap = run_daam_with_key_space_omp(
+                    daam_segmenter,
+                    base_img,
+                    target_concept=target_concept,
+                    competing_concepts=selected_words,
+                    beta=1.0,
+                    size=512
+                )
+                
+                # 3. Resize to GT
+                heatmap_resized = F.interpolate(
+                    heatmap.view(1, 1, heatmap.shape[0], heatmap.shape[1]),
+                    size=(H_gt, W_gt),
+                    mode='bilinear',
+                    align_corners=False
+                ).squeeze()
+                heatmaps['daam_omp'] = heatmap_resized
 
             
             # --- Compute Metrics (Reference Protocol) ---

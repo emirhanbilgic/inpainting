@@ -108,6 +108,268 @@ try:
 except ImportError:
     DAAMSegmenter = None
 
+# DAAM/Diffusers imports for true key-space OMP
+try:
+    from diffusers import StableDiffusionPipeline
+    from diffusers.models.attention_processor import Attention
+    from daam.hook import UNetCrossAttentionLocator
+    from daam.heatmap import RawHeatMapCollection
+    from daam.utils import auto_autocast
+except ImportError:
+    StableDiffusionPipeline = None
+
+
+# ==============================================================================
+# True Key-Space OMP Components (from benchmark_segmentation_v2.py)
+# ==============================================================================
+
+class KeySpaceOMPProcessor:
+    """Custom attention processor that orthogonalizes the target token's key vector
+    against distractor token keys in the cross-attention layers of the UNet."""
+
+    def __init__(
+        self, 
+        target_token_indices: List[int],
+        distractor_token_indices: List[List[int]],
+        beta: float = 1.0,
+        heat_maps: 'RawHeatMapCollection' = None,
+        layer_idx: int = 0,
+        latent_hw: int = 4096,
+        context_size: int = 77,
+        parent_trace=None,
+    ):
+        self.target_token_indices = target_token_indices
+        self.distractor_token_indices = distractor_token_indices
+        self.beta = beta
+        self.heat_maps = heat_maps
+        self.layer_idx = layer_idx
+        self.latent_hw = latent_hw
+        self.context_size = context_size
+        self.parent_trace = parent_trace
+
+    def _orthogonalize_keys(self, key: torch.Tensor, n_heads: int) -> torch.Tensor:
+        key = key.clone()
+        
+        for target_idx in self.target_token_indices:
+            target_key = key[:, target_idx, :]
+            
+            for dist_indices in self.distractor_token_indices:
+                for dist_idx in dist_indices:
+                    dist_key = key[:, dist_idx, :]
+                    dist_norm = dist_key / (dist_key.norm(dim=-1, keepdim=True) + 1e-8)
+                    projection = (target_key * dist_norm).sum(dim=-1, keepdim=True) * dist_norm
+                    target_key = target_key - self.beta * projection
+            
+            key[:, target_idx, :] = target_key
+        
+        return key
+
+    def _unravel_attn(self, x):
+        factor = int(math.sqrt(self.latent_hw // x.shape[1]))
+        if factor == 0:
+            factor = 1
+        hw = int(math.sqrt(x.shape[1]))
+        maps = x.reshape(x.shape[0], hw, hw, x.shape[2])
+        maps = maps.permute(0, 3, 1, 2)
+        return maps
+
+    def __call__(
+        self,
+        attn: 'Attention',
+        hidden_states,
+        encoder_hidden_states=None,
+        attention_mask=None,
+    ):
+        """Custom attention forward with key-space OMP."""
+        batch_size, sequence_length, _ = hidden_states.shape
+        attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
+        
+        query = attn.to_q(hidden_states)
+        
+        if encoder_hidden_states is None:
+            encoder_hidden_states = hidden_states
+        elif attn.norm_cross is not None:
+            encoder_hidden_states = attn.norm_cross(encoder_hidden_states)
+        
+        key = attn.to_k(encoder_hidden_states)
+        value = attn.to_v(encoder_hidden_states)
+        
+        query = attn.head_to_batch_dim(query)
+        key = attn.head_to_batch_dim(key)
+        value = attn.head_to_batch_dim(value)
+        
+        # KEY-SPACE OMP
+        is_cross_attention = (key.shape[1] == self.context_size)
+        if is_cross_attention and self.beta > 0:
+            key = self._orthogonalize_keys(key, attn.heads)
+        
+        attention_probs = attn.get_attention_scores(query, key, attention_mask)
+        
+        # Store heat maps
+        factor = int(math.sqrt(self.latent_hw // attention_probs.shape[1])) if attention_probs.shape[1] > 0 else 8
+        if self.parent_trace is not None:
+            self.parent_trace._gen_idx += 1
+        
+        if self.heat_maps is not None and attention_probs.shape[-1] == self.context_size and factor != 8:
+            maps = self._unravel_attn(attention_probs)
+            for head_idx, heatmap in enumerate(maps):
+                self.heat_maps.update(factor, self.layer_idx, head_idx, heatmap)
+        
+        hidden_states = torch.bmm(attention_probs, value)
+        hidden_states = attn.batch_to_head_dim(hidden_states)
+        hidden_states = attn.to_out[0](hidden_states)
+        hidden_states = attn.to_out[1](hidden_states)
+        
+        return hidden_states
+
+
+def get_token_indices(tokenizer, prompt: str, concept: str) -> List[int]:
+    """Get token indices for a concept within a prompt."""
+    tokens = tokenizer.tokenize(prompt)
+    concept_tokens = tokenizer.tokenize(concept)
+    
+    indices = []
+    concept_len = len(concept_tokens)
+    for i in range(len(tokens) - concept_len + 1):
+        if tokens[i:i + concept_len] == concept_tokens:
+            # Token indices are offset by 1 due to BOS token
+            indices.extend(range(i + 1, i + 1 + concept_len))
+    
+    if not indices:
+        # Fallback: try single-token matching
+        for i, tok in enumerate(tokens):
+            if concept.lower() in tok.lower().replace('</w>', ''):
+                indices.append(i + 1)
+    
+    return indices
+
+
+def run_daam_with_key_space_omp(
+    segmenter: 'DAAMSegmenter',
+    image_pil: Image.Image,
+    target_concept: str,
+    competing_concepts: List[str],
+    beta: float = 1.0,
+    size: int = 512,
+) -> torch.Tensor:
+    """Run DAAM with true key-space OMP intervention."""
+    pipeline = segmenter.pipeline
+    tokenizer = segmenter.tokenizer
+    text_encoder = segmenter.text_encoder
+    vae = segmenter.vae
+    unet = segmenter.unet
+    scheduler = segmenter.scheduler
+    device = segmenter.device
+    
+    w, h = image_pil.size
+    
+    img_resized = image_pil.resize((size, size), resample=Image.BICUBIC)
+    img_arr = np.array(img_resized).astype(np.float32) / 255.0
+    img_arr = img_arr * 2.0 - 1.0
+    img_tensor = torch.from_numpy(img_arr).permute(2, 0, 1).unsqueeze(0).to(device).float()
+    
+    with torch.no_grad():
+        latents = vae.encode(img_tensor).latent_dist.sample()
+        latents = latents * 0.18215
+    
+    all_concepts = [target_concept] + competing_concepts
+    combined_prompt = f"a photo of a {', a '.join(all_concepts)}."
+    
+    target_indices = get_token_indices(tokenizer, combined_prompt, target_concept)
+    distractor_indices = [
+        get_token_indices(tokenizer, combined_prompt, comp)
+        for comp in competing_concepts
+    ]
+    
+    if not target_indices:
+        return segmenter.predict(image_pil, f"a photo of a {target_concept}.", size=size)
+    
+    text_input = tokenizer(
+        combined_prompt,
+        padding="max_length",
+        max_length=tokenizer.model_max_length,
+        truncation=True,
+        return_tensors="pt"
+    )
+    with torch.no_grad():
+        text_embeddings = text_encoder(text_input.input_ids.to(device))[0]
+    
+    scheduler.set_timesteps(50, device=device)
+    noise = torch.randn_like(latents)
+    timestep = torch.tensor([21], device=device)
+    noisy_latents = scheduler.add_noise(latents, noise, timestep)
+    
+    heat_maps = RawHeatMapCollection()
+    locator = UNetCrossAttentionLocator(restrict=None, locate_middle_block=False)
+    cross_attn_modules = locator.locate(unet)
+    
+    latent_hw = 4096
+    
+    class GenIdxTracker:
+        def __init__(self):
+            self._gen_idx = 0
+    tracker = GenIdxTracker()
+    
+    original_processors = {}
+    for idx, module in enumerate(cross_attn_modules):
+        original_processors[idx] = module.processor
+        module.set_processor(KeySpaceOMPProcessor(
+            target_token_indices=target_indices,
+            distractor_token_indices=distractor_indices,
+            beta=beta,
+            heat_maps=heat_maps,
+            layer_idx=idx,
+            latent_hw=latent_hw,
+            context_size=77,
+            parent_trace=tracker,
+        ))
+    
+    try:
+        with torch.no_grad():
+            _ = unet(
+                noisy_latents,
+                timestep,
+                encoder_hidden_states=text_embeddings
+            ).sample
+    finally:
+        for idx, module in enumerate(cross_attn_modules):
+            module.set_processor(original_processors[idx])
+    
+    x = int(np.sqrt(latent_hw))
+    factors = {0, 1, 2, 4, 8, 16, 32, 64}
+    
+    all_merges = []
+    with auto_autocast(dtype=torch.float32):
+        for (factor, layer, head), heat_map in heat_maps:
+            if factor in factors and factor != 8:
+                heat_map = heat_map.unsqueeze(1)
+                all_merges.append(F.interpolate(heat_map, size=(x, x), mode='bicubic').clamp_(min=0))
+    
+    if not all_merges:
+        return segmenter.predict(image_pil, f"a photo of a {target_concept}.", size=size)
+    
+    maps = torch.stack(all_merges, dim=0)
+    maps = maps.mean(0)[:, 0]
+    
+    target_maps = []
+    for tidx in target_indices:
+        if tidx < maps.shape[0]:
+            target_maps.append(maps[tidx])
+    
+    if not target_maps:
+        return segmenter.predict(image_pil, f"a photo of a {target_concept}.", size=size)
+    
+    heatmap = torch.stack(target_maps).mean(0)
+    
+    # Resize to original image dimensions
+    heatmap = heatmap.unsqueeze(0).unsqueeze(0).float()
+    heatmap = F.interpolate(heatmap, size=(h, w), mode='bilinear', align_corners=False)
+    heatmap = heatmap.squeeze()
+    
+    # Normalize to [0, 1]
+    heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
+    return heatmap.cpu()
+
 
 # Define semantic superclasses for distant negative sampling
 IMAGENET_SUPERCLASSES = {
@@ -958,6 +1220,7 @@ class AntiHallucinationObjective:
         use_attentioncam=False,
         lrp_start_layer=1,
         use_daam=False,
+        use_daam_keyspace_omp=False,
         daam_model_id='Manojb/stable-diffusion-2-base',
     ):
         self.model = model
@@ -982,6 +1245,7 @@ class AntiHallucinationObjective:
         self.use_attentioncam = use_attentioncam
         self.lrp_start_layer = lrp_start_layer
         self.use_daam = use_daam
+        self.use_daam_keyspace_omp = use_daam_keyspace_omp
         
         # Initialize DAAM segmenter if needed
         self.daam_segmenter = None
@@ -1242,14 +1506,26 @@ class AntiHallucinationObjective:
                             
                             # Use Key-Space OMP if we have competing concepts
                             if unique_competing:
-                                heatmap = self.daam_segmenter.predict_key_space_omp(
-                                    base_img,
-                                    prompt=prompt_text,
-                                    target_concept=target_class_name,
-                                    competing_concepts=unique_competing,
-                                    size=512,
-                                    omp_beta=omp_beta
-                                )
+                                if self.use_daam_keyspace_omp:
+                                    # True key-space OMP: orthogonalize K vectors inside UNet
+                                    heatmap = run_daam_with_key_space_omp(
+                                        self.daam_segmenter,
+                                        base_img,
+                                        target_concept=target_class_name,
+                                        competing_concepts=unique_competing,
+                                        beta=omp_beta,
+                                        size=512,
+                                    )
+                                else:
+                                    # Post-hoc heatmap OMP: orthogonalize heatmaps after independent runs
+                                    heatmap = self.daam_segmenter.predict_key_space_omp(
+                                        base_img,
+                                        prompt=prompt_text,
+                                        target_concept=target_class_name,
+                                        competing_concepts=unique_competing,
+                                        size=512,
+                                        omp_beta=omp_beta
+                                    )
                             else:
                                 # Fallback to basic DAAM without OMP (baseline)
                                 heatmap = self.daam_segmenter.predict(base_img, prompt_text, size=512)
@@ -1673,6 +1949,8 @@ def main():
                         help='Use DAAM (Stable Diffusion Attention) instead of LeGrad')
     parser.add_argument('--daam_model_id', type=str, default='Manojb/stable-diffusion-2-base',
                         help='Stable Diffusion model ID for DAAM')
+    parser.add_argument('--use_daam_keyspace_omp', action='store_true',
+                        help='Use true key-space OMP (orthogonalize K vectors in UNet) instead of post-hoc heatmap OMP')
     
     # Threshold settings
     parser.add_argument('--threshold_mode', type=str, default='fixed',
@@ -1800,6 +2078,7 @@ def main():
         use_attentioncam=args.use_attentioncam,
         lrp_start_layer=args.lrp_start_layer,
         use_daam=args.use_daam,
+        use_daam_keyspace_omp=args.use_daam_keyspace_omp,
         daam_model_id=args.daam_model_id,
     )
     

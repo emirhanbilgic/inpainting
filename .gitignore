@@ -176,6 +176,7 @@ HCI_animals/
 HCI_animals_comparison_v2/
 HCI_animals_restructured/
 web_application/
+docs/ 
 
 legrad_torch.egg-info/
 .DS_Store
