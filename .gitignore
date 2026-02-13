@@ -194,3 +194,4 @@ test_gradcam_siglip.json
 results.json
 test_daam_baseline.json
 scripts/data/example.png
+scripts/eccv.tex
