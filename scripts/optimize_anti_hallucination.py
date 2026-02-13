@@ -286,6 +286,16 @@ def run_daam_with_key_space_omp(
         for comp in competing_concepts
     ]
     
+    # Filter indices to fit within context window (77 tokens).
+    # The tokenizer truncates to max_length, so tokens beyond 76 don't exist in the key tensor.
+    context_size = tokenizer.model_max_length  # 77
+    target_indices = [i for i in target_indices if i < context_size]
+    distractor_indices = [
+        [i for i in group if i < context_size]
+        for group in distractor_indices
+    ]
+    distractor_indices = [g for g in distractor_indices if g]  # drop empty groups
+    
     if not target_indices:
         return segmenter.predict(image_pil, f"a photo of a {target_concept}.", size=size)
     
