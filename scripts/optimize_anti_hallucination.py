@@ -265,10 +265,13 @@ def run_daam_with_key_space_omp(
     
     w, h = image_pil.size
     
+    # Match the pipeline's dtype (float16 on CUDA, float32 on MPS/CPU)
+    dtype = next(vae.parameters()).dtype
+    
     img_resized = image_pil.resize((size, size), resample=Image.BICUBIC)
     img_arr = np.array(img_resized).astype(np.float32) / 255.0
     img_arr = img_arr * 2.0 - 1.0
-    img_tensor = torch.from_numpy(img_arr).permute(2, 0, 1).unsqueeze(0).to(device).float()
+    img_tensor = torch.from_numpy(img_arr).permute(2, 0, 1).unsqueeze(0).to(device=device, dtype=dtype)
     
     with torch.no_grad():
         latents = vae.encode(img_tensor).latent_dist.sample()
