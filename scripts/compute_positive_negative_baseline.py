@@ -304,6 +304,7 @@ def compute_chefercam(model, image, text_emb_1x):
     from open_clip.timm_model import TimmModel
     
     model.zero_grad()
+    num_prompts = text_emb_1x.shape[0]
     
     # Determine model type and get blocks
     if isinstance(model.visual, TimmModel):
@@ -472,8 +473,8 @@ def compute_chefercam(model, image, text_emb_1x):
             q, k, v = qkv.chunk(3, dim=-1)
             
             seq_len, bsz, embed_dim = q.shape
-            head_dim = embed_dim // num_heads
             num_heads = last_attn.num_heads
+            head_dim = embed_dim // num_heads
             
             q = q.contiguous().view(seq_len, bsz * num_heads, head_dim).transpose(0, 1)
             k = k.contiguous().view(seq_len, bsz * num_heads, head_dim).transpose(0, 1)
@@ -521,10 +522,10 @@ def compute_chefercam(model, image, text_emb_1x):
         cam = cam.mean(dim=1)  # [batch, N, N]
         
         if is_timm:
-            # SigLIP: Attention is [N, N] (patches-to-patches)
-            # Need to average over query patches to get importance of key patches
-            # Similar to how we handle it in GradCAM
-            cam = cam.mean(dim=1) # [batch, N] - Importance of each patch
+            # SigLIP: No CLS token. Use max over query dimension to get
+            # the strongest attention signal each key patch receives.
+            # mean() produces diffuse heatmaps; max() is more discriminative.
+            cam = cam.max(dim=1).values  # [batch, N] - Peak importance of each patch
         else:
             # CLIP: Attention is [N+1, N+1] (cls+patches)
             # Extract CLS token attention to patches (row 0, columns 1:)
@@ -792,9 +793,8 @@ def compute_transformer_attribution(model, image, text_emb_1x, start_layer=1):
             weighted_attn = weighted_attn.mean(dim=1)  # [batch, N, N]
             
             if is_timm:
-                # SigLIP: Attention is [N, N]
-                # Aggregate over query patches (rows) to get importance of keys (columns)
-                cls_to_patches = weighted_attn.mean(dim=1) # [batch, N]
+                # SigLIP: No CLS token. Use max over query dimension for discriminative heatmaps.
+                cls_to_patches = weighted_attn.max(dim=1).values  # [batch, N]
             else:
                 # CLIP: Attention is [N+1, N+1]
                 # Extract CLS to patches
