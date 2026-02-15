@@ -507,8 +507,9 @@ def compute_lrp_heatmap(model, image, text_emb_1x):
     - Backward pass from text-image similarity to get attention gradients
     - Multiply attention by gradients and average across heads
     
-    This is simpler than full GradCAM (only uses last layer) but still 
-    class-aware, making it suitable for OMP optimization.
+    For SigLIP (attentional pooler models), per the LeGrad paper (Section A.4):
+    AttentionCAM uses the attention maps of the attentional pooler instead of
+    the last self-attention layer.
     
     Reference: 
     - Chefer et al. "Transformer Interpretability Beyond Attention Visualization"
@@ -524,114 +525,150 @@ def compute_lrp_heatmap(model, image, text_emb_1x):
     """
     import torch.nn.functional as F
     import math
+    from open_clip.timm_model import TimmModel
     
     H_img, W_img = image.shape[-2:]
     
     try:
-        # Forward pass to populate attention maps
-        image_features = model.encode_image(image, normalize=True)
+        is_siglip = isinstance(model.visual, TimmModel)
         
-        # Compute similarity (class-dependent)
-        text_emb_detached = text_emb_1x.detach()
-        similarity = (image_features @ text_emb_detached.t()).sum()
-        
-        # Determine model type and get appropriate attention maps
-        is_siglip = hasattr(model, 'model_type') and 'siglip' in model.model_type
-        
-        if is_siglip:
-            # SigLIP: Use attentional pooler's attention probs
-            if not hasattr(model.visual.trunk, 'attn_pool') or not hasattr(model.visual.trunk.attn_pool, 'attn_probs'):
-                return torch.ones(H_img, W_img, device='cpu') * 0.5
-            
-            attn_probs = model.visual.trunk.attn_pool.attn_probs  # [batch, heads, num_latent, num_patches]
-            
-            # Compute gradient of similarity w.r.t. attention probs
-            model.zero_grad()
-            grad = torch.autograd.grad(
-                outputs=similarity,
-                inputs=[attn_probs],
-                retain_graph=False,
-                create_graph=False,
-                allow_unused=True
-            )[0]
-            
-            if grad is None:
-                return torch.ones(H_img, W_img, device='cpu') * 0.5
-            
-            # Gradient-weighted attention
-            # attn_probs: [batch, heads, num_latent, num_patches]
-            # grad: [batch, heads, num_latent, num_patches]
-            cam = attn_probs * grad
-            
-            # Average over heads and select first latent query (like LeGrad does)
-            cam = cam.mean(dim=1)[:, 0]  # [batch, num_patches]
-            cam = cam.clamp(min=0)
-            
-            # Get spatial size
-            num_patches = cam.shape[-1]
-            grid_size = int(math.sqrt(num_patches))
-            
-            if grid_size * grid_size != num_patches:
-                return torch.ones(H_img, W_img, device='cpu') * 0.5
-            
-            heatmap = cam[0].reshape(grid_size, grid_size)
-            
-        else:
-            # CLIP/CoCa: Use last block's attention maps
-            if hasattr(model, 'model_type'):
-                if 'clip' in model.model_type or 'coca' in model.model_type:
-                    blocks_list = list(model.visual.transformer.resblocks)
+        with torch.enable_grad():
+            if is_siglip:
+                # SigLIP: Manually forward through trunk then pooler,
+                # capturing pooler attention with requires_grad_(True)
+                pooler = model.visual.trunk.attn_pool
+                blocks = list(model.visual.trunk.blocks)
+                
+                # Trunk forward (all blocks)
+                x = model.visual.trunk.patch_embed(image)
+                if x.dim() == 4:
+                    B, H, W, C = x.shape
+                    x = x.reshape(B, H*W, C)
                 else:
-                    blocks_list = list(model.visual.transformer.resblocks)
+                    B, _, C = x.shape
+                    
+                if model.visual.trunk.pos_embed is not None:
+                    x = x + model.visual.trunk.pos_embed
+                
+                for block in blocks:
+                    x = block(x)
+                
+                B, N, C = x.shape
+                
+                # Attentional pooler manual forward
+                if pooler.pos_embed is not None:
+                    x = x + pooler.pos_embed.unsqueeze(0).to(x.dtype)
+                
+                q_latent = pooler.latent.expand(B, -1, -1)
+                q = pooler.q(q_latent).reshape(B, pooler.latent_len, pooler.num_heads, pooler.head_dim).transpose(1, 2)
+                kv = pooler.kv(x).reshape(B, N, 2, pooler.num_heads, pooler.head_dim).permute(2, 0, 3, 1, 4)
+                k, v = kv.unbind(0)
+                q, k = pooler.q_norm(q), pooler.k_norm(k)
+                
+                attn_probs = (q * pooler.scale) @ k.transpose(-2, -1)
+                attn_probs = attn_probs.softmax(dim=-1)  # [B, heads, num_latent, N]
+                attn_probs.requires_grad_(True)
+                
+                x_pool = (attn_probs @ v).transpose(1, 2).reshape(B, pooler.latent_len, C)
+                x_pool = pooler.proj(x_pool)
+                x_pool = pooler.proj_drop(x_pool)
+                x_pool = x_pool + pooler.mlp(pooler.norm(x_pool))
+                
+                if pooler.pool == 'token':
+                    pooled_feat = x_pool[:, 0]
+                elif pooler.pool == 'avg':
+                    pooled_feat = x_pool.mean(1)
+                else:
+                    pooled_feat = x_pool[:, 0]
+                
+                image_features = F.normalize(pooled_feat, dim=-1)
+                
+                # Compute similarity (class-dependent)
+                text_emb_detached = text_emb_1x.detach()
+                similarity = (image_features @ text_emb_detached.t()).sum()
+                
+                # Gradient w.r.t. pooler attention
+                model.zero_grad()
+                grad = torch.autograd.grad(
+                    outputs=similarity,
+                    inputs=[attn_probs],
+                    retain_graph=False,
+                    create_graph=False,
+                    allow_unused=True
+                )[0]
+                
+                if grad is None:
+                    return torch.ones(H_img, W_img, device='cpu') * 0.5
+                
+                # Gradient-weighted attention
+                cam = attn_probs * grad  # [B, heads, num_latent, N]
+                
+                # Average over heads and select first latent query
+                cam = cam.mean(dim=1)[:, 0]  # [B, N]
+                cam = cam.clamp(min=0)
+                
+                num_patches = cam.shape[-1]
+                grid_size = int(math.sqrt(num_patches))
+                
+                if grid_size * grid_size != num_patches:
+                    return torch.ones(H_img, W_img, device='cpu') * 0.5
+                
+                heatmap = cam[0].reshape(grid_size, grid_size)
+                
             else:
+                # CLIP/CoCa: Forward pass populates attention maps via hooks
+                image_features = model.encode_image(image, normalize=True)
+                
+                # Compute similarity (class-dependent)
+                text_emb_detached = text_emb_1x.detach()
+                similarity = (image_features @ text_emb_detached.t()).sum()
+                
+                # Get last block's attention maps
                 if hasattr(model.visual, 'transformer'):
                     blocks_list = list(model.visual.transformer.resblocks)
                 else:
                     return torch.ones(H_img, W_img, device='cpu') * 0.5
-            
-            # Get last block
-            last_block = blocks_list[-1]
-            
-            # Check if attention maps are available
-            if not hasattr(last_block, 'attn') or not hasattr(last_block.attn, 'attention_maps'):
-                return torch.ones(H_img, W_img, device='cpu') * 0.5
-            
-            attn_map = last_block.attn.attention_maps  # [batch*heads, N, N]
-            
-            # Compute gradient of similarity w.r.t. attention map
-            model.zero_grad()
-            grad = torch.autograd.grad(
-                outputs=similarity,
-                inputs=[attn_map],
-                retain_graph=False,
-                create_graph=False,
-                allow_unused=True
-            )[0]
-            
-            if grad is None:
-                return torch.ones(H_img, W_img, device='cpu') * 0.5
-            
-            # attn_map shape: [batch*heads, N, N]
-            # Average gradients across all positions to get per-head weights
-            grad_weights = grad.mean(dim=[1, 2], keepdim=True)  # [batch*heads, 1, 1]
-            
-            # Gradient-weighted attention (AttentionCAM formula)
-            cam = attn_map * grad_weights  # [batch*heads, N, N]
-            
-            # Get CLS token attention to patches (row 0, columns 1:)
-            cls_attn = cam[:, 0, 1:]  # [batch*heads, num_patches]
-            
-            # Average across heads and clamp negative values
-            cls_attn = cls_attn.mean(dim=0).clamp(min=0)  # [num_patches]
-            
-            # Reshape to 2D grid
-            num_patches = cls_attn.shape[0]
-            grid_size = int(math.sqrt(num_patches))
-            
-            if grid_size * grid_size != num_patches:
-                return torch.ones(H_img, W_img, device='cpu') * 0.5
-            
-            heatmap = cls_attn.reshape(grid_size, grid_size)
+                
+                last_block = blocks_list[-1]
+                
+                if not hasattr(last_block, 'attn') or not hasattr(last_block.attn, 'attention_maps'):
+                    return torch.ones(H_img, W_img, device='cpu') * 0.5
+                
+                attn_map = last_block.attn.attention_maps  # [batch*heads, N, N]
+                
+                # Compute gradient of similarity w.r.t. attention map
+                model.zero_grad()
+                grad = torch.autograd.grad(
+                    outputs=similarity,
+                    inputs=[attn_map],
+                    retain_graph=False,
+                    create_graph=False,
+                    allow_unused=True
+                )[0]
+                
+                if grad is None:
+                    return torch.ones(H_img, W_img, device='cpu') * 0.5
+                
+                # Average gradients across all positions to get per-head weights
+                grad_weights = grad.mean(dim=[1, 2], keepdim=True)  # [batch*heads, 1, 1]
+                
+                # Gradient-weighted attention (AttentionCAM formula)
+                cam = attn_map * grad_weights  # [batch*heads, N, N]
+                
+                # Get CLS token attention to patches (row 0, columns 1:)
+                cls_attn = cam[:, 0, 1:]  # [batch*heads, num_patches]
+                
+                # Average across heads and clamp negative values
+                cls_attn = cls_attn.mean(dim=0).clamp(min=0)  # [num_patches]
+                
+                # Reshape to 2D grid
+                num_patches = cls_attn.shape[0]
+                grid_size = int(math.sqrt(num_patches))
+                
+                if grid_size * grid_size != num_patches:
+                    return torch.ones(H_img, W_img, device='cpu') * 0.5
+                
+                heatmap = cls_attn.reshape(grid_size, grid_size)
         
         # Upsample to image size
         heatmap = heatmap.unsqueeze(0).unsqueeze(0)  # [1, 1, grid, grid]
@@ -682,85 +719,50 @@ def compute_chefercam(model, image, text_emb_1x):
     with torch.enable_grad():
         if is_timm:
             # --- SigLIP (Attentional Pooler) ---
+            # Per LeGrad paper (Section A.4): CheferCAM treats the attentional
+            # pooler as a "decoder transformer" and applies GradCAM on the
+            # POOLER's attention maps, not the trunk's last self-attention layer.
             pooler = model.visual.trunk.attn_pool
             blocks = list(model.visual.trunk.blocks)
             
-            # Trunk Forward Pass
+            # Trunk Forward Pass (all blocks, no manual attention needed)
             x = model.visual.trunk.patch_embed(image)
             
             # Flatten if NHWC (LeWrapper sets flatten=False)
             if x.dim() == 4:
                 B, H, W, C = x.shape
                 x = x.reshape(B, H*W, C)
+            else:
+                B, _, C = x.shape
                 
             if model.visual.trunk.pos_embed is not None:
                 x = x + model.visual.trunk.pos_embed
             
-            # Forward all blocks EXCEPT last
-            for i, block in enumerate(blocks[:-1]):
+            # Forward ALL trunk blocks normally
+            for block in blocks:
                 x = block(x)
-                
-            # Manual forward for LAST block to capture attention
-            last_block = blocks[-1]
+            
             B, N, C = x.shape
             
-            # SigLIP Block Structure:
-            # x = x + attn(ln1(x))
-            # x = x + mlp(ln2(x))
-            
-            x_normed = last_block.norm1(x)
-            attn = last_block.attn
-            
-            # Manual Attention Forward
-            # qkv = attn.qkv(x).reshape(B, N, 3, num_heads, head_dim).permute(2, 0, 3, 1, 4)
-            qkv = attn.qkv(x_normed).reshape(B, N, 3, attn.num_heads, attn.head_dim).permute(2, 0, 3, 1, 4)
-            q, k, v = qkv.unbind(0)
-            q, k = attn.q_norm(q), attn.k_norm(k)
-            
-            attn_weights = (q @ k.transpose(-2, -1)) * attn.scale
-            attn_weights = attn_weights.softmax(dim=-1) # [B, heads, N, N]
-            attn_weights.requires_grad_(True)
-            
-            attn_out = (attn_weights @ v).transpose(1, 2).reshape(B, N, C)
-            attn_out = attn.proj(attn_out)
-            attn_out = attn.proj_drop(attn_out)
-            
-            # Apply LayerScale if present (ls1)
-            if hasattr(last_block, 'ls1'):
-               attn_out = last_block.ls1(attn_out)
-               
-            x = x + attn_out
-            
-            # MLP Part
-            x_mlp = last_block.mlp(last_block.norm2(x))
-            if hasattr(last_block, 'ls2'):
-                x_mlp = last_block.ls2(x_mlp)
-            x = x + x_mlp
-            
-            # --- Attentional Pooler Manual Forward ---
-            # 1. Pos embed (if any)
+            # --- Attentional Pooler Manual Forward (capture pooler attention) ---
             if pooler.pos_embed is not None:
                 x = x + pooler.pos_embed.unsqueeze(0).to(x.dtype)
             
-            # 2. Compute Q, K, V for pooler
-            # q from latent
+            # Q from learnable latent, K/V from patch tokens
             q_latent = pooler.latent.expand(B, -1, -1)
             q = pooler.q(q_latent).reshape(B, pooler.latent_len, pooler.num_heads, pooler.head_dim).transpose(1, 2)
             
-            # k, v from x
             kv = pooler.kv(x).reshape(B, N, 2, pooler.num_heads, pooler.head_dim).permute(2, 0, 3, 1, 4)
             k, v = kv.unbind(0)
             
-            # Norm
             q, k = pooler.q_norm(q), pooler.k_norm(k)
             
-            # Attention (Pooler)
-            q = q * pooler.scale
-            pool_attn_weights = q @ k.transpose(-2, -1)
-            pool_attn_weights = pool_attn_weights.softmax(dim=-1)
+            # Pooler attention — this is what we need gradients for
+            attn_weights = (q * pooler.scale) @ k.transpose(-2, -1)
+            attn_weights = attn_weights.softmax(dim=-1)  # [B, heads, num_latent, N]
+            attn_weights.requires_grad_(True)
             
-            x_pool = pool_attn_weights @ v 
-            x_pool = x_pool.transpose(1, 2).reshape(B, pooler.latent_len, C)
+            x_pool = (attn_weights @ v).transpose(1, 2).reshape(B, pooler.latent_len, C)
             x_pool = pooler.proj(x_pool)
             x_pool = pooler.proj_drop(x_pool)
             x_pool = x_pool + pooler.mlp(pooler.norm(x_pool))
@@ -774,11 +776,6 @@ def compute_chefercam(model, image, text_emb_1x):
                 pooled_feat = x_pool[:, 0]
                 
             image_features = F.normalize(pooled_feat, dim=-1)
-            
-            # SigLIP Attn-GradCAM uses trunk attention
-            # attn_weights: [B, heads, N, N]
-            seq_len = N
-            num_heads = attn.num_heads
             bsz = B
             
         else:
@@ -860,7 +857,7 @@ def compute_chefercam(model, image, text_emb_1x):
             image_features = model.visual.ln_post(x[:, 0, :]) @ model.visual.proj
             image_features = F.normalize(image_features, dim=-1)
         
-        # --- Common Cam Calculation ---
+        # --- Cam Calculation ---
         # Compute similarity
         sim = text_emb_1x @ image_features.transpose(-1, -2)  # [1, 1]
         one_hot = F.one_hot(torch.arange(0, num_prompts)).float().requires_grad_(True).to(text_emb_1x.device)
@@ -872,31 +869,40 @@ def compute_chefercam(model, image, text_emb_1x):
         if grad is None:
             grad = torch.zeros_like(attn_weights)
         
-        # Reshape: [bsz*heads, N, N] -> [bsz, heads, N, N]
-        grad = grad.view(bsz, num_heads, seq_len, seq_len)
-        attn_weights = attn_weights.view(bsz, num_heads, seq_len, seq_len)
-        
-        # Apply ReLU to gradients (GradCAM standard)
-        grad = torch.clamp(grad, min=0)
-        
-        # Weight attention map by gradients
-        cam = grad * attn_weights  # [batch, heads, N, N]
-        
-        # Average over heads
-        cam = cam.mean(dim=1)  # [batch, N, N]
-        
         if is_timm:
-            # SigLIP: No CLS token. Use max over query dimension to get
-            # the strongest attention signal each key patch receives.
-            # mean() produces diffuse heatmaps; max() is more discriminative.
-            cam = cam.max(dim=1).values  # [batch, N] - Peak importance of each patch
+            # SigLIP pooler attention: already [B, heads, num_latent, N]
+            # Apply ReLU to gradients (GradCAM standard)
+            grad = torch.clamp(grad, min=0)
+            
+            # Weight attention map by gradients
+            cam = grad * attn_weights  # [B, heads, num_latent, N]
+            
+            # Average over heads, select first latent query (like LeGrad does)
+            cam = cam.mean(dim=1)[:, 0]  # [B, N]
+            
+            num_patches = cam.shape[-1]
         else:
-            # CLIP: Attention is [N+1, N+1] (cls+patches)
+            # CLIP: attn_weights is [bsz*heads, N, N], reshape to 4D
+            seq_len = attn_weights.shape[1]
+            num_heads = blocks[-1].attn.num_heads
+            grad = grad.view(bsz, num_heads, seq_len, seq_len)
+            attn_weights = attn_weights.view(bsz, num_heads, seq_len, seq_len)
+            
+            # Apply ReLU to gradients (GradCAM standard)
+            grad = torch.clamp(grad, min=0)
+            
+            # Weight attention map by gradients
+            cam = grad * attn_weights  # [batch, heads, N, N]
+            
+            # Average over heads
+            cam = cam.mean(dim=1)  # [batch, N, N]
+            
             # Extract CLS token attention to patches (row 0, columns 1:)
             cam = cam[:, 0, 1:]  # [batch, num_patches]
+            
+            num_patches = cam.shape[-1]
         
         # Reshape to spatial grid
-        num_patches = cam.shape[-1]
         grid_size = int(math.sqrt(num_patches))
         if grid_size * grid_size != num_patches:
             w = h = int(math.sqrt(num_patches))
