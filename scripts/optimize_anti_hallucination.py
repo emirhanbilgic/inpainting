@@ -455,8 +455,8 @@ BASELINES = {
             'wrong': {'miou': 36.66, 'acc': 59.27, 'map': 72.41}
         },
         'AttentionCAM': {
-            'correct': {'miou': 38.95, 'acc': 65.63, 'map': 69.91},
-            'wrong': {'miou':  32.06, 'acc':  59.62, 'map': 63.36}
+            'correct': {'miou': 50.01, 'acc': 70.33, 'map': 80.20},
+            'wrong': {'miou':  39.98, 'acc':  62.53, 'map': 72.57}
         }
     },
     # DAAM uses Stable Diffusion, independent of CLIP/SigLIP
