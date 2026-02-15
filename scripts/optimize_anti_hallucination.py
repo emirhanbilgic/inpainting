@@ -451,8 +451,8 @@ BASELINES = {
             'wrong': {'miou': 34.66, 'acc': 54.55, 'map': 68.50}
         },
         'CheferCAM': {
-            'correct': {'miou': 43.38, 'acc': 65.39, 'map': 77.25},
-            'wrong': {'miou': 41.69, 'acc': 63.71, 'map': 76.09}
+            'correct': {'miou': 37.66, 'acc': 60.53, 'map': 73.49},
+            'wrong': {'miou': 36.77, 'acc': 59.38, 'map': 72.49}
         },
         'AttentionCAM': {
             'correct': {'miou': 38.95, 'acc': 65.63, 'map': 69.91},
