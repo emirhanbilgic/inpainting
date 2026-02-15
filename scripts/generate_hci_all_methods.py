@@ -173,7 +173,8 @@ def apply_colormap_jet(heatmap_np):
 def get_heatmap_vis(image_pil, heatmap_tensor):
     """Overlay heatmap on original image with 50% alpha."""
     w, h = image_pil.size
-    heatmap = heatmap_tensor.numpy()
+    heatmap = np.nan_to_num(heatmap_tensor.numpy(), nan=0.0, posinf=1.0, neginf=0.0)
+    heatmap = np.clip(heatmap, 0.0, 1.0)
     heatmap_u8 = (heatmap * 255).astype(np.uint8)
     heatmap_pil = Image.fromarray(heatmap_u8, mode='L')
     heatmap_pil = heatmap_pil.resize((w, h), resample=Image.BILINEAR)
@@ -640,6 +641,15 @@ def run_daam_method(device):
 
     print("Loading DAAM segmenter...")
     segmenter = DAAMSegmenter(model_id="Manojb/stable-diffusion-2-base", device=device)
+
+    # DAAMSegmenter loads pipeline in float16 which causes NaN on MPS/CPU.
+    # Convert to float32 for non-CUDA devices.
+    if device != "cuda":
+        segmenter.pipeline = segmenter.pipeline.to(torch.float32)
+        segmenter.vae = segmenter.pipeline.vae
+        segmenter.unet = segmenter.pipeline.unet
+        segmenter.text_encoder = segmenter.pipeline.text_encoder
+        print(f"  [DAAM] Converted pipeline to float32 for {device}")
 
     for img_name, real_classes in tqdm(ITEMS, desc="DAAM"):
         img_id = os.path.splitext(img_name)[0]
