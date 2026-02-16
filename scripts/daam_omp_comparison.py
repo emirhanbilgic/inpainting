@@ -1,11 +1,9 @@
-#!/usr/bin/env python3
 """
-DAAM OMP Comparison: True Key-Space OMP vs Post-Hoc Heatmap OMP
+DAAM OMP Comparison: Baseline DAAM vs True Key-Space OMP
 
-Compares two orthogonalization strategies for DAAM:
-1. Post-Hoc Heatmap OMP: Current approach - compute heatmaps independently, then 
-   orthogonalize flattened heatmap vectors via Gram-Schmidt.
-2. True Key-Space OMP: New approach - modify the cross-attention K matrix inside the 
+Compares:
+1. Baseline DAAM: Standard DAAM heatmap generation.
+2. True Key-Space OMP: Modify the cross-attention K matrix inside the 
    UNet so that the target token's key vector is orthogonalized against distractor 
    token keys BEFORE the softmax attention computation.
 """
@@ -25,6 +23,7 @@ from typing import List, Dict, Tuple
 # Suppress warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
+import argparse
 
 from diffusers import StableDiffusionPipeline
 from diffusers.models.attention_processor import Attention
@@ -39,8 +38,9 @@ scripts_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, scripts_dir)
 from daam_segmentation import DAAMSegmenter
 
-DATA_DIR = os.path.join(scripts_dir, "data")
-OUTPUT_DIR = os.path.join(scripts_dir, "..", "docs", "daam_omp_comparison")
+DATA_DIR = "/Users/emirhan/Desktop/pascal-voc-2012-DatasetNinja/trainval/img"
+LIST_FILE = os.path.join(scripts_dir, "..", "web_application", "list.tex")
+OUTPUT_DIR = os.path.join(scripts_dir, "..", "docs", "daam_omp_comparison_pascal")
 
 
 class Float32DAAMSegmenter(DAAMSegmenter):
@@ -88,7 +88,7 @@ class Float32DAAMSegmenter(DAAMSegmenter):
         elif prompt.startswith("a "):
             concept = prompt[2:].strip(".").strip()
         if not concept:
-            concept = prompt.split()[-1]
+            concept = prompt.strip(".").strip()
 
         background_concepts = ["background", "floor", "tree", "person", "grass", "face"]
         background_str = ", ".join([f"a {bc}" for bc in background_concepts])
@@ -136,7 +136,7 @@ class Float32DAAMSegmenter(DAAMSegmenter):
                 heatmap = torch.zeros((h, w))
 
         heatmap = heatmap.unsqueeze(0).unsqueeze(0).float()
-        heatmap = F.interpolate(heatmap, size=(h, w), mode='nearest')
+        heatmap = F.interpolate(heatmap, size=(h, w), mode='bilinear', align_corners=False)
         heatmap = heatmap.squeeze()
         heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
         return heatmap.cpu()
@@ -360,7 +360,7 @@ def run_daam_with_key_space_omp(
     # We need a prompt that contains BOTH target and distractor concepts
     # so that all token keys are projected into the same attention space
     all_concepts = [target_concept] + competing_concepts
-    combined_prompt = f"a photo of a {', a '.join(all_concepts)}."
+    combined_prompt = f"{', '.join(all_concepts)}."
     
     # Get token indices for target and each distractor in the combined prompt
     target_indices = get_token_indices(tokenizer, combined_prompt, target_concept)
@@ -379,7 +379,7 @@ def run_daam_with_key_space_omp(
     
     if not target_indices:
         print(f"    WARNING: Could not find target token indices, falling back to basic DAAM")
-        return segmenter.predict(image_pil, f"a photo of a {target_concept}.", size=size)
+        return segmenter.predict(image_pil, f"{target_concept}.", size=size)
     
     # 4. Prepare text embeddings
     text_input = tokenizer(
@@ -453,7 +453,7 @@ def run_daam_with_key_space_omp(
     
     if not all_merges:
         print("    WARNING: No heat maps captured")
-        return segmenter.predict(image_pil, f"a photo of a {target_concept}.", size=size)
+        return segmenter.predict(image_pil, f"{target_concept}.", size=size)
     
     maps = torch.stack(all_merges, dim=0)
     maps = maps.mean(0)[:, 0]  # Average across layers/heads: [num_tokens, H, W]
@@ -466,13 +466,13 @@ def run_daam_with_key_space_omp(
     
     if not target_maps:
         print("    WARNING: Target token index out of range")
-        return segmenter.predict(image_pil, f"a photo of a {target_concept}.", size=size)
+        return segmenter.predict(image_pil, f"{target_concept}.", size=size)
     
     heatmap = torch.stack(target_maps).mean(0)  # [H, W]
     
     # Resize to original image dimensions
     heatmap = heatmap.unsqueeze(0).unsqueeze(0).float()
-    heatmap = F.interpolate(heatmap, size=(h, w), mode='nearest')
+    heatmap = F.interpolate(heatmap, size=(h, w), mode='bilinear', align_corners=False)
     heatmap = heatmap.squeeze()
     
     # Normalize to [0, 1]
@@ -489,31 +489,22 @@ def run_comparison(
     name: str,
     beta: float = 1.0,
 ):
-    """Run both methods and generate comparison visualization."""
+    """Run Baseline and True Key-Space OMP and generate comparison visualization."""
+    """Run Baseline and True Key-Space OMP and generate comparison visualization."""
     
     image_pil = Image.open(image_path).convert("RGB")
-    prompt = f"a photo of a {target_concept}."
+    prompt = f"{target_concept}."
     
     print(f"\n{'=' * 60}")
-    print(f"  '{target_concept}' vs {competing_concepts}")
+    print(f"  Comparing Baseline vs Key-Space OMP for '{target_concept}' ⊥ {competing_concepts}")
     print(f"{'=' * 60}")
     
-    # 1. Baseline DAAM (no OMP)
-    print("  [1/3] Running baseline DAAM...")
+    # 1. Baseline DAAM
+    print("  [1/2] Running baseline DAAM...")
     baseline_heatmap = segmenter.predict(image_pil, prompt, size=512)
     
-    # 2. Post-hoc Heatmap OMP (current approach)
-    print("  [2/3] Running post-hoc heatmap OMP...")
-    posthoc_heatmap = segmenter.predict_key_space_omp(
-        image_pil,
-        prompt=prompt,
-        target_concept=target_concept,
-        competing_concepts=competing_concepts,
-        omp_beta=beta,
-    )
-    
-    # 3. True Key-Space OMP (new approach)
-    print("  [3/3] Running true key-space OMP...")
+    # 2. True Key-Space OMP
+    print("  [2/2] Running true key-space OMP...")
     keyspace_heatmap = run_daam_with_key_space_omp(
         segmenter,
         image_pil,
@@ -525,7 +516,7 @@ def run_comparison(
     )
     
     # Generate visualization
-    fig, axes = plt.subplots(1, 4, figsize=(20, 5))
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
     
     # Original
     axes[0].imshow(image_pil)
@@ -539,21 +530,14 @@ def run_comparison(
     axes[1].set_title(f"DAAM Baseline\n'{target_concept}'", fontsize=11)
     axes[1].axis('off')
     
-    # Post-hoc OMP
+    # Key-Space OMP
     axes[2].imshow(image_pil)
-    hm_post = posthoc_heatmap.numpy() if hasattr(posthoc_heatmap, 'numpy') else posthoc_heatmap
-    axes[2].imshow(hm_post, cmap='jet', alpha=0.6)
-    axes[2].set_title(f"Post-Hoc Heatmap OMP\n'{target_concept}' ⊥ {competing_concepts}", fontsize=10)
+    hm_key = keyspace_heatmap.numpy() if hasattr(keyspace_heatmap, 'numpy') else keyspace_heatmap
+    axes[2].imshow(hm_key, cmap='jet', alpha=0.6)
+    axes[2].set_title(f"True Key-Space OMP\n'{target_concept}' ⊥ {competing_concepts}", fontsize=10)
     axes[2].axis('off')
     
-    # Key-Space OMP
-    axes[3].imshow(image_pil)
-    hm_key = keyspace_heatmap.numpy() if hasattr(keyspace_heatmap, 'numpy') else keyspace_heatmap
-    axes[3].imshow(hm_key, cmap='jet', alpha=0.6)
-    axes[3].set_title(f"True Key-Space OMP\n'{target_concept}' ⊥ {competing_concepts}", fontsize=10)
-    axes[3].axis('off')
-    
-    plt.suptitle(f"DAAM OMP Comparison: {name}", fontsize=14, fontweight='bold', y=1.02)
+    plt.suptitle(f"DAAM Baseline vs Key-Space OMP: {name}", fontsize=14, fontweight='bold', y=1.02)
     plt.tight_layout()
     
     save_path = os.path.join(OUTPUT_DIR, f"{name}.png")
@@ -561,34 +545,22 @@ def run_comparison(
     plt.close()
     print(f"  Saved: {save_path}")
     
-    # Compute similarity metrics between methods
-    baseline_flat = np.nan_to_num(hm.flatten(), nan=0.0)
-    posthoc_flat = np.nan_to_num(hm_post.flatten(), nan=0.0)
-    keyspace_flat = np.nan_to_num(hm_key.flatten(), nan=0.0)
+    # Cosine similarity
+    base_flat = np.nan_to_num(hm.flatten(), nan=0.0)
+    key_flat = np.nan_to_num(hm_key.flatten(), nan=0.0)
+    cos_sim = np.dot(base_flat, key_flat) / (np.linalg.norm(base_flat) * np.linalg.norm(key_flat) + 1e-8)
     
-    # Cosine similarity 
-    cos_baseline_posthoc = np.dot(baseline_flat, posthoc_flat) / (np.linalg.norm(baseline_flat) * np.linalg.norm(posthoc_flat) + 1e-8)
-    cos_baseline_keyspace = np.dot(baseline_flat, keyspace_flat) / (np.linalg.norm(baseline_flat) * np.linalg.norm(keyspace_flat) + 1e-8)
-    cos_posthoc_keyspace = np.dot(posthoc_flat, keyspace_flat) / (np.linalg.norm(posthoc_flat) * np.linalg.norm(keyspace_flat) + 1e-8)
+    print(f"\n  Cosine similarity (Baseline ↔ Key-Space): {cos_sim:.4f}")
     
-    print(f"\n  Cosine similarities:")
-    print(f"    Baseline ↔ Post-Hoc: {cos_baseline_posthoc:.4f}")
-    print(f"    Baseline ↔ Key-Space: {cos_baseline_keyspace:.4f}")
-    print(f"    Post-Hoc ↔ Key-Space: {cos_posthoc_keyspace:.4f}")
-    
-    # Mean activation (lower = more suppression for wrong prompts)
-    print(f"\n  Mean activation:")
-    print(f"    Baseline:  {baseline_flat.mean():.4f}")
-    print(f"    Post-Hoc:  {posthoc_flat.mean():.4f}")
-    print(f"    Key-Space: {keyspace_flat.mean():.4f}")
+    # Mean activation
+    print(f"  Mean activation:")
+    print(f"    Baseline:  {base_flat.mean():.4f}")
+    print(f"    Key-Space: {key_flat.mean():.4f}")
     
     return {
         'baseline': baseline_heatmap,
-        'posthoc': posthoc_heatmap,
         'keyspace': keyspace_heatmap,
-        'cos_baseline_posthoc': cos_baseline_posthoc,
-        'cos_baseline_keyspace': cos_baseline_keyspace,
-        'cos_posthoc_keyspace': cos_posthoc_keyspace,
+        'cosine_similarity': cos_sim
     }
 
 
@@ -599,46 +571,74 @@ def main():
     device = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
     print(f"Using device: {device}")
     
+    parser = argparse.ArgumentParser(description="Run DAAM Baseline vs Key-Space OMP Comparison")
+    parser.add_argument("--beta", type=float, default=1.0, help="Orthogonalization strength (default: 1.0)")
+    args = parser.parse_args()
+    
     # Initialize segmenter with float32 to avoid NaN on MPS
-    print("Initializing Float32 DAAMSegmenter...")
+    print(f"Initializing Float32 DAAMSegmenter (beta={args.beta})...")
     segmenter = Float32DAAMSegmenter(device=device)
     
     # Define comparison examples
-    examples = [
-        # Correct prompt: target IS in the image
-        {
-            "image": os.path.join(DATA_DIR, "cat_and_dog.jpeg"),
-            "target": "dog",
-            "competing": ["cat"],
-            "name": "catdog_target_dog",
-        },
-        {
-            "image": os.path.join(DATA_DIR, "cat_and_dog.jpeg"),
-            "target": "cat",
-            "competing": ["dog"],
-            "name": "catdog_target_cat",
-        },
-        # Wrong/hallucination prompt: target is NOT in the image
-        {
-            "image": os.path.join(DATA_DIR, "shepherd_dog.png"),
-            "target": "cat",
-            "competing": ["dog"],
-            "name": "shepherd_hallucinate_cat",
-        },
-        {
-            "image": os.path.join(DATA_DIR, "bird.png"),
-            "target": "dog",
-            "competing": ["bird"],
-            "name": "bird_hallucinate_dog",
-        },
-        # Multi-distractor
-        {
-            "image": os.path.join(DATA_DIR, "test_dog_and_car.jpg"),
-            "target": "dog",
-            "competing": ["car", "cat"],
-            "name": "dogcar_target_dog",
-        },
-    ]
+    # Read examples from list.tex
+    examples = []
+    
+    if os.path.exists(LIST_FILE):
+        print(f"Reading examples from {LIST_FILE}...")
+        with open(LIST_FILE, 'r') as f:
+            lines = f.readlines()
+            
+        # Skip header if present
+        start_idx = 0
+        if lines and "Image" in lines[0] and "Animals" in lines[0]:
+            start_idx = 1
+            
+        for line in lines[start_idx:]:
+            line = line.strip()
+            if not line:
+                continue
+                
+            parts = line.split('\t')
+            if len(parts) < 2:
+                continue
+                
+            filename = parts[0].strip()
+            concepts_str = parts[1].strip()
+            concepts = [c.strip() for c in concepts_str.split(',')]
+            
+            if len(concepts) < 2:
+                print(f"Skipping {filename}: need at least 2 concepts, got {concepts}")
+                continue
+                
+            # Create examples for each concept pair in the list
+            # For "Dog, Sheep", we do:
+            # 1. Target: Dog, Competing: Sheep
+            # 2. Target: Sheep, Competing: Dog
+            
+            image_path = os.path.join(DATA_DIR, filename)
+            
+            # Case 1: First concept as target
+            examples.append({
+                "image": image_path,
+                "target": concepts[0].lower(),
+                "competing": [c.lower() for c in concepts[1:]],
+                "name": f"{filename.split('.')[0]}_target_{concepts[0].lower()}",
+            })
+            
+            # Case 2: Second concept as target (if exactly 2 concepts)
+            if len(concepts) == 2:
+                examples.append({
+                    "image": image_path,
+                    "target": concepts[1].lower(),
+                    "competing": [concepts[0].lower()],
+                    "name": f"{filename.split('.')[0]}_target_{concepts[1].lower()}",
+                })
+    else:
+        print(f"WARNING: List file not found at {LIST_FILE}")
+        print("Falling back to hardcoded examples if any...")
+        examples = [
+            # Hardcoded fallbacks can go here or just leave empty
+        ]
     
     all_results = {}
     for ex in examples:
@@ -652,18 +652,18 @@ def main():
             target_concept=ex["target"],
             competing_concepts=ex["competing"],
             name=ex["name"],
-            beta=1.0,
+            beta=args.beta,
         )
         all_results[ex["name"]] = result
     
     # Summary table
-    print(f"\n{'=' * 80}")
+    print(f"\n{'=' * 60}")
     print(f"  SUMMARY")
-    print(f"{'=' * 80}")
-    print(f"  {'Example':<30} {'Base↔Post':<12} {'Base↔Key':<12} {'Post↔Key':<12}")
-    print(f"  {'-'*30} {'-'*12} {'-'*12} {'-'*12}")
+    print(f"{'=' * 60}")
+    print(f"  {'Example':<30} {'Base↔Key Cosine':<20}")
+    print(f"  {'-'*30} {'-'*20}")
     for name, res in all_results.items():
-        print(f"  {name:<30} {res['cos_baseline_posthoc']:.4f}       {res['cos_baseline_keyspace']:.4f}       {res['cos_posthoc_keyspace']:.4f}")
+        print(f"  {name:<30} {res['cosine_similarity']:.4f}")
     
     print(f"\nAll results saved to: {OUTPUT_DIR}")
 
