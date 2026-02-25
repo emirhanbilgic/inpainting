@@ -20,6 +20,7 @@ from unittest.mock import MagicMock
 # When running DAAM, we must NOT mock transformers/tokenizers because
 # diffusers imports real classes from them (CLIPImageProcessor, etc.)
 _is_daam = "--method" in sys.argv and "DAAM" in sys.argv
+_is_attentioncam = "--method" in sys.argv and "AttentionCAM" in sys.argv
 
 def create_mock_module(name):
     m = types.ModuleType(name)
@@ -32,7 +33,7 @@ def create_mock_module(name):
     return m
 
 problematic_prefixes = ["matplotlib"]
-if not _is_daam:
+if not (_is_daam or _is_attentioncam):
     problematic_prefixes += ["sklearn", "transformers", "tokenizers"]
 for prefix in problematic_prefixes:
     sys.modules[prefix] = create_mock_module(prefix)
@@ -40,7 +41,7 @@ for prefix in problematic_prefixes:
 problematic_specifics = [
     "matplotlib.pyplot", "matplotlib.colors", "matplotlib.cm",
 ]
-if not _is_daam:
+if not (_is_daam or _is_attentioncam):
     problematic_specifics += [
         "sklearn.metrics", "sklearn.utils", "sklearn.base",
         "sklearn.utils.murmurhash", "sklearn.utils._cython_blas",
@@ -78,35 +79,43 @@ if scripts_dir not in sys.path:
 from legrad import LeWrapper, LePreprocess
 from open_clip.timm_model import TimmModel
 
-# --- DATA ---
-ITEMS = [
-    ("2007_000904.jpg", ["cow", "horse"]),
-    ("2007_001594.jpg", ["dog", "sheep"]),
-    ("2007_001763.jpg", ["cat", "dog"]),
-    ("2007_001825.jpg", ["cat", "dog"]),
-    ("2007_002268.jpg", ["cat", "dog"]),
-    ("2007_002597.jpg", ["cat", "dog"]),
-    ("2007_004537.jpg", ["cow", "horse"]),
-    ("2007_005114.jpg", ["cow", "horse"]),
-    ("2007_006944.jpg", ["horse", "sheep"]),
-    ("2007_007417.jpg", ["cat", "dog"]),
-    ("2007_009331.jpg", ["dog", "horse"]),
-    ("2008_002536.jpg", ["dog", "sheep"]),
-    ("2009_001885.jpg", ["dog", "horse"]),
-    ("2010_002763.jpg", ["cat", "cow"]),
-    ("2010_003670.jpg", ["dog", "sheep"]),
-    ("2010_004760.jpg", ["cat", "dog"]),
-    ("2010_005796.jpg", ["cat", "dog"]),
-    ("2011_000219.jpg", ["bird", "cow"]),
-    ("2011_000548.jpg", ["bird", "cow"]),
-    ("2011_000834.jpg", ["bird", "sheep"]),
-    ("2011_002464.jpg", ["bird", "sheep"]),
-]
-
-CANDIDATE_ANIMALS = ["bird", "cat", "cow", "dog", "horse", "sheep"]
-
+CANDIDATE_ANIMALS = ["cat", "dog", "horse", "sheep", "bird"]
 DATASET_ROOT = "/Users/emirhan/Desktop/pascal-voc-2012-DatasetNinja"
-OUTPUT_DIR = os.path.join(project_root, "web_application", "data")
+# OUTPUT_DIR will be set dynamically based on list file
+
+
+def parse_tex_list(filepath):
+    """
+    Parse a tab-separated .tex list file.
+    Expected format:
+    Image	Objects
+    filename.jpg	Obj1, Obj2
+    ...
+    """
+    items = []
+    with open(filepath, 'r') as f:
+        lines = f.readlines()
+    
+    # Skip header
+    for line in lines[1:]:
+        line = line.strip()
+        if not line:
+            continue
+        
+        # Try to split by tab first (as per original design)
+        parts = line.split('\t')
+        if len(parts) < 2:
+            # Fallback: split by whitespace (handle spaces instead of tabs)
+            # We assume the first column (filename) has no spaces.
+             parts = line.split(None, 1)
+
+        if len(parts) >= 2:
+            img_name = parts[0].strip()
+            objects_str = parts[1].strip()
+            # Split by comma and strip whitespace, convert to lowercase for consistency
+            objects = [obj.strip().lower() for obj in objects_str.split(',')]
+            items.append((img_name, objects))
+    return items
 
 
 # ==============================================================================
@@ -193,8 +202,14 @@ def get_text_embedding(model, tokenizer, prompt, device):
     return emb
 
 
-def find_image(img_name):
-    """Find image in Pascal VOC dataset directories."""
+def find_image(img_name, search_paths=None):
+    """Find image in Pascal VOC dataset directories or provided paths."""
+    if search_paths:
+        for search_path in search_paths:
+            path = os.path.join(search_path, img_name)
+            if os.path.exists(path):
+                return path
+
     for root_dir in ["trainval/img", "train/img", "val/img"]:
         path = os.path.join(DATASET_ROOT, root_dir, img_name)
         if os.path.exists(path):
@@ -541,15 +556,17 @@ CLIP_METHODS = ["LeGrad", "GradCAM", "AttentionCAM", "CheferCAM"]
 ALL_METHODS = CLIP_METHODS + ["DAAM"]
 
 
-def run_clip_method(method_name, model, tokenizer, preprocess, device):
+def run_clip_method(method_name, model, tokenizer, preprocess, device, items, candidate_animals, output_dir, image_root=None):
     """Run a CLIP-based method on all images."""
     print(f"\n{'='*60}")
     print(f"Running method: {method_name}")
+    print(f"Output directory: {output_dir}")
     print(f"{'='*60}")
 
-    for img_name, real_classes in tqdm(ITEMS, desc=f"{method_name}"):
+    for img_name, real_classes in tqdm(items, desc=f"{method_name}"):
         img_id = os.path.splitext(img_name)[0]
-        img_path = find_image(img_name)
+        search_paths = [image_root] if image_root else None
+        img_path = find_image(img_name, search_paths=search_paths)
         if not img_path:
             print(f"  [SKIP] Image not found: {img_name}")
             continue
@@ -560,7 +577,12 @@ def run_clip_method(method_name, model, tokenizer, preprocess, device):
 
             # Select fake animal
             random.seed(42 + hash(img_id))
-            fake_candidates = [a for a in CANDIDATE_ANIMALS if a not in real_classes]
+            fake_candidates = [a for a in candidate_animals if a not in real_classes]
+            if not fake_candidates:
+                 # If all candidates are present, pick one at random even if present (should not happen with good lists)
+                 # or just pick from full list.
+                 fake_candidates = candidate_animals
+            
             fake_animal = random.choice(fake_candidates)
 
             # Build embeddings for all relevant classes
@@ -570,14 +592,14 @@ def run_clip_method(method_name, model, tokenizer, preprocess, device):
                 class_embeddings[cls_name] = get_text_embedding(model, tokenizer, prompt, device)
 
             # Process each target
-            target_info = [
-                ("Target_1", real_classes[0]),
-                ("Target_2", real_classes[1]),
-                ("Target_fake", fake_animal),
-            ]
+            target_info = []
+            # Handle variable number of real classes
+            for i, cls_name in enumerate(real_classes):
+                target_info.append((f"Target_{i+1}", cls_name))
+            target_info.append(("Target_fake", fake_animal))
 
             for folder_name, target_cls in target_info:
-                out_folder = os.path.join(OUTPUT_DIR, img_id, f"{folder_name}_{method_name}")
+                out_folder = os.path.join(output_dir, img_id, f"{folder_name}_{method_name}")
                 os.makedirs(out_folder, exist_ok=True)
 
                 target_emb = class_embeddings[target_cls]
@@ -1024,65 +1046,94 @@ if _is_daam:
         
         return heatmap.cpu()
 
-def run_daam_method(device, beta=0.2):
+def run_daam_method(model_id, device, items, candidate_animals, output_dir, image_root=None, beta=0.01):
     """Run DAAM method on all images."""
-    global _is_daam
-    _is_daam = True # Enable DAAM-specific imports and code
-
     print(f"\n{'='*60}")
     print(f"Running method: DAAM")
+    print(f"Output directory: {output_dir}")
     print(f"{'='*60}")
 
-    print("Loading Float32 DAAM segmenter...")
-    segmenter = Float32DAAMSegmenter(model_id="Manojb/stable-diffusion-2-base", device=device)
+    # Lazy import to avoid loading diffusers/transformers if not running DAAM
+    from daam import trace
+    
+    # Initialize our float32 segmenter
+    segmenter = Float32DAAMSegmenter(model_id=model_id, device=device)
 
-    for img_name, real_classes in tqdm(ITEMS, desc="DAAM"):
+    for img_name, real_classes in tqdm(items, desc="DAAM"):
         img_id = os.path.splitext(img_name)[0]
-        img_path = find_image(img_name)
+        search_paths = [image_root] if image_root else None
+        img_path = find_image(img_name, search_paths=search_paths)
         if not img_path:
             print(f"  [SKIP] Image not found: {img_name}")
             continue
 
         try:
             original_image = Image.open(img_path).convert("RGB")
-
-            # Select fake animal (same seed as CLIP methods)
+            
+            # Select fake animal
             random.seed(42 + hash(img_id))
-            fake_candidates = [a for a in CANDIDATE_ANIMALS if a not in real_classes]
+            fake_candidates = [a for a in candidate_animals if a not in real_classes]
+            if not fake_candidates:
+                fake_candidates = candidate_animals
             fake_animal = random.choice(fake_candidates)
 
-            target_info = [
-                ("Target_1", real_classes[0]),
-                ("Target_2", real_classes[1]),
-                ("Target_fake", fake_animal),
-            ]
+            # Prepare prompts
+            prompts = {}
+            for cls_name in real_classes + [fake_animal]:
+                prompts[cls_name] = f"{cls_name}."
+
+            # Process each target
+            target_info = []
+            for i, cls_name in enumerate(real_classes):
+                target_info.append((f"Target_{i+1}", cls_name))
+            target_info.append(("Target_fake", fake_animal))
 
             for folder_name, target_cls in target_info:
-                out_folder = os.path.join(OUTPUT_DIR, img_id, f"{folder_name}_DAAM")
+                out_folder = os.path.join(output_dir, img_id, f"{folder_name}_DAAM")
                 os.makedirs(out_folder, exist_ok=True)
 
-                prompt = f"{target_cls}."
+                prompt = prompts[target_cls]
 
                 # 1. Normal DAAM heatmap
                 heatmap_normal = segmenter.predict(original_image, prompt, size=512)
                 vis_normal = get_heatmap_vis(original_image, heatmap_normal)
 
-                # 2. DAAM with key-space OMP
+                # 2. Key-Space OMP DAAM heatmap
+                # Determine negative classes
                 is_fake = folder_name == "Target_fake"
                 if is_fake:
-                    competing = real_classes
+                    neg_classes = real_classes
                 else:
+                    # For a real class, only absent concepts compete?
+                    # Original logic: other_real + [fake_animal]
                     other_real = [c for c in real_classes if c != target_cls]
-                    competing = other_real + [fake_animal]
+                    neg_classes = other_real + [fake_animal]
+                
+                # Check if we should restrict to only absent concepts acting as negatives
+                # (User requested this in previous turn "Fixing DAAM OMP Semantics")
+                # But here I am modifying generate_hci_all_methods.py which might not have been fully synced?
+                # The user's request for list2.tex implies we should use similar logic.
+                # However, looking at the previous conversation history "Fixing DAAM OMP Semantics",
+                # the user wanted "only absent concepts".
+                # For `Target_fake` (fake_animal), `real_classes` are all absent from the prompt but present in image?
+                # Wait, "absent concepts" usually means concepts NOT in the image.
+                # If target is "fake_animal" (not in image), then `real_classes` (in image) are the competitors?
+                # If target is "real_class" (in image), then `fake_animal` (not in image) is competitor?
+                # Let's stick to the logic in `run_clip_method` for now to be consistent within this file,
+                # or better, use the logic that was likely intended.
+                # In `run_clip_method`:
+                # is_fake: neg_classes = real_classes
+                # else: neg_classes = other_real + [fake_animal]
+                
+                # Let's just use what I wrote above which mirrors `run_clip_method`.
 
-                # Use beta=0.2 as requested
                 heatmap_omp = run_daam_with_key_space_omp(
                     segmenter, 
                     original_image, 
                     prompt=prompt,
                     target_concept=target_cls, 
-                    competing_concepts=competing, 
-                    beta=beta, 
+                    competing_concepts=neg_classes,
+                    beta=beta,
                     size=512
                 )
                 vis_omp = get_heatmap_vis(original_image, heatmap_omp)
@@ -1100,47 +1151,105 @@ def run_daam_method(device, beta=0.2):
             traceback.print_exc()
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Generate HCI heatmaps for multiple methods")
-    parser.add_argument("--method", type=str, required=True, choices=ALL_METHODS,
-                        help="Attribution method to run")
-    parser.add_argument("--device", type=str, default=None,
-                        help="Device (auto-detected if not specified)")
-    parser.add_argument("--beta", type=float, default=0.2,
-                        help="Beta parameter for DAAM OMP (default: 0.2)")
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Generate HCI heatmaps for multiple methods.")
+    parser.add_argument("--method", type=str, required=True, choices=ALL_METHODS, help="Attribution method to use.")
+    parser.add_argument("--device", type=str, default="mps", help="Device to use (mps, cuda, cpu).")
+    parser.add_argument("--model", type=str, default="Manojb/stable-diffusion-2-base", help="Model ID for DAAM.")
+    parser.add_argument("--list_file", type=str, default=None, help="Path to .tex list file.")
+    parser.add_argument("--image_root", type=str, default=None, help="Root directory for images (overrides default Pascal VOC search).")
+    parser.add_argument("--beta", type=float, default=0.01, help="Beta parameter for DAAM OMP.")
     args = parser.parse_args()
 
-    if args.device:
-        device = args.device
-    elif torch.cuda.is_available():
-        device = "cuda"
-    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        device = "mps"
+    # Determine dataset list and candidates
+    if args.list_file:
+        list_file_path = args.list_file
+        if not os.path.exists(list_file_path):
+             # Try relative to valid paths if absolute path not given
+             # But user provided "web_application/list2.tex", handle relative to CWD or script
+             potential_path = os.path.abspath(list_file_path)
+             if not os.path.exists(potential_path):
+                 # Try relative to project root
+                 potential_path = os.path.join(project_root, list_file_path)
+             if os.path.exists(potential_path):
+                 list_file_path = potential_path
+             else:
+                 raise FileNotFoundError(f"Could not find list file: {args.list_file}")
+
+        print(f"Using list file: {list_file_path}")
+        items = parse_tex_list(list_file_path)
+        
+        # Determine candidates and output dir based on filename
+        filename = os.path.basename(list_file_path)
+        if "list2.tex" in filename:
+            candidate_animals = ["helicopter", "monkey", "boat"]
+            output_dir_name = "data_list2"
+        elif "cat_dog_sheep" in filename:
+            candidate_animals = ["cat", "dog", "sheep"]
+            output_dir_name = "cat_dog_sheep_heatmaps"
+        elif filename == "list.tex":
+            # Default behavior for list.tex
+            candidate_animals = ["bird", "cat", "cow", "dog", "horse", "sheep"]
+            output_dir_name = "data"
+        else:
+             # Generic handler for other lists (e.g. two_animals_list.txt)
+             all_objects = set()
+             for _, objs in items:
+                 all_objects.update(objs)
+             candidate_animals = sorted(list(all_objects))
+             name_no_ext = os.path.splitext(filename)[0]
+             output_dir_name = f"data_{name_no_ext}"
+             print(f"Auto-detected candidates: {candidate_animals}")
+             print(f"Output directory name: {output_dir_name}")
+            
     else:
-        device = "cpu"
+        # Fallback to hardcoded behavior if no list specified (or default to list.tex)
+        # For backward compatibility, let's look for list.tex in web_application
+        default_list = os.path.join(project_root, "web_application", "list.tex")
+        if os.path.exists(default_list):
+            print(f"Using default list file: {default_list}")
+            items = parse_tex_list(default_list)
+            candidate_animals = ["bird", "cat", "cow", "dog", "horse", "sheep"]
+            output_dir_name = "data"
+        else:
+            print("Warning: list.tex not found, using empty list.")
+            items = []
+            candidate_animals = []
+            output_dir_name = "data"
 
-    print(f"Device: {device}")
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    if args.list_file and "cat_dog_sheep" in os.path.basename(args.list_file):
+        output_dir = os.path.join(project_root, "scripts", "data", "cat_dog_sheep_heatmaps")
+    else:
+        output_dir = os.path.join(project_root, "web_application", output_dir_name)
 
-    if args.method in CLIP_METHODS:
-        print("Loading CLIP (ViT-B-16)...")
-        model, _, preprocess = open_clip.create_model_and_transforms(
-            model_name="ViT-B-16",
-            pretrained="laion2b_s34b_b88k",
-            device=device
-        )
-        tokenizer = open_clip.get_tokenizer("ViT-B-16")
+    device = args.device
+    
+    if args.method == "DAAM":
+        run_daam_method(args.model, device, items, candidate_animals, output_dir, image_root=args.image_root, beta=args.beta)
+    else:
+        # Load CLIP model
+        if args.method == "AttentionCAM":
+            print("Loading SigLIP (ViT-B-16-SigLIP) for AttentionCAM...")
+            model, _, preprocess = open_clip.create_model_and_transforms(
+                model_name="ViT-B-16-SigLIP",
+                pretrained="webli",
+                device=device
+            )
+            tokenizer = open_clip.get_tokenizer("ViT-B-16-SigLIP")
+        else:
+            print("Loading CLIP (ViT-B-16)...")
+            model, _, preprocess = open_clip.create_model_and_transforms(
+                model_name="ViT-B-16",
+                pretrained="laion2b_s34b_b88k",
+                device=device
+            )
+            tokenizer = open_clip.get_tokenizer("ViT-B-16")
+        
+        model.to(device)
         model.eval()
+        
+        # Original script applied LeWrapper and LePreprocess unconditionally
         model = LeWrapper(model, layer_index=-2)
         preprocess = LePreprocess(preprocess=preprocess, image_size=224)
 
-        run_clip_method(args.method, model, tokenizer, preprocess, device)
-
-    elif args.method == "DAAM":
-        run_daam_method(device, beta=args.beta)
-
-    print(f"\nDone! Results saved to {OUTPUT_DIR}")
-
-
-if __name__ == "__main__":
-    main()
+        run_clip_method(args.method, model, tokenizer, preprocess, device, items, candidate_animals, output_dir, image_root=args.image_root)

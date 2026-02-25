@@ -177,6 +177,7 @@ HCI_animals_comparison_v2/
 HCI_animals_restructured/
 web_application/
 docs/ 
+data/
 
 legrad_torch.egg-info/
 .DS_Store
@@ -196,3 +197,10 @@ results.json
 test_daam_baseline.json
 scripts/data/example.png
 scripts/eccv.tex
+osp_figure.pdf 
+cat_dog.png
+osp_figure.pdf
+generate_cat_dog_sheep_final.py
+plot_sem_omp_figure.py
+plot_sem_omp_pipeline.py
+main.tex
