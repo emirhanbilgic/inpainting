@@ -1621,15 +1621,9 @@ class AntiHallucinationObjective:
                         median_val = float(np.median(heatmap_norm.numpy()))
                         min_val = float(np.min(heatmap_norm.numpy()))
                     
-                        # AUROC
-                        gt_binary = (gt_mask > 0).astype(int).flatten()
-                        pred_flat = heatmap_norm.numpy().flatten()
-                        if len(np.unique(gt_binary)) > 1:
-                             auroc = roc_auc_score(gt_binary, pred_flat)
-                        else:
-                             auroc = np.nan
-                    
-                        return inter, union, correct, labeled, ap[0] if ap else 0.0, auroc, max_val, mean_val, median_val, min_val
+                        # AUROC calculation removed here to be done as paired AUROC later
+                        
+                        return inter, union, correct, labeled, ap[0] if ap else 0.0, heatmap_norm.numpy(), max_val, mean_val, median_val, min_val
                 
                     # === WRONG PROMPTS (sample first to get competing concepts for DAAM OMP) ===
                     neg_indices = self._sample_negative_indices(cls_idx)
@@ -1637,7 +1631,7 @@ class AntiHallucinationObjective:
                     
                     # === CORRECT PROMPT ===
                     # For DAAM, pass wrong classes as potential competing concepts (filtered by hyperparameters)
-                    inter_c, union_c, correct_c, label_c, ap_c, auroc_c, mx_c, mn_c, md_c, mi_c = compute_metrics(
+                    inter_c, union_c, correct_c, label_c, ap_c, heatmap_c, mx_c, mn_c, md_c, mi_c = compute_metrics(
                         original_1x, class_name, competing_class_names=neg_class_names, omp_beta=omp_beta
                     )
                     correct_results['inter'] = correct_results['inter'] + inter_c
@@ -1645,14 +1639,13 @@ class AntiHallucinationObjective:
                     correct_results['pixel_correct'] += correct_c
                     correct_results['pixel_label'] += label_c
                     correct_results['ap'].append(ap_c)
-                    if not np.isnan(auroc_c):
-                        correct_results['auroc'].append(auroc_c)
                     correct_results['max'].append(mx_c)
                     correct_results['mean'].append(mn_c)
                     correct_results['median'].append(md_c)
                     correct_results['min'].append(mi_c)
                 
                     # === WRONG PROMPTS ===
+                    wrong_heatmaps = []
                     for neg_idx in neg_indices:
                         neg_wnid = self.idx_to_wnid[neg_idx]
                         neg_class_name = self.wnid_to_classname[neg_wnid]
@@ -1661,7 +1654,7 @@ class AntiHallucinationObjective:
                         # For DAAM, use correct class as a competing concept for wrong prompts
                         wrong_competing = [class_name]
                     
-                        inter_w, union_w, correct_w, label_w, ap_w, auroc_w, mx_w, mn_w, md_w, mi_w = compute_metrics(
+                        inter_w, union_w, correct_w, label_w, ap_w, heatmap_w, mx_w, mn_w, md_w, mi_w = compute_metrics(
                             neg_emb, neg_class_name, competing_class_names=wrong_competing, omp_beta=omp_beta
                         )
                         wrong_results['inter'] = wrong_results['inter'] + inter_w
@@ -1669,12 +1662,34 @@ class AntiHallucinationObjective:
                         wrong_results['pixel_correct'] += correct_w
                         wrong_results['pixel_label'] += label_w
                         wrong_results['ap'].append(ap_w)
-                        if not np.isnan(auroc_w):
-                            wrong_results['auroc'].append(auroc_w)
                         wrong_results['max'].append(mx_w)
                         wrong_results['mean'].append(mn_w)
                         wrong_results['median'].append(md_w)
                         wrong_results['min'].append(mi_w)
+                        wrong_heatmaps.append(heatmap_w)
+                        
+                    # === PAIRED AUROC CALCULATION ===
+                    gt_binary_correct = (gt_mask > 0).astype(int).flatten()
+                    
+                    # For every wrong prompt, we expect 0s for the whole mask
+                    gt_binary_wrong = np.zeros_like(gt_binary_correct)
+                    
+                    # Compute paired AUROC for each wrong prompt
+                    for hm_w in wrong_heatmaps:
+                        paired_gt = np.concatenate([gt_binary_correct, gt_binary_wrong])
+                        paired_pred = np.concatenate([heatmap_c.flatten(), hm_w.flatten()])
+                        
+                        if len(np.unique(paired_gt)) > 1:
+                            paired_auroc = roc_auc_score(paired_gt, paired_pred)
+                        else:
+                            paired_auroc = np.nan
+                            
+                        # Add the identical paired AUROC to both correct and wrong results
+                        # This ensures the statistics match the number of samples
+                        if not np.isnan(paired_auroc):
+                            correct_results['auroc'].append(paired_auroc)
+                            wrong_results['auroc'].append(paired_auroc)
+                    
                 
                     # Success, break attempt loop
                     break
@@ -1702,15 +1717,19 @@ class AntiHallucinationObjective:
             map_score = np.mean(res_dict['ap']) * 100 if res_dict['ap'] else 0.0
             
             # AUROC
-            auroc_score = np.mean(res_dict['auroc']) * 100 if res_dict['auroc'] else 0.0
+            auroc_list = [a for a in res_dict['auroc'] if not np.isnan(a)]
+            auroc_score = np.mean(auroc_list) * 100 if auroc_list else 0.0
+            auroc_max = np.max(auroc_list) * 100 if auroc_list else 0.0
+            auroc_min = np.min(auroc_list) * 100 if auroc_list else 0.0
+            auroc_median = np.median(auroc_list) * 100 if auroc_list else 0.0
             
-            return miou, pix_acc, map_score, auroc_score
+            return miou, pix_acc, map_score, auroc_score, auroc_max, auroc_min, auroc_median
 
         # Correct
-        correct_miou, correct_macc, correct_map, correct_auroc = compute_global_metrics(correct_results)
+        correct_miou, correct_macc, correct_map, correct_auroc, correct_auroc_max, correct_auroc_min, correct_auroc_median = compute_global_metrics(correct_results)
         
         # Wrong
-        wrong_miou, wrong_macc, wrong_map, wrong_auroc = compute_global_metrics(wrong_results)
+        wrong_miou, wrong_macc, wrong_map, wrong_auroc, wrong_auroc_max, wrong_auroc_min, wrong_auroc_median = compute_global_metrics(wrong_results)
         
         # Statistics
         correct_stats = {
@@ -1729,7 +1748,9 @@ class AntiHallucinationObjective:
         }
         
         return (correct_miou, wrong_miou, correct_macc, wrong_macc, correct_map, wrong_map,
-                correct_auroc, wrong_auroc, correct_stats, wrong_stats)
+                correct_auroc, wrong_auroc, correct_auroc_max, correct_auroc_min, correct_auroc_median,
+                wrong_auroc_max, wrong_auroc_min, wrong_auroc_median,
+                correct_stats, wrong_stats)
     
     def __call__(self, trial: optuna.Trial):
         """Optuna objective function."""
@@ -1762,7 +1783,9 @@ class AntiHallucinationObjective:
         
         # Evaluate
         (correct_miou, wrong_miou, correct_acc, wrong_acc, correct_map, wrong_map,
-         correct_auroc, wrong_auroc, correct_stats, wrong_stats) = self.evaluate_sparse_config(
+         correct_auroc, wrong_auroc, correct_auroc_max, correct_auroc_min, correct_auroc_median,
+         wrong_auroc_max, wrong_auroc_min, wrong_auroc_median,
+         correct_stats, wrong_stats) = self.evaluate_sparse_config(
             wn_use_synonyms=wn_use_synonyms,
             wn_use_hypernyms=wn_use_hypernyms,
             wn_use_hyponyms=wn_use_hyponyms,
@@ -1783,7 +1806,13 @@ class AntiHallucinationObjective:
         trial.set_user_attr('correct_map', correct_map)
         trial.set_user_attr('wrong_map', wrong_map)
         trial.set_user_attr('correct_auroc', correct_auroc)
+        trial.set_user_attr('correct_auroc_max', correct_auroc_max)
+        trial.set_user_attr('correct_auroc_min', correct_auroc_min)
+        trial.set_user_attr('correct_auroc_median', correct_auroc_median)
         trial.set_user_attr('wrong_auroc', wrong_auroc)
+        trial.set_user_attr('wrong_auroc_max', wrong_auroc_max)
+        trial.set_user_attr('wrong_auroc_min', wrong_auroc_min)
+        trial.set_user_attr('wrong_auroc_median', wrong_auroc_median)
         trial.set_user_attr('correct_stats', correct_stats)
         trial.set_user_attr('wrong_stats', wrong_stats)
         
@@ -2300,8 +2329,20 @@ def main():
             'pareto_trials': [
                 {
                     'trial_number': t.number,
-                    'correct': {'miou': t.values[0], 'acc': t.values[1], 'map': t.values[2], 'auroc': t.user_attrs.get('correct_auroc')},
-                    'wrong': {'miou': t.values[3], 'acc': t.values[4], 'map': t.values[5], 'auroc': t.user_attrs.get('wrong_auroc')},
+                    'correct': {
+                        'miou': t.values[0], 'acc': t.values[1], 'map': t.values[2],
+                        'auroc': t.user_attrs.get('correct_auroc'),
+                        'auroc_max': t.user_attrs.get('correct_auroc_max'),
+                        'auroc_min': t.user_attrs.get('correct_auroc_min'),
+                        'auroc_median': t.user_attrs.get('correct_auroc_median'),
+                    },
+                    'wrong': {
+                        'miou': t.values[3], 'acc': t.values[4], 'map': t.values[5],
+                        'auroc': t.user_attrs.get('wrong_auroc'),
+                        'auroc_max': t.user_attrs.get('wrong_auroc_max'),
+                        'auroc_min': t.user_attrs.get('wrong_auroc_min'),
+                        'auroc_median': t.user_attrs.get('wrong_auroc_median'),
+                    },
                     'params': t.params,
                 }
                 for t in pareto_trials
@@ -2317,12 +2358,18 @@ def main():
             'acc': best_trial.user_attrs.get('correct_acc', 0),
             'map': best_trial.user_attrs.get('correct_map', 0),
             'auroc': best_trial.user_attrs.get('correct_auroc', 0),
+            'auroc_max': best_trial.user_attrs.get('correct_auroc_max', 0),
+            'auroc_min': best_trial.user_attrs.get('correct_auroc_min', 0),
+            'auroc_median': best_trial.user_attrs.get('correct_auroc_median', 0),
         }
         wrong_metrics = {
             'miou': best_trial.user_attrs.get('wrong_miou', 0),
             'acc': best_trial.user_attrs.get('wrong_acc', 0),
             'map': best_trial.user_attrs.get('wrong_map', 0),
             'auroc': best_trial.user_attrs.get('wrong_auroc', 0),
+            'auroc_max': best_trial.user_attrs.get('wrong_auroc_max', 0),
+            'auroc_min': best_trial.user_attrs.get('wrong_auroc_min', 0),
+            'auroc_median': best_trial.user_attrs.get('wrong_auroc_median', 0),
         }
         correct_stats = best_trial.user_attrs.get('correct_stats', {})
         wrong_stats = best_trial.user_attrs.get('wrong_stats', {})
@@ -2357,7 +2404,11 @@ def main():
         print(f"  mIoU:     {correct_metrics['miou']:.2f}  (Δ={delta_c_miou:+.2f})")
         print(f"  Accuracy: {correct_metrics['acc']:.2f}  (Δ={delta_c_acc:+.2f})")
         print(f"  mAP:      {correct_metrics['map']:.2f}  (Δ={delta_c_map:+.2f})")
-        print(f"  AUROC:    {correct_metrics['auroc']:.2f}")
+        print(f"  AUROC Mean: {correct_metrics['auroc']:.2f}")
+        if 'auroc_max' in correct_metrics and correct_metrics['auroc_max'] != 0:
+            print(f"  AUROC Max:  {correct_metrics['auroc_max']:.2f}")
+            print(f"  AUROC Median:{correct_metrics['auroc_median']:.2f}")
+            print(f"  AUROC Min:  {correct_metrics['auroc_min']:.2f}")
         if correct_stats:
             print(f"  Max Val:  {correct_stats.get('max', 0):.4f}")
             print(f"  Mean Val: {correct_stats.get('mean', 0):.4f}")
@@ -2369,7 +2420,11 @@ def main():
         print(f"  mIoU:     {wrong_metrics['miou']:.2f}  (Δ={-delta_w_miou:+.2f})")  # Flip sign for intuition
         print(f"  Accuracy: {wrong_metrics['acc']:.2f}  (Δ={-delta_w_acc:+.2f})")
         print(f"  mAP:      {wrong_metrics['map']:.2f}  (Δ={-delta_w_map:+.2f})")
-        print(f"  AUROC:    {wrong_metrics['auroc']:.2f}")
+        print(f"  AUROC Mean: {wrong_metrics['auroc']:.2f}")
+        if 'auroc_max' in wrong_metrics and wrong_metrics['auroc_max'] != 0:
+            print(f"  AUROC Max:  {wrong_metrics['auroc_max']:.2f}")
+            print(f"  AUROC Median:{wrong_metrics['auroc_median']:.2f}")
+            print(f"  AUROC Min:  {wrong_metrics['auroc_min']:.2f}")
         print(f"  (For 'wrong', positive Δ means metrics increased = BAD)")
         if wrong_stats:
             print(f"  Max Val:  {wrong_stats.get('max', 0):.4f}")

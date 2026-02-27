@@ -1068,44 +1068,23 @@ class LeGradBaselineEvaluator:
                     median_val = np.median(heatmap_np)
                     min_val = np.min(heatmap_np)
                     
-                    # AUROC
-                    gt_binary = (gt_mask > 0).astype(int).flatten()
-                    pred_flat = heatmap_np.flatten()
+                    # AUROC calculation removed to be done as paired AUROC later
                     
-                    if len(np.unique(gt_binary)) > 1:
-                        auroc = roc_auc_score(gt_binary, pred_flat)
-                    else:
-                        auroc = np.nan
-                    
-                    return inter, union, correct_pixels, total_pixels, ap, max_val, mean_val, median_val, min_val, auroc
+                    return inter, union, correct_pixels, total_pixels, ap, max_val, mean_val, median_val, min_val, heatmap_np
 
                 
                 # === CORRECT PROMPT ===
-                # Construct prompt strictly: "a {label}" or "a photo of a {label}"?
-                # Benchmark v2 uses `wnid_to_prompt[wnid]` which is "a {label}" usually.
-                # Here `self.wnid_to_prompt` has "a photo of a {label}.". 
-                # Let's use the one in `self.wnid_to_prompt`.
                 correct_prompt_str = self.wnid_to_prompt[wnid]
-                inter_c, union_c, correct_c, label_c, ap_c, mx_c, mn_c, md_c, mi_c, auroc_c = compute_metrics(text_emb, prompt_text=correct_prompt_str)
+                inter_c, union_c, correct_c, label_c, ap_c, mx_c, mn_c, md_c, mi_c, heatmap_c = compute_metrics(text_emb, prompt_text=correct_prompt_str)
                 correct_results['inter'] = correct_results['inter'] + inter_c
                 correct_results['union'] = correct_results['union'] + union_c
                 correct_results['pixel_correct'] += correct_c
                 correct_results['pixel_label'] += label_c
                 correct_results['ap'].append(ap_c)
-                if not np.isnan(auroc_c):
-                    correct_results['auroc'].append(auroc_c)
                 correct_results['max'].append(mx_c)
                 correct_results['mean'].append(mn_c)
                 correct_results['median'].append(md_c)
                 correct_results['min'].append(mi_c)
-                
-                # DEBUG: Print per-image correct metrics (first 3 only)
-                if idx < 3:
-                    # Compute local metrics for visualization
-                    iou_local = inter_c[1] / (union_c[1] + 1e-10)
-                    acc_local = 100.0 * correct_c / (label_c + 1e-10)
-                    auc_str = f"{auroc_c:.4f}" if not np.isnan(auroc_c) else "nan"
-                    print(f"  CORRECT IoU: {iou_local:.4f}, Acc: {acc_local:.2f}%, mAP: {ap_c:.4f}, AUROC: {auc_str}")
                 
                 # Store for comparison
                 correct_iou_this_image = inter_c[1] / (union_c[1] + 1e-10)
@@ -1122,30 +1101,55 @@ class LeGradBaselineEvaluator:
                         wrong_prompt = self.wnid_to_prompt.get(neg_wnid, f"unknown prompt for {neg_wnid}")
                         print(f"    WRONG class: {wrong_class}, prompt: {wrong_prompt}")
                 
+                wrong_heatmaps = []
                 for neg_idx in neg_indices:
                     neg_emb = self.all_text_embs[neg_idx:neg_idx + 1]
                     neg_wnid = self.idx_to_wnid[neg_idx]
                     neg_class = self.wnid_to_classname[neg_wnid]
                     neg_prompt_str = self.wnid_to_prompt[neg_wnid]
                     
-                    inter_w, union_w, correct_w, label_w, ap_w, mx_w, mn_w, md_w, mi_w, auroc_w = compute_metrics(neg_emb, prompt_text=neg_prompt_str)
+                    inter_w, union_w, correct_w, label_w, ap_w, mx_w, mn_w, md_w, mi_w, heatmap_w = compute_metrics(neg_emb, prompt_text=neg_prompt_str)
                     wrong_results['inter'] = wrong_results['inter'] + inter_w
                     wrong_results['union'] = wrong_results['union'] + union_w
                     wrong_results['pixel_correct'] += correct_w
                     wrong_results['pixel_label'] += label_w
                     wrong_results['ap'].append(ap_w)
-                    if not np.isnan(auroc_w):
-                        wrong_results['auroc'].append(auroc_w)
                     wrong_results['max'].append(mx_w)
                     wrong_results['mean'].append(mn_w)
                     wrong_results['median'].append(md_w)
                     wrong_results['min'].append(mi_w)
+                    wrong_heatmaps.append(heatmap_w)
                     
                     # DEBUG: Print per-image wrong metrics and comparison (first 3 only)
                     if idx < 3:
                         iou_local_w = inter_w[1] / (union_w[1] + 1e-10)
                         comparison = "GOOD (correct > wrong)" if correct_iou_this_image > iou_local_w else "BAD (wrong > correct)"
                         print(f"  WRONG IoU ({neg_class}): {iou_local_w:.4f} -- {comparison}")
+                        
+                # === PAIRED AUROC CALCULATION ===
+                gt_binary_correct = (gt_mask > 0).astype(int).flatten()
+                gt_binary_wrong = np.zeros_like(gt_binary_correct)
+                
+                paired_auroc_for_print = np.nan
+                for hm_w in wrong_heatmaps:
+                    paired_gt = np.concatenate([gt_binary_correct, gt_binary_wrong])
+                    paired_pred = np.concatenate([heatmap_c.flatten(), hm_w.flatten()])
+                    
+                    if len(np.unique(paired_gt)) > 1:
+                        paired_auroc = roc_auc_score(paired_gt, paired_pred)
+                    else:
+                        paired_auroc = np.nan
+                        
+                    if not np.isnan(paired_auroc):
+                        correct_results['auroc'].append(paired_auroc)
+                        wrong_results['auroc'].append(paired_auroc)
+                        paired_auroc_for_print = paired_auroc
+                        
+                # DEBUG: Print per-image correct metrics with paired AUROC (first 3 only)
+                if idx < 3:
+                    acc_local = 100.0 * correct_c / (label_c + 1e-10)
+                    auc_str = f"{paired_auroc_for_print:.4f}" if not np.isnan(paired_auroc_for_print) else "nan"
+                    print(f"  CORRECT IoU: {correct_iou_this_image:.4f}, Acc: {acc_local:.2f}%, mAP: {ap_c:.4f}, PAIRED AUROC: {auc_str}")
                 
                 
             except Exception as e:
@@ -1165,15 +1169,19 @@ class LeGradBaselineEvaluator:
             map_score = np.mean(res_dict['ap']) * 100 if res_dict['ap'] else 0.0
             
             # AUROC
-            auroc_score = np.mean(res_dict['auroc']) * 100 if res_dict['auroc'] else 0.0
+            auroc_list = [a for a in res_dict['auroc'] if not np.isnan(a)]
+            auroc_score = np.mean(auroc_list) * 100 if auroc_list else 0.0
+            auroc_max = np.max(auroc_list) * 100 if auroc_list else 0.0
+            auroc_min = np.min(auroc_list) * 100 if auroc_list else 0.0
+            auroc_median = np.median(auroc_list) * 100 if auroc_list else 0.0
             
-            return miou, pix_acc, map_score, auroc_score
+            return miou, pix_acc, map_score, auroc_score, auroc_max, auroc_min, auroc_median
 
         # Correct
-        correct_miou, correct_acc, correct_map, correct_auroc = compute_global_metrics(correct_results)
+        correct_miou, correct_acc, correct_map, correct_auroc, correct_auroc_max, correct_auroc_min, correct_auroc_median = compute_global_metrics(correct_results)
         
         # Wrong
-        wrong_miou, wrong_acc, wrong_map, wrong_auroc = compute_global_metrics(wrong_results)
+        wrong_miou, wrong_acc, wrong_map, wrong_auroc, wrong_auroc_max, wrong_auroc_min, wrong_auroc_median = compute_global_metrics(wrong_results)
         
         # Statistics
         correct_stats = {
@@ -1192,11 +1200,13 @@ class LeGradBaselineEvaluator:
         }
         return {
             'correct': {
-                'miou': correct_miou, 'acc': correct_acc, 'map': correct_map, 'auroc': correct_auroc,
+                'miou': correct_miou, 'acc': correct_acc, 'map': correct_map, 
+                'auroc': correct_auroc, 'auroc_max': correct_auroc_max, 'auroc_min': correct_auroc_min, 'auroc_median': correct_auroc_median,
                 **correct_stats
             },
             'wrong': {
-                'miou': wrong_miou, 'acc': wrong_acc, 'map': wrong_map, 'auroc': wrong_auroc,
+                'miou': wrong_miou, 'acc': wrong_acc, 'map': wrong_map, 
+                'auroc': wrong_auroc, 'auroc_max': wrong_auroc_max, 'auroc_min': wrong_auroc_min, 'auroc_median': wrong_auroc_median,
                 **wrong_stats
             }
         }
@@ -1388,22 +1398,16 @@ class LeGradBaselineEvaluator:
                     median_val = float(np.median(heatmap_np))
                     min_val = float(np.min(heatmap_np))
                     
-                    # AUROC
-                    gt_binary = (gt_mask > 0).astype(int).flatten()
-                    pred_flat = heatmap_np.flatten()
-                    if len(np.unique(gt_binary)) > 1:
-                        auroc = roc_auc_score(gt_binary, pred_flat)
-                    else:
-                        auroc = np.nan
+                    # AUROC calculation removed to be done as paired AUROC later
                     
-                    return inter, union, correct_pixels, labeled_pixels, ap, auroc, max_val, mean_val, median_val, min_val
+                    return inter, union, correct_pixels, labeled_pixels, ap, heatmap_np, max_val, mean_val, median_val, min_val
                 
                 # === WRONG PROMPTS (sample first to get competing concepts) ===
                 neg_indices = self._sample_negative_indices(cls_idx)
                 neg_class_names = [self.wnid_to_classname[self.idx_to_wnid[ni]] for ni in neg_indices]
                 
                 # === CORRECT PROMPT ===
-                inter_c, union_c, correct_c, label_c, ap_c, auroc_c, mx_c, mn_c, md_c, mi_c = compute_daam_omp_metrics(
+                inter_c, union_c, correct_c, label_c, ap_c, heatmap_c, mx_c, mn_c, md_c, mi_c = compute_daam_omp_metrics(
                     class_name, competing_class_names=neg_class_names
                 )
                 correct_results['inter'] = correct_results['inter'] + inter_c
@@ -1411,14 +1415,13 @@ class LeGradBaselineEvaluator:
                 correct_results['pixel_correct'] += correct_c
                 correct_results['pixel_label'] += label_c
                 correct_results['ap'].append(ap_c)
-                if not np.isnan(auroc_c):
-                    correct_results['auroc'].append(auroc_c)
                 correct_results['max'].append(mx_c)
                 correct_results['mean'].append(mn_c)
                 correct_results['median'].append(md_c)
                 correct_results['min'].append(mi_c)
                 
                 # === WRONG PROMPTS ===
+                wrong_heatmaps = []
                 for neg_idx in neg_indices:
                     neg_wnid = self.idx_to_wnid[neg_idx]
                     neg_class_name = self.wnid_to_classname[neg_wnid]
@@ -1426,7 +1429,7 @@ class LeGradBaselineEvaluator:
                     # For wrong prompts, use correct class as competing concept
                     wrong_competing = [class_name]
                     
-                    inter_w, union_w, correct_w, label_w, ap_w, auroc_w, mx_w, mn_w, md_w, mi_w = compute_daam_omp_metrics(
+                    inter_w, union_w, correct_w, label_w, ap_w, heatmap_w, mx_w, mn_w, md_w, mi_w = compute_daam_omp_metrics(
                         neg_class_name, competing_class_names=wrong_competing
                     )
                     wrong_results['inter'] = wrong_results['inter'] + inter_w
@@ -1434,12 +1437,28 @@ class LeGradBaselineEvaluator:
                     wrong_results['pixel_correct'] += correct_w
                     wrong_results['pixel_label'] += label_w
                     wrong_results['ap'].append(ap_w)
-                    if not np.isnan(auroc_w):
-                        wrong_results['auroc'].append(auroc_w)
                     wrong_results['max'].append(mx_w)
                     wrong_results['mean'].append(mn_w)
                     wrong_results['median'].append(md_w)
                     wrong_results['min'].append(mi_w)
+                    wrong_heatmaps.append(heatmap_w)
+                    
+                # === PAIRED AUROC CALCULATION ===
+                gt_binary_correct = (gt_mask > 0).astype(int).flatten()
+                gt_binary_wrong = np.zeros_like(gt_binary_correct)
+                
+                for hm_w in wrong_heatmaps:
+                    paired_gt = np.concatenate([gt_binary_correct, gt_binary_wrong])
+                    paired_pred = np.concatenate([heatmap_c.flatten(), hm_w.flatten()])
+                    
+                    if len(np.unique(paired_gt)) > 1:
+                        paired_auroc = roc_auc_score(paired_gt, paired_pred)
+                    else:
+                        paired_auroc = np.nan
+                        
+                    if not np.isnan(paired_auroc):
+                        correct_results['auroc'].append(paired_auroc)
+                        wrong_results['auroc'].append(paired_auroc)
                 
             except Exception as e:
                 print(f"[Warning] Error processing image {idx}: {e}")
@@ -1451,11 +1470,15 @@ class LeGradBaselineEvaluator:
             miou = 100.0 * iou.mean()
             pix_acc = 100.0 * res_dict['pixel_correct'] / (res_dict['pixel_label'] + 1e-10)
             map_score = np.mean(res_dict['ap']) * 100 if res_dict['ap'] else 0.0
-            auroc_score = np.mean(res_dict['auroc']) * 100 if res_dict['auroc'] else 0.0
-            return miou, pix_acc, map_score, auroc_score
+            auroc_list = [a for a in res_dict['auroc'] if not np.isnan(a)]
+            auroc_score = np.mean(auroc_list) * 100 if auroc_list else 0.0
+            auroc_max = np.max(auroc_list) * 100 if auroc_list else 0.0
+            auroc_min = np.min(auroc_list) * 100 if auroc_list else 0.0
+            auroc_median = np.median(auroc_list) * 100 if auroc_list else 0.0
+            return miou, pix_acc, map_score, auroc_score, auroc_max, auroc_min, auroc_median
         
-        correct_miou, correct_acc, correct_map, correct_auroc = compute_global_metrics(correct_results)
-        wrong_miou, wrong_acc, wrong_map, wrong_auroc = compute_global_metrics(wrong_results)
+        correct_miou, correct_acc, correct_map, correct_auroc, correct_auroc_max, correct_auroc_min, correct_auroc_median = compute_global_metrics(correct_results)
+        wrong_miou, wrong_acc, wrong_map, wrong_auroc, wrong_auroc_max, wrong_auroc_min, wrong_auroc_median = compute_global_metrics(wrong_results)
         
         correct_stats = {
             'max': np.mean(correct_results['max']) if correct_results['max'] else 0.0,
@@ -1474,11 +1497,13 @@ class LeGradBaselineEvaluator:
         
         return {
             'correct': {
-                'miou': correct_miou, 'acc': correct_acc, 'map': correct_map, 'auroc': correct_auroc,
+                'miou': correct_miou, 'acc': correct_acc, 'map': correct_map, 
+                'auroc': correct_auroc, 'auroc_max': correct_auroc_max, 'auroc_min': correct_auroc_min, 'auroc_median': correct_auroc_median,
                 **correct_stats
             },
             'wrong': {
-                'miou': wrong_miou, 'acc': wrong_acc, 'map': wrong_map, 'auroc': wrong_auroc,
+                'miou': wrong_miou, 'acc': wrong_acc, 'map': wrong_map, 
+                'auroc': wrong_auroc, 'auroc_max': wrong_auroc_max, 'auroc_min': wrong_auroc_min, 'auroc_median': wrong_auroc_median,
                 **wrong_stats
             },
             'params': {
@@ -1691,21 +1716,15 @@ class LeGradBaselineEvaluator:
                     median_val = float(np.median(heatmap_np))
                     min_val = float(np.min(heatmap_np))
                     
-                    # AUROC
-                    gt_binary = (gt_mask > 0).astype(int).flatten()
-                    pred_flat = heatmap_np.flatten()
-                    if len(np.unique(gt_binary)) > 1:
-                        auroc = roc_auc_score(gt_binary, pred_flat)
-                    else:
-                        auroc = np.nan
+                    # AUROC calculation removed to be done as paired AUROC later
                     
-                    return inter, union, correct_pixels, labeled_pixels, ap, auroc, max_val, mean_val, median_val, min_val
+                    return inter, union, correct_pixels, labeled_pixels, ap, heatmap_np, max_val, mean_val, median_val, min_val
                 
                 # === WRONG PROMPTS (sample first) ===
                 neg_indices = self._sample_negative_indices(cls_idx)
                 
                 # === CORRECT PROMPT ===
-                inter_c, union_c, correct_c, label_c, ap_c, auroc_c, mx_c, mn_c, md_c, mi_c = compute_legrad_omp_metrics(
+                inter_c, union_c, correct_c, label_c, ap_c, heatmap_c, mx_c, mn_c, md_c, mi_c = compute_legrad_omp_metrics(
                     original_1x, class_name
                 )
                 correct_results['inter'] = correct_results['inter'] + inter_c
@@ -1713,20 +1732,19 @@ class LeGradBaselineEvaluator:
                 correct_results['pixel_correct'] += correct_c
                 correct_results['pixel_label'] += label_c
                 correct_results['ap'].append(ap_c)
-                if not np.isnan(auroc_c):
-                    correct_results['auroc'].append(auroc_c)
                 correct_results['max'].append(mx_c)
                 correct_results['mean'].append(mn_c)
                 correct_results['median'].append(md_c)
                 correct_results['min'].append(mi_c)
                 
                 # === WRONG PROMPTS ===
+                wrong_heatmaps = []
                 for neg_idx in neg_indices:
                     neg_wnid = self.idx_to_wnid[neg_idx]
                     neg_class_name = self.wnid_to_classname[neg_wnid]
                     neg_emb = self.all_text_embs[neg_idx:neg_idx + 1]
                     
-                    inter_w, union_w, correct_w, label_w, ap_w, auroc_w, mx_w, mn_w, md_w, mi_w = compute_legrad_omp_metrics(
+                    inter_w, union_w, correct_w, label_w, ap_w, heatmap_w, mx_w, mn_w, md_w, mi_w = compute_legrad_omp_metrics(
                         neg_emb, neg_class_name
                     )
                     wrong_results['inter'] = wrong_results['inter'] + inter_w
@@ -1734,12 +1752,28 @@ class LeGradBaselineEvaluator:
                     wrong_results['pixel_correct'] += correct_w
                     wrong_results['pixel_label'] += label_w
                     wrong_results['ap'].append(ap_w)
-                    if not np.isnan(auroc_w):
-                        wrong_results['auroc'].append(auroc_w)
                     wrong_results['max'].append(mx_w)
                     wrong_results['mean'].append(mn_w)
                     wrong_results['median'].append(md_w)
                     wrong_results['min'].append(mi_w)
+                    wrong_heatmaps.append(heatmap_w)
+                    
+                # === PAIRED AUROC CALCULATION ===
+                gt_binary_correct = (gt_mask > 0).astype(int).flatten()
+                gt_binary_wrong = np.zeros_like(gt_binary_correct)
+                
+                for hm_w in wrong_heatmaps:
+                    paired_gt = np.concatenate([gt_binary_correct, gt_binary_wrong])
+                    paired_pred = np.concatenate([heatmap_c.flatten(), hm_w.flatten()])
+                    
+                    if len(np.unique(paired_gt)) > 1:
+                        paired_auroc = roc_auc_score(paired_gt, paired_pred)
+                    else:
+                        paired_auroc = np.nan
+                        
+                    if not np.isnan(paired_auroc):
+                        correct_results['auroc'].append(paired_auroc)
+                        wrong_results['auroc'].append(paired_auroc)
                 
             except Exception as e:
                 print(f"[Warning] Error processing image {idx}: {e}")
@@ -1753,11 +1787,15 @@ class LeGradBaselineEvaluator:
             miou = 100.0 * iou.mean()
             pix_acc = 100.0 * res_dict['pixel_correct'] / (res_dict['pixel_label'] + 1e-10)
             map_score = np.mean(res_dict['ap']) * 100 if res_dict['ap'] else 0.0
-            auroc_score = np.mean(res_dict['auroc']) * 100 if res_dict['auroc'] else 0.0
-            return miou, pix_acc, map_score, auroc_score
+            auroc_list = [a for a in res_dict['auroc'] if not np.isnan(a)]
+            auroc_score = np.mean(auroc_list) * 100 if auroc_list else 0.0
+            auroc_max = np.max(auroc_list) * 100 if auroc_list else 0.0
+            auroc_min = np.min(auroc_list) * 100 if auroc_list else 0.0
+            auroc_median = np.median(auroc_list) * 100 if auroc_list else 0.0
+            return miou, pix_acc, map_score, auroc_score, auroc_max, auroc_min, auroc_median
         
-        correct_miou, correct_acc, correct_map, correct_auroc = compute_global_metrics(correct_results)
-        wrong_miou, wrong_acc, wrong_map, wrong_auroc = compute_global_metrics(wrong_results)
+        correct_miou, correct_acc, correct_map, correct_auroc, correct_auroc_max, correct_auroc_min, correct_auroc_median = compute_global_metrics(correct_results)
+        wrong_miou, wrong_acc, wrong_map, wrong_auroc, wrong_auroc_max, wrong_auroc_min, wrong_auroc_median = compute_global_metrics(wrong_results)
         
         correct_stats = {
             'max': np.mean(correct_results['max']) if correct_results['max'] else 0.0,
@@ -1776,11 +1814,13 @@ class LeGradBaselineEvaluator:
         
         return {
             'correct': {
-                'miou': correct_miou, 'acc': correct_acc, 'map': correct_map, 'auroc': correct_auroc,
+                'miou': correct_miou, 'acc': correct_acc, 'map': correct_map, 
+                'auroc': correct_auroc, 'auroc_max': correct_auroc_max, 'auroc_min': correct_auroc_min, 'auroc_median': correct_auroc_median,
                 **correct_stats
             },
             'wrong': {
-                'miou': wrong_miou, 'acc': wrong_acc, 'map': wrong_map, 'auroc': wrong_auroc,
+                'miou': wrong_miou, 'acc': wrong_acc, 'map': wrong_map, 
+                'auroc': wrong_auroc, 'auroc_max': wrong_auroc_max, 'auroc_min': wrong_auroc_min, 'auroc_median': wrong_auroc_median,
                 **wrong_stats
             },
             'params': {
@@ -2055,6 +2095,11 @@ def main():
     print(f"  Median:   {results['correct']['median']:.4f}")
     print(f"  Min Val:  {results['correct']['min']:.4f}")
     print(f"  AUROC:    {results['correct']['auroc']:.2f}")
+    if 'auroc_max' in results['correct']:
+        print(f"  AUROC Max:    {results['correct']['auroc_max']:.2f}")
+        print(f"  AUROC Mean:   {results['correct']['auroc']:.2f}")
+        print(f"  AUROC Median: {results['correct']['auroc_median']:.2f}")
+        print(f"  AUROC Min:    {results['correct']['auroc_min']:.2f}")
     print(f"  Samples:  {results['correct']['n_samples']}")
     
     print(f"\n=== WRONG PROMPTS (image class ≠ text prompt class) ===")
@@ -2066,6 +2111,11 @@ def main():
     print(f"  Median:   {results['wrong']['median']:.4f}")
     print(f"  Min Val:  {results['wrong']['min']:.4f}")
     print(f"  AUROC:    {results['wrong']['auroc']:.2f}")
+    if 'auroc_max' in results['wrong']:
+        print(f"  AUROC Max:    {results['wrong']['auroc_max']:.2f}")
+        print(f"  AUROC Mean:   {results['wrong']['auroc']:.2f}")
+        print(f"  AUROC Median: {results['wrong']['auroc_median']:.2f}")
+        print(f"  AUROC Min:    {results['wrong']['auroc_min']:.2f}")
     print(f"  Samples:  {results['wrong']['n_samples']}")
     
     print(f"\n=== COMPOSITE SCORE ===")
