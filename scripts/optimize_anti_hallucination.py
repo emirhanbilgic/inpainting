@@ -425,45 +425,45 @@ def get_superclass(class_idx: int) -> str:
 BASELINES = {
     'CLIP': {
         'LeGrad': {
-            'correct': {'miou': 59.98, 'acc': 78.67, 'map': 83.86},
-            'wrong': {'miou': 41.28, 'acc': 64.45, 'map': 68.03}
+            'correct': {'miou': 58.66, 'acc': 77.52, 'map': 82.49, 'auroc': 79.62},
+            'wrong': {'miou': 40.88, 'acc': 64.32, 'map': 67.99, 'auroc': 79.62}
         },
         'GradCAM': {
-            'correct': {'miou': 44.68, 'acc': 69.48, 'map': 74.94},
-            'wrong': {'miou': 33.78, 'acc': 58.80, 'map': 67.36}
+            'correct': {'miou': 44.68, 'acc': 69.48, 'map': 74.94, 'auroc': 65.39},
+            'wrong': {'miou': 33.83, 'acc': 58.86, 'map': 67.34, 'auroc': 65.39}
         },
         'CheferCAM': {
-            'correct': {'miou': 48.71, 'acc': 69.32, 'map': 80.36},
-            'wrong': {'miou': 44.95, 'acc': 66.51, 'map': 78.77}
+            'correct': {'miou': 48.71, 'acc': 69.32, 'map': 80.36, 'auroc': 77.63},
+            'wrong': {'miou': 44.88, 'acc': 66.44, 'map': 78.74, 'auroc': 77.63}
         },
         'AttentionCAM': {
-            'correct': {'miou': 40.14, 'acc': 68.67, 'map': 70.34},
-            'wrong': {'miou': 33.40, 'acc': 62.55, 'map': 65.78}
+            'correct': {'miou': 40.14, 'acc': 68.67, 'map': 70.34, 'auroc': 52.68},
+            'wrong': {'miou': 33.34, 'acc': 62.44, 'map': 65.74, 'auroc': 52.68}
         }
     },
     'SigLIP': {
         'LeGrad': {
-            'correct': {'miou': 49.51, 'acc': 73.28, 'map': 78.32},
-            'wrong': {'miou': 37.58, 'acc': 63.70, 'map': 63.95}
+            'correct': {'miou': 49.51, 'acc': 73.28, 'map': 78.32, 'auroc': 74.42},
+            'wrong': {'miou': 37.27, 'acc': 63.47, 'map': 63.63, 'auroc': 74.42}
         },
         'GradCAM': {
-            'correct': {'miou': 38.69, 'acc': 57.78, 'map': 71.43},
-            'wrong': {'miou': 34.66, 'acc': 54.55, 'map': 68.50}
+            'correct': {'miou': 38.69, 'acc': 57.78, 'map': 71.43, 'auroc': 67.07},
+            'wrong': {'miou': 34.78, 'acc': 54.72, 'map': 68.53, 'auroc': 67.07}
         },
         'CheferCAM': {
-            'correct': {'miou': 37.66, 'acc': 60.53, 'map': 73.49},
-            'wrong': {'miou': 36.66, 'acc': 59.27, 'map': 72.41}
+            'correct': {'miou': 37.66, 'acc': 60.53, 'map': 73.49, 'auroc': 55.47},
+            'wrong': {'miou': 36.65, 'acc': 59.28, 'map': 72.38, 'auroc': 55.47}
         },
         'AttentionCAM': {
-            'correct': {'miou': 50.01, 'acc': 70.33, 'map': 80.20},
-            'wrong': {'miou':  39.98, 'acc':  62.53, 'map': 72.57}
+            'correct': {'miou': 50.01, 'acc': 70.33, 'map': 80.20, 'auroc': 80.49},
+            'wrong': {'miou': 40.00, 'acc': 62.57, 'map': 72.70, 'auroc': 80.49}
         }
     },
     # DAAM uses Stable Diffusion, independent of CLIP/SigLIP
     'DAAM': {
         'DAAM': {
-            'correct': {'miou': 65.73, 'acc': 81.34, 'map': 88.55},
-            'wrong': {'miou': 59.75, 'acc': 76.80, 'map': 86.44}
+            'correct': {'miou': 65.71, 'acc': 81.33, 'map': 88.55, 'auroc': 83.07},
+            'wrong': {'miou': 59.49, 'acc': 76.60, 'map': 86.39, 'auroc': 83.07}
         }
     }
 }
@@ -1889,6 +1889,12 @@ class AntiHallucinationObjective:
             trial.set_user_attr('gap_improvement_acc', gap_improvement_acc)
             trial.set_user_attr('gap_improvement_map', gap_improvement_map)
             
+            # For AUROC, since it's a paired analysis, "gap" is always 0.
+            # Instead of gap improvement, we use the actual improvement over baseline AUROC.
+            gap_improvement_auroc = d_c_auroc
+            
+            trial.set_user_attr('gap_improvement_auroc', gap_improvement_auroc)
+            
             trial.set_user_attr('gap_baseline_miou', gap_baseline_miou)
             trial.set_user_attr('gap_current_miou', gap_current_miou)
             
@@ -1900,17 +1906,18 @@ class AntiHallucinationObjective:
             # Note: We calculate this directly from current metrics, regardless of baseline.
             # This replaces the previous logic that included baseline comparisons and degradation bonuses.
             
-            composite_miou = correct_miou - wrong_miou
-            composite_acc = correct_acc - wrong_acc
-            composite_map = correct_map - wrong_map
+            # THE USER REQUESTED OBJECTIVE IS: "how much the gap is improved". 
+            # So the default behavior should be gap improvement instead of raw gap.
+            composite_miou = gap_improvement_miou
+            composite_acc = gap_improvement_acc
+            composite_map = gap_improvement_map
+            composite_auroc = gap_improvement_auroc
             
-            # If user wants the detailed legacy modes (Gap Improvement or Composite with Degradation), 
-            # they can be re-enabled here, but we default to the simple formula.
+            # If user wants the detailed legacy modes (Composite with Degradation), 
+            # they can be re-enabled here, but we default to the simple gap improvement formula.
             if self.gap_only:
-                # Use improvement over baseline instead of raw gap
-                composite_miou = gap_improvement_miou
-                composite_acc = gap_improvement_acc
-                composite_map = gap_improvement_map
+                # Same as default now
+                pass
             elif self.composite_lambda != 0.5:
                 # Only if user explicitly changed lambda (assuming 0.5 was default), we might consider the old formula
                 # For now, we strictly follow the instruction to make the new formula default.
@@ -1918,6 +1925,7 @@ class AntiHallucinationObjective:
                 composite_miou = gap_improvement_miou + self.composite_lambda * d_w_miou
                 composite_acc = gap_improvement_acc + self.composite_lambda * d_w_acc
                 composite_map = gap_improvement_map + self.composite_lambda * d_w_map
+                composite_auroc = gap_improvement_auroc + self.composite_lambda * d_w_auroc
             
         else:
             # Fallback: direct gap (correct - wrong)
@@ -1925,14 +1933,17 @@ class AntiHallucinationObjective:
             composite_miou = correct_miou - wrong_miou
             composite_acc = correct_acc - wrong_acc
             composite_map = correct_map - wrong_map
+            # Fallback for AUROC: if no baseline, we just use the raw paired AUROC
+            composite_auroc = correct_auroc
 
         # Sum all composite scores (each weighted equally)
-        # AUROC excluded from optimization
-        composite = composite_miou + composite_acc + composite_map
+        # AUROC included in optimization
+        composite = composite_miou + composite_acc + composite_map + composite_auroc
         trial.set_user_attr('composite_score', composite)
         trial.set_user_attr('composite_miou', composite_miou)
         trial.set_user_attr('composite_acc', composite_acc)
         trial.set_user_attr('composite_map', composite_map)
+        trial.set_user_attr('composite_auroc', composite_auroc)
         # trial.set_user_attr('composite_auroc', composite_auroc) # AUROC removed from composite
         
         # Report for pruning
@@ -1942,10 +1953,10 @@ class AntiHallucinationObjective:
             raise optuna.TrialPruned()
         
         if self.multi_objective:
-            # Return tuple for multi-objective: correct/wrong metrics (excluding AUROC)
+            # Return tuple for multi-objective: correct/wrong metrics (including AUROC)
             # Directions: maximize correct, minimize wrong
-            return (correct_miou, correct_acc, correct_map,
-                    wrong_miou, wrong_acc, wrong_map)
+            return (correct_miou, correct_acc, correct_map, correct_auroc,
+                    wrong_miou, wrong_acc, wrong_map, wrong_auroc)
         else:
             # Return composite score for single-objective
             return composite
@@ -2143,9 +2154,9 @@ def main():
     pruner = optuna.pruners.MedianPruner(n_startup_trials=10, n_warmup_steps=0)
     
     if args.multi_objective:
-        # Multi-objective: maximize all correct metrics, minimize all wrong metrics (excluding AUROC)
-        directions = ['maximize', 'maximize', 'maximize',  # correct: mIoU, Acc, mAP
-                      'minimize', 'minimize', 'minimize']  # wrong: mIoU, Acc, mAP
+        # Multi-objective: maximize all correct metrics, minimize all wrong metrics (including AUROC)
+        directions = ['maximize', 'maximize', 'maximize', 'maximize',  # correct: mIoU, Acc, mAP, AUROC
+                      'minimize', 'minimize', 'minimize', 'minimize']  # wrong: mIoU, Acc, mAP, AUROC
         if args.storage:
             study = optuna.create_study(
                 study_name=args.study_name,
@@ -2161,10 +2172,9 @@ def main():
                 sampler=optuna.samplers.NSGAIISampler(seed=args.seed),
             )
         print(f"\n{'='*60}")
-        print("Multi-Objective Optimization Mode (6 objectives)")
-        print("MAXIMIZE: Correct mIoU, Accuracy, mAP")
-        print("MINIMIZE: Wrong mIoU, Accuracy, mAP")
-        print("(AUROC is calculated and printed but not optimized)")
+        print("Multi-Objective Optimization Mode (8 objectives)")
+        print("MAXIMIZE: Correct mIoU, Accuracy, mAP, AUROC")
+        print("MINIMIZE: Wrong mIoU, Accuracy, mAP, AUROC")
         print(f"{'='*60}\n")
     else:
         # Single-objective with composite score
@@ -2233,16 +2243,23 @@ def main():
         
         composite = trial.user_attrs.get('composite_score', trial.value)
         
+        gap_imp_miou = trial.user_attrs.get('gap_improvement_miou', 0)
+        gap_imp_acc = trial.user_attrs.get('gap_improvement_acc', 0)
+        gap_imp_map = trial.user_attrs.get('gap_improvement_map', 0)
+        
+        # For AUROC, gap_improvement is actually just delta AUROC
+        gap_imp_auroc = trial.user_attrs.get('gap_improvement_auroc', 0)
+        
         # Print full metrics table
         print(f"\n{'─'*70}")
         print(f"  Trial {trial.number} │ Score={composite:.2f}")
         print(f"{'─'*70}")
         print(f"  {'':>10} {'mIoU':>8} {'Acc':>8} {'mAP':>8} {'AUROC':>8}")
-        print(f"  {'Correct':>10} {c_miou:>7.1f}% {c_acc:>7.1f}% {c_map:>7.1f}% {c_auroc:>7.1f}%")
-        print(f"  {'  Δbase':>10} {dc_miou:>+7.1f}  {dc_acc:>+7.1f}  {dc_map:>+7.1f}  {dc_auroc:>+7.1f}")
-        print(f"  {'Wrong':>10} {w_miou:>7.1f}% {w_acc:>7.1f}% {w_map:>7.1f}% {w_auroc:>7.1f}%")
-        print(f"  {'  Δbase':>10} {dw_miou:>+7.1f}  {dw_acc:>+7.1f}  {dw_map:>+7.1f}  {dw_auroc:>+7.1f}")
-        print(f"  {'Gap(C-W)':>10} {c_miou-w_miou:>+7.1f}  {c_acc-w_acc:>+7.1f}  {c_map-w_map:>+7.1f}  {c_auroc-w_auroc:>+7.1f}")
+        print(f"  {'Correct':>10} {c_miou:>7.2f}% {c_acc:>7.2f}% {c_map:>7.2f}% {c_auroc:>7.2f}%")
+        print(f"  {'  Δbase':>10} {dc_miou:>+7.2f}  {dc_acc:>+7.2f}  {dc_map:>+7.2f}  {dc_auroc:>+7.2f}")
+        print(f"  {'Wrong':>10} {w_miou:>7.2f}% {w_acc:>7.2f}% {w_map:>7.2f}% {w_auroc:>7.2f}%")
+        print(f"  {'  Δbase':>10} {dw_miou:>+7.2f}  {dw_acc:>+7.2f}  {dw_map:>+7.2f}  {dw_auroc:>+7.2f}")
+        print(f"  {'Gap Imprv':>10} {gap_imp_miou:>+7.2f}  {gap_imp_acc:>+7.2f}  {gap_imp_map:>+7.2f}  {' (Actual)':<9}{gap_imp_auroc:>+7.2f}")
         
         # Best trial summary (for single-objective)
         if not args.multi_objective:
@@ -2316,11 +2333,11 @@ def main():
         
         for i, trial in enumerate(pareto_trials[:10], 1):
             vals = trial.values
-            c_auroc = trial.user_attrs.get('correct_auroc', 0.0)
-            w_auroc = trial.user_attrs.get('wrong_auroc', 0.0)
+            # c_auroc = trial.user_attrs.get('correct_auroc', 0.0) # No longer needed, AUROC is in vals
+            # w_auroc = trial.user_attrs.get('wrong_auroc', 0.0) # No longer needed, AUROC is in vals
             print(f"\n#{i} Trial {trial.number}:")
-            print(f"  Correct: mIoU={vals[0]:.2f} | Acc={vals[1]:.2f} | mAP={vals[2]:.2f} | AUROC={c_auroc:.2f}")
-            print(f"  Wrong:   mIoU={vals[3]:.2f} | Acc={vals[4]:.2f} | mAP={vals[5]:.2f} | AUROC={w_auroc:.2f}")
+            print(f"  Correct: mIoU={vals[0]:.2f} | Acc={vals[1]:.2f} | mAP={vals[2]:.2f} | AUROC={vals[3]:.2f}")
+            print(f"  Wrong:   mIoU={vals[4]:.2f} | Acc={vals[5]:.2f} | mAP={vals[6]:.2f} | AUROC={vals[7]:.2f}")
             print(f"  Params: {trial.params}")
         
         results = {
@@ -2385,14 +2402,17 @@ def main():
         gap_improvement_miou = best_trial.user_attrs.get('gap_improvement_miou', 0)
         gap_improvement_acc = best_trial.user_attrs.get('gap_improvement_acc', 0)
         gap_improvement_map = best_trial.user_attrs.get('gap_improvement_map', 0)
+        gap_improvement_auroc = best_trial.user_attrs.get('gap_improvement_auroc', 0)
         
         delta_c_miou = best_trial.user_attrs.get('delta_correct_miou', 0)
         delta_c_acc = best_trial.user_attrs.get('delta_correct_acc', 0)
         delta_c_map = best_trial.user_attrs.get('delta_correct_map', 0)
+        delta_c_auroc = best_trial.user_attrs.get('delta_correct_auroc', 0)
         
         delta_w_miou = best_trial.user_attrs.get('delta_wrong_miou', 0)
         delta_w_acc = best_trial.user_attrs.get('delta_wrong_acc', 0)
         delta_w_map = best_trial.user_attrs.get('delta_wrong_map', 0)
+        delta_w_auroc = best_trial.user_attrs.get('delta_wrong_auroc', 0)
         
         print(f"\n=== GAP ANALYSIS (Key Anti-Hallucination Metric) ===")
         print(f"  Baseline Gap (C-W):  mIoU={gap_baseline_miou:.2f}")
@@ -2404,7 +2424,7 @@ def main():
         print(f"  mIoU:     {correct_metrics['miou']:.2f}  (Δ={delta_c_miou:+.2f})")
         print(f"  Accuracy: {correct_metrics['acc']:.2f}  (Δ={delta_c_acc:+.2f})")
         print(f"  mAP:      {correct_metrics['map']:.2f}  (Δ={delta_c_map:+.2f})")
-        print(f"  AUROC Mean: {correct_metrics['auroc']:.2f}")
+        print(f"  AUROC Mean: {correct_metrics['auroc']:.2f}  (Δ={delta_c_auroc:+.2f})")
         if 'auroc_max' in correct_metrics and correct_metrics['auroc_max'] != 0:
             print(f"  AUROC Max:  {correct_metrics['auroc_max']:.2f}")
             print(f"  AUROC Median:{correct_metrics['auroc_median']:.2f}")
@@ -2420,7 +2440,7 @@ def main():
         print(f"  mIoU:     {wrong_metrics['miou']:.2f}  (Δ={-delta_w_miou:+.2f})")  # Flip sign for intuition
         print(f"  Accuracy: {wrong_metrics['acc']:.2f}  (Δ={-delta_w_acc:+.2f})")
         print(f"  mAP:      {wrong_metrics['map']:.2f}  (Δ={-delta_w_map:+.2f})")
-        print(f"  AUROC Mean: {wrong_metrics['auroc']:.2f}")
+        print(f"  AUROC Mean: {wrong_metrics['auroc']:.2f}  (Δ={-delta_w_auroc:+.2f})")
         if 'auroc_max' in wrong_metrics and wrong_metrics['auroc_max'] != 0:
             print(f"  AUROC Max:  {wrong_metrics['auroc_max']:.2f}")
             print(f"  AUROC Median:{wrong_metrics['auroc_median']:.2f}")
@@ -2433,16 +2453,11 @@ def main():
             print(f"  Min Val:  {wrong_stats.get('min', 0):.4f}")
             print(f"  Samples:  {wrong_stats.get('n_samples', 0)}")
         
-        print(f"\n=== COMPOSITE BREAKDOWN ===")
-        if args.gap_only:
-            print(f"  mIoU:     {best_trial.user_attrs.get('composite_miou', 0):.2f}  (pure gap_improvement)")
-        elif args.composite_lambda != 0.5:
-            print(f"  mIoU:     {best_trial.user_attrs.get('composite_miou', 0):.2f}  (gap_impr + λ×wrong_degradation)")
-            print(f"           gap_impr={gap_improvement_miou:+.2f}, wrong_degr={delta_w_miou:+.2f}")
-        else:
-            print(f"  mIoU:     {best_trial.user_attrs.get('composite_miou', 0):.2f}  (correct - wrong)")
-        print(f"  Accuracy: {best_trial.user_attrs.get('composite_acc', 0):.2f}")
-        print(f"  mAP:      {best_trial.user_attrs.get('composite_map', 0):.2f}")
+        print(f"\n=== GAP IMPROVEMENT BREAKDOWN ===")
+        print(f"  mIoU Gap Imprv: {gap_improvement_miou:+.2f}")
+        print(f"  Acc Gap Imprv:  {gap_improvement_acc:+.2f}")
+        print(f"  mAP Gap Imprv:  {gap_improvement_map:+.2f}")
+        print(f"  AUROC Actual Imprv: {gap_improvement_auroc:+.2f}")
         
         print(f"\nBest hyperparameters:")
         for key, value in best_trial.params.items():
@@ -2458,14 +2473,14 @@ def main():
         for i, trial in enumerate(sorted_trials, 1):
             print(f"\n#{i} Trial {trial.number}:")
             print(f"  Composite: {trial.value:.2f}")
-            print(f"  Correct: mIoU={trial.user_attrs.get('correct_miou', 0):.1f} | "
-                  f"Acc={trial.user_attrs.get('correct_acc', 0):.1f} | "
-                  f"mAP={trial.user_attrs.get('correct_map', 0):.1f} | "
-                  f"AUROC={trial.user_attrs.get('correct_auroc', 0):.1f}")
-            print(f"  Wrong:   mIoU={trial.user_attrs.get('wrong_miou', 0):.1f} | "
-                  f"Acc={trial.user_attrs.get('wrong_acc', 0):.1f} | "
-                  f"mAP={trial.user_attrs.get('wrong_map', 0):.1f} | "
-                  f"AUROC={trial.user_attrs.get('wrong_auroc', 0):.1f}")
+            print(f"  Correct: mIoU={trial.user_attrs.get('correct_miou', 0):.2f} | "
+                  f"Acc={trial.user_attrs.get('correct_acc', 0):.2f} | "
+                  f"mAP={trial.user_attrs.get('correct_map', 0):.2f} | "
+                  f"AUROC={trial.user_attrs.get('correct_auroc', 0):.2f}")
+            print(f"  Wrong:   mIoU={trial.user_attrs.get('wrong_miou', 0):.2f} | "
+                  f"Acc={trial.user_attrs.get('wrong_acc', 0):.2f} | "
+                  f"mAP={trial.user_attrs.get('wrong_map', 0):.2f} | "
+                  f"AUROC={trial.user_attrs.get('wrong_auroc', 0):.2f}")
         
         results = {
             'mode': 'gap_only' if args.gap_only else 'gap_based_composite',
@@ -2476,6 +2491,7 @@ def main():
                 'gap_improvement_miou': gap_improvement_miou,
                 'gap_improvement_acc': gap_improvement_acc,
                 'gap_improvement_map': gap_improvement_map,
+                'gap_improvement_auroc': gap_improvement_auroc,
                 'gap_baseline_miou': gap_baseline_miou,
                 'gap_current_miou': gap_current_miou,
             },
