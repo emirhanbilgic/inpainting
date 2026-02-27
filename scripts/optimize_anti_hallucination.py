@@ -1243,6 +1243,7 @@ class AntiHallucinationObjective:
         use_daam=False,
         use_daam_keyspace_omp=False,
         daam_model_id='Manojb/stable-diffusion-2-base',
+        fix_dictionary=False,
     ):
         self.model = model
         self.tokenizer = tokenizer
@@ -1267,6 +1268,7 @@ class AntiHallucinationObjective:
         self.lrp_start_layer = lrp_start_layer
         self.use_daam = use_daam
         self.use_daam_keyspace_omp = use_daam_keyspace_omp
+        self.fix_dictionary = fix_dictionary
         
         # Initialize DAAM segmenter if needed
         self.daam_segmenter = None
@@ -1756,15 +1758,22 @@ class AntiHallucinationObjective:
         """Optuna objective function."""
         
         # Sample hyperparameters
-        wn_use_synonyms = trial.suggest_categorical('wn_use_synonyms', [True, False])
-        wn_use_hypernyms = trial.suggest_categorical('wn_use_hypernyms', [True, False])
-        wn_use_hyponyms = trial.suggest_categorical('wn_use_hyponyms', [True, False])
-        wn_use_siblings = trial.suggest_categorical('wn_use_siblings', [True, False])
-        dict_include_prompts = trial.suggest_categorical('dict_include_prompts', [True, False])
-        
-        # Constraint: At least one dictionary source must be used
-        if not (wn_use_synonyms or wn_use_hypernyms or wn_use_hyponyms or wn_use_siblings or dict_include_prompts):
-            raise optuna.TrialPruned()
+        if self.fix_dictionary:
+            wn_use_synonyms = False
+            wn_use_hypernyms = True
+            wn_use_hyponyms = True
+            wn_use_siblings = True
+            dict_include_prompts = True
+        else:
+            wn_use_synonyms = trial.suggest_categorical('wn_use_synonyms', [True, False])
+            wn_use_hypernyms = trial.suggest_categorical('wn_use_hypernyms', [True, False])
+            wn_use_hyponyms = trial.suggest_categorical('wn_use_hyponyms', [True, False])
+            wn_use_siblings = trial.suggest_categorical('wn_use_siblings', [True, False])
+            dict_include_prompts = trial.suggest_categorical('dict_include_prompts', [True, False])
+            
+            # Constraint: At least one dictionary source must be used
+            if not (wn_use_synonyms or wn_use_hypernyms or wn_use_hyponyms or wn_use_siblings or dict_include_prompts):
+                raise optuna.TrialPruned()
         
         # For LeGrad, always search for best fixed threshold (not mean-based)
         # For GradCAM/CheferCAM/LRP/DAAM, use threshold_mode setting
@@ -1988,6 +1997,8 @@ def main():
                         help='Pure gap optimization: maximize (correct - wrong) directly, ignore correct improvement')
     parser.add_argument('--multi_objective', action='store_true',
                         help='Use multi-objective Pareto optimization instead of composite score')
+    parser.add_argument('--fix_dictionary', action='store_true',
+                        help='Bypass dictionary hyperparameter search and use all WordNet relations (except siblings) plus prompts')
     
     # Baseline comparison (from compute_legrad_negative_baseline.py)
     parser.add_argument('--baseline_json', type=str, default=None,
@@ -2147,6 +2158,7 @@ def main():
         use_daam=args.use_daam,
         use_daam_keyspace_omp=args.use_daam_keyspace_omp,
         daam_model_id=args.daam_model_id,
+        fix_dictionary=args.fix_dictionary,
     )
     
     # Create Optuna study
