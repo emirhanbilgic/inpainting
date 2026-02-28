@@ -1244,6 +1244,8 @@ class AntiHallucinationObjective:
         use_daam_keyspace_omp=False,
         daam_model_id='Manojb/stable-diffusion-2-base',
         fix_dictionary=False,
+        fix_dictionary_wordnet_only=False,
+        fix_dictionary_prompts_only=False,
     ):
         self.model = model
         self.tokenizer = tokenizer
@@ -1269,6 +1271,8 @@ class AntiHallucinationObjective:
         self.use_daam = use_daam
         self.use_daam_keyspace_omp = use_daam_keyspace_omp
         self.fix_dictionary = fix_dictionary
+        self.fix_dictionary_wordnet_only = fix_dictionary_wordnet_only
+        self.fix_dictionary_prompts_only = fix_dictionary_prompts_only
         
         # Initialize DAAM segmenter if needed
         self.daam_segmenter = None
@@ -1759,10 +1763,22 @@ class AntiHallucinationObjective:
         
         # Sample hyperparameters
         if self.fix_dictionary:
+            wn_use_synonyms = True
+            wn_use_hypernyms = True
+            wn_use_hyponyms = True
+            wn_use_siblings = False
+            dict_include_prompts = True
+        elif self.fix_dictionary_wordnet_only:
             wn_use_synonyms = False
             wn_use_hypernyms = True
             wn_use_hyponyms = True
             wn_use_siblings = True
+            dict_include_prompts = False
+        elif self.fix_dictionary_prompts_only:
+            wn_use_synonyms = False
+            wn_use_hypernyms = False
+            wn_use_hyponyms = False
+            wn_use_siblings = False
             dict_include_prompts = True
         else:
             wn_use_synonyms = trial.suggest_categorical('wn_use_synonyms', [True, False])
@@ -1999,6 +2015,10 @@ def main():
                         help='Use multi-objective Pareto optimization instead of composite score')
     parser.add_argument('--fix_dictionary', action='store_true',
                         help='Bypass dictionary hyperparameter search and use all WordNet relations (except siblings) plus prompts')
+    parser.add_argument('--fix_dictionary_wordnet_only', action='store_true',
+                        help='Bypass dictionary hyperparameter search and use only WordNet (siblings, hypernyms, hyponyms), no synonyms or prompts')
+    parser.add_argument('--fix_dictionary_prompts_only', action='store_true',
+                        help='Bypass dictionary hyperparameter search and use only prompts (other classes), no WordNet')
     
     # Baseline comparison (from compute_legrad_negative_baseline.py)
     parser.add_argument('--baseline_json', type=str, default=None,
@@ -2159,6 +2179,8 @@ def main():
         use_daam_keyspace_omp=args.use_daam_keyspace_omp,
         daam_model_id=args.daam_model_id,
         fix_dictionary=args.fix_dictionary,
+        fix_dictionary_wordnet_only=args.fix_dictionary_wordnet_only,
+        fix_dictionary_prompts_only=args.fix_dictionary_prompts_only,
     )
     
     # Create Optuna study
