@@ -1246,6 +1246,8 @@ class AntiHallucinationObjective:
         fix_dictionary=False,
         fix_dictionary_wordnet_only=False,
         fix_dictionary_prompts_only=False,
+        use_llm_dictionary=False,
+        llm_dictionary_path=None,
     ):
         self.model = model
         self.tokenizer = tokenizer
@@ -1273,6 +1275,18 @@ class AntiHallucinationObjective:
         self.fix_dictionary = fix_dictionary
         self.fix_dictionary_wordnet_only = fix_dictionary_wordnet_only
         self.fix_dictionary_prompts_only = fix_dictionary_prompts_only
+        self.use_llm_dictionary = use_llm_dictionary
+        
+        # Load LLM-generated concept dictionary
+        self.llm_dictionary = None
+        if self.use_llm_dictionary:
+            if llm_dictionary_path is None:
+                llm_dictionary_path = os.path.join(scripts_dir, 'visual_concept_dictionary_445.json')
+            if not os.path.exists(llm_dictionary_path):
+                raise FileNotFoundError(f"LLM dictionary not found: {llm_dictionary_path}")
+            with open(llm_dictionary_path, 'r') as f_dict:
+                self.llm_dictionary = json.load(f_dict)
+            print(f"[optuna] Loaded LLM concept dictionary with {len(self.llm_dictionary)} classes from {llm_dictionary_path}")
         
         # Initialize DAAM segmenter if needed
         self.daam_segmenter = None
@@ -1431,42 +1445,60 @@ class AntiHallucinationObjective:
                     def build_sparse_embedding(text_emb_1x, target_class_name):
                         """Build sparse residual embedding for a given text embedding."""
                         parts = []
+                        
+                        if self.use_llm_dictionary:
+                            # Use LLM-generated concept dictionary
+                            llm_concepts = self.llm_dictionary.get(wnid)
+                            if llm_concepts is not None:
+                                all_concepts = (
+                                    llm_concepts.get('visual_confusers', []) +
+                                    llm_concepts.get('co_occurring_context', []) +
+                                    llm_concepts.get('semantic_hierarchy', [])
+                                )
+                                if all_concepts:
+                                    concept_prompts = [f"a photo of a {c}." for c in all_concepts]
+                                    c_tok = self.tokenizer(concept_prompts).to(self.device)
+                                    with torch.no_grad():
+                                        c_emb = self.model.encode_text(c_tok)
+                                        c_emb = F.normalize(c_emb, dim=-1)
+                                    parts.append(c_emb)
+                        else:
+                            # Original dictionary: other class prompts + WordNet neighbors
+                            # 1) Other class prompts
+                            emb_idx = None
+                            for i, w in enumerate(self.unique_wnids):
+                                if self.wnid_to_classname[w] == target_class_name:
+                                    emb_idx = i
+                                    break
                     
-                        # 1) Other class prompts
-                        emb_idx = None
-                        for i, w in enumerate(self.unique_wnids):
-                            if self.wnid_to_classname[w] == target_class_name:
-                                emb_idx = i
-                                break
+                            if dict_include_prompts and len(self.unique_wnids) > 1:
+                                if emb_idx is not None:
+                                    if emb_idx > 0:
+                                        parts.append(self.all_text_embs[:emb_idx])
+                                    if emb_idx + 1 < len(self.unique_wnids):
+                                        parts.append(self.all_text_embs[emb_idx + 1:])
+                                else:
+                                    parts.append(self.all_text_embs)
                     
-                        if dict_include_prompts and len(self.unique_wnids) > 1:
-                            if emb_idx is not None:
-                                if emb_idx > 0:
-                                    parts.append(self.all_text_embs[:emb_idx])
-                                if emb_idx + 1 < len(self.unique_wnids):
-                                    parts.append(self.all_text_embs[emb_idx + 1:])
-                            else:
-                                parts.append(self.all_text_embs)
-                    
-                        # 2) WordNet neighbors
-                        use_wn = any([wn_use_synonyms, wn_use_hypernyms, wn_use_hyponyms, wn_use_siblings])
-                        if use_wn:
-                            target_prompt = f"a photo of a {target_class_name}."
-                            raw_neighbors = wordnet_neighbors_configured(
-                                target_class_name,
-                                use_synonyms=wn_use_synonyms,
-                                use_hypernyms=wn_use_hypernyms,
-                                use_hyponyms=wn_use_hyponyms,
-                                use_siblings=wn_use_siblings,
-                                limit_per_relation=8,
-                            )
-                            if raw_neighbors:
-                                neighbor_prompts = [target_prompt.replace(target_class_name, w) for w in raw_neighbors]
-                                n_tok = self.tokenizer(neighbor_prompts).to(self.device)
-                                with torch.no_grad():
-                                    n_emb = self.model.encode_text(n_tok)
-                                    n_emb = F.normalize(n_emb, dim=-1)
-                                parts.append(n_emb)
+                            # 2) WordNet neighbors
+                            use_wn = any([wn_use_synonyms, wn_use_hypernyms, wn_use_hyponyms, wn_use_siblings])
+                            if use_wn:
+                                target_prompt = f"a photo of a {target_class_name}."
+                                raw_neighbors = wordnet_neighbors_configured(
+                                    target_class_name,
+                                    use_synonyms=wn_use_synonyms,
+                                    use_hypernyms=wn_use_hypernyms,
+                                    use_hyponyms=wn_use_hyponyms,
+                                    use_siblings=wn_use_siblings,
+                                    limit_per_relation=8,
+                                )
+                                if raw_neighbors:
+                                    neighbor_prompts = [target_prompt.replace(target_class_name, w) for w in raw_neighbors]
+                                    n_tok = self.tokenizer(neighbor_prompts).to(self.device)
+                                    with torch.no_grad():
+                                        n_emb = self.model.encode_text(n_tok)
+                                        n_emb = F.normalize(n_emb, dim=-1)
+                                    parts.append(n_emb)
                     
                         # Combine dictionary
                         if len(parts) > 0:
@@ -1494,29 +1526,38 @@ class AntiHallucinationObjective:
                         if self.use_daam:
                             prompt_text = f"a photo of a {target_class_name}."
                             
-                            # Build competing concepts from WordNet neighbors and other classes
-                            # (same hyperparameters as CLIP-based methods for fair comparison)
+                            # Build competing concepts
                             all_competing = []
                             
-                            # 1) Add other class names (if dict_include_prompts)
-                            if dict_include_prompts and competing_class_names:
-                                all_competing.extend(competing_class_names)
-                            
-                            # 2) Add WordNet neighbors
-                            use_wn = any([wn_use_synonyms, wn_use_hypernyms, wn_use_hyponyms, wn_use_siblings])
-                            if use_wn:
-                                raw_neighbors = wordnet_neighbors_configured(
-                                    target_class_name,
-                                    use_synonyms=wn_use_synonyms,
-                                    use_hypernyms=wn_use_hypernyms,
-                                    use_hyponyms=wn_use_hyponyms,
-                                    use_siblings=wn_use_siblings,
-                                    limit_per_relation=8,
-                                )
-                                if raw_neighbors:
-                                    # Filter out target class itself
-                                    raw_neighbors = [n for n in raw_neighbors if n.lower() != target_class_name.lower()]
-                                    all_competing.extend(raw_neighbors)
+                            if self.use_llm_dictionary:
+                                # Use LLM dictionary for DAAM competing concepts
+                                llm_concepts = self.llm_dictionary.get(wnid)
+                                if llm_concepts is not None:
+                                    # Use visual confusers and semantic hierarchy as competing concepts
+                                    all_competing.extend(llm_concepts.get('visual_confusers', []))
+                                    all_competing.extend(llm_concepts.get('co_occurring_context', []))
+                                    all_competing.extend(llm_concepts.get('semantic_hierarchy', []))
+                            else:
+                                # Original: WordNet neighbors and other classes
+                                # 1) Add other class names (if dict_include_prompts)
+                                if dict_include_prompts and competing_class_names:
+                                    all_competing.extend(competing_class_names)
+                                
+                                # 2) Add WordNet neighbors
+                                use_wn = any([wn_use_synonyms, wn_use_hypernyms, wn_use_hyponyms, wn_use_siblings])
+                                if use_wn:
+                                    raw_neighbors = wordnet_neighbors_configured(
+                                        target_class_name,
+                                        use_synonyms=wn_use_synonyms,
+                                        use_hypernyms=wn_use_hypernyms,
+                                        use_hyponyms=wn_use_hyponyms,
+                                        use_siblings=wn_use_siblings,
+                                        limit_per_relation=8,
+                                    )
+                                    if raw_neighbors:
+                                        # Filter out target class itself
+                                        raw_neighbors = [n for n in raw_neighbors if n.lower() != target_class_name.lower()]
+                                        all_competing.extend(raw_neighbors)
                             
                             # Remove duplicates while preserving order
                             seen = set()
@@ -1762,7 +1803,14 @@ class AntiHallucinationObjective:
         """Optuna objective function."""
         
         # Sample hyperparameters
-        if self.fix_dictionary:
+        if self.use_llm_dictionary:
+            # LLM dictionary mode: skip all WordNet/prompt dictionary flags
+            wn_use_synonyms = False
+            wn_use_hypernyms = False
+            wn_use_hyponyms = False
+            wn_use_siblings = False
+            dict_include_prompts = False
+        elif self.fix_dictionary:
             wn_use_synonyms = True
             wn_use_hypernyms = True
             wn_use_hyponyms = True
@@ -2019,6 +2067,10 @@ def main():
                         help='Bypass dictionary hyperparameter search and use only WordNet (siblings, hypernyms, hyponyms), no synonyms or prompts')
     parser.add_argument('--fix_dictionary_prompts_only', action='store_true',
                         help='Bypass dictionary hyperparameter search and use only prompts (other classes), no WordNet')
+    parser.add_argument('--use_llm_dictionary', action='store_true',
+                        help='Use LLM-generated visual concept dictionary instead of WordNet/prompts')
+    parser.add_argument('--llm_dictionary_path', type=str, default=None,
+                        help='Path to LLM-generated dictionary JSON (default: scripts/visual_concept_dictionary_445.json)')
     
     # Baseline comparison (from compute_legrad_negative_baseline.py)
     parser.add_argument('--baseline_json', type=str, default=None,
@@ -2181,6 +2233,8 @@ def main():
         fix_dictionary=args.fix_dictionary,
         fix_dictionary_wordnet_only=args.fix_dictionary_wordnet_only,
         fix_dictionary_prompts_only=args.fix_dictionary_prompts_only,
+        use_llm_dictionary=args.use_llm_dictionary,
+        llm_dictionary_path=args.llm_dictionary_path,
     )
     
     # Create Optuna study
