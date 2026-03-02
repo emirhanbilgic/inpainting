@@ -1248,6 +1248,8 @@ class AntiHallucinationObjective:
         fix_dictionary_prompts_only=False,
         use_llm_dictionary=False,
         llm_dictionary_path=None,
+        use_gpt_dictionary=False,
+        gpt_dictionary_path=None,
     ):
         self.model = model
         self.tokenizer = tokenizer
@@ -1276,6 +1278,7 @@ class AntiHallucinationObjective:
         self.fix_dictionary_wordnet_only = fix_dictionary_wordnet_only
         self.fix_dictionary_prompts_only = fix_dictionary_prompts_only
         self.use_llm_dictionary = use_llm_dictionary
+        self.use_gpt_dictionary = use_gpt_dictionary
         
         # Load LLM-generated concept dictionary
         self.llm_dictionary = None
@@ -1287,6 +1290,17 @@ class AntiHallucinationObjective:
             with open(llm_dictionary_path, 'r') as f_dict:
                 self.llm_dictionary = json.load(f_dict)
             print(f"[optuna] Loaded LLM concept dictionary with {len(self.llm_dictionary)} classes from {llm_dictionary_path}")
+            
+        # Load GPT-generated concept dictionary
+        self.gpt_dictionary = None
+        if self.use_gpt_dictionary:
+            if gpt_dictionary_path is None:
+                gpt_dictionary_path = os.path.join(scripts_dir, 'visual_concept_dictionary_gpt.json')
+            if not os.path.exists(gpt_dictionary_path):
+                raise FileNotFoundError(f"GPT dictionary not found: {gpt_dictionary_path}")
+            with open(gpt_dictionary_path, 'r') as f_dict:
+                self.gpt_dictionary = json.load(f_dict)
+            print(f"[optuna] Loaded GPT concept dictionary with {len(self.gpt_dictionary)} classes from {gpt_dictionary_path}")
         
         # Initialize DAAM segmenter if needed
         self.daam_segmenter = None
@@ -1462,6 +1476,22 @@ class AntiHallucinationObjective:
                                         c_emb = self.model.encode_text(c_tok)
                                         c_emb = F.normalize(c_emb, dim=-1)
                                     parts.append(c_emb)
+                        elif self.use_gpt_dictionary:
+                            # Use GPT-generated concept dictionary
+                            gpt_concepts = self.gpt_dictionary.get(wnid)
+                            if gpt_concepts is not None:
+                                all_concepts = (
+                                    gpt_concepts.get('visual_confusers', []) +
+                                    gpt_concepts.get('co_occurring_context', []) +
+                                    gpt_concepts.get('semantic_hierarchy', [])
+                                )
+                                if all_concepts:
+                                    concept_prompts = [f"a photo of a {c}." for c in all_concepts]
+                                    c_tok = self.tokenizer(concept_prompts).to(self.device)
+                                    with torch.no_grad():
+                                        c_emb = self.model.encode_text(c_tok)
+                                        c_emb = F.normalize(c_emb, dim=-1)
+                                    parts.append(c_emb)
                         else:
                             # Original dictionary: other class prompts + WordNet neighbors
                             # 1) Other class prompts
@@ -1537,6 +1567,14 @@ class AntiHallucinationObjective:
                                     all_competing.extend(llm_concepts.get('visual_confusers', []))
                                     all_competing.extend(llm_concepts.get('co_occurring_context', []))
                                     all_competing.extend(llm_concepts.get('semantic_hierarchy', []))
+                            elif self.use_gpt_dictionary:
+                                # Use GPT dictionary for DAAM competing concepts
+                                gpt_concepts = self.gpt_dictionary.get(wnid)
+                                if gpt_concepts is not None:
+                                    # Use visual confusers and semantic hierarchy as competing concepts
+                                    all_competing.extend(gpt_concepts.get('visual_confusers', []))
+                                    all_competing.extend(gpt_concepts.get('co_occurring_context', []))
+                                    all_competing.extend(gpt_concepts.get('semantic_hierarchy', []))
                             else:
                                 # Original: WordNet neighbors and other classes
                                 # 1) Add other class names (if dict_include_prompts)
@@ -1803,7 +1841,7 @@ class AntiHallucinationObjective:
         """Optuna objective function."""
         
         # Sample hyperparameters
-        if self.use_llm_dictionary:
+        if self.use_llm_dictionary or self.use_gpt_dictionary:
             # LLM dictionary mode: skip all WordNet/prompt dictionary flags
             wn_use_synonyms = False
             wn_use_hypernyms = False
@@ -2071,6 +2109,10 @@ def main():
                         help='Use LLM-generated visual concept dictionary instead of WordNet/prompts')
     parser.add_argument('--llm_dictionary_path', type=str, default=None,
                         help='Path to LLM-generated dictionary JSON (default: scripts/visual_concept_dictionary_445.json)')
+    parser.add_argument('--use_gpt_dictionary', action='store_true',
+                        help='Use GPT-generated visual concept dictionary instead of WordNet/prompts/LLM')
+    parser.add_argument('--gpt_dictionary_path', type=str, default=None,
+                        help='Path to GPT-generated dictionary JSON (default: scripts/visual_concept_dictionary_gpt.json)')
     
     # Baseline comparison (from compute_legrad_negative_baseline.py)
     parser.add_argument('--baseline_json', type=str, default=None,
@@ -2235,6 +2277,8 @@ def main():
         fix_dictionary_prompts_only=args.fix_dictionary_prompts_only,
         use_llm_dictionary=args.use_llm_dictionary,
         llm_dictionary_path=args.llm_dictionary_path,
+        use_gpt_dictionary=args.use_gpt_dictionary,
+        gpt_dictionary_path=args.gpt_dictionary_path,
     )
     
     # Create Optuna study
