@@ -163,62 +163,50 @@ def create_combined_grid_image(vis_dict_all_methods, original_image, concepts, m
         font = ImageFont.load_default()
         header_font = font
         
-    num_rows = len(concepts)
-    num_cols = 2 + len(methods)
+    num_cols = len(concepts) + 1 # +1 for method labels
+    num_rows = 1 + 2 # 1 header row + 1 LeGrad + 1 LeGrad-OSP
     
-    label_w = 140
-    header_h = 50 # Fixed smaller header height
+    label_w = 160
+    header_h = 50
     
-    grid_w = label_w + (num_cols - 1) * cell_w + (num_cols - 2) * padding_x
-    grid_h = padding_y + header_h + padding_y + num_rows * cell_h + (num_rows - 1) * padding_y + padding_y
+    grid_w = label_w + len(concepts) * cell_w + len(concepts) * padding_x
+    grid_h = padding_y + header_h + padding_y + 2 * cell_h + padding_y
     
     grid_img = Image.new('RGB', (grid_w, grid_h), color='white')
     draw = ImageDraw.Draw(grid_img)
     
-    # Draw headers
-    header_y = padding_y + 10 # Place text near the top
-    draw.text((10, header_y), "Concept", fill="black", font=font)
+    # "Method" header removed per request
+    header_y = padding_y + 10
     
-    # LeGrad header (Centered over cell_w)
-    legrad_text = "LeGrad"
-    legrad_bbox = draw.textbbox((0, 0), legrad_text, font=header_font)
-    legrad_w = legrad_bbox[2] - legrad_bbox[0]
-    legrad_x = label_w + (cell_w - legrad_w) // 2
-    draw.text((legrad_x, header_y), legrad_text, fill="black", font=header_font)
+    # Draw concept headers (Columns)
+    for c_idx, concept in enumerate(concepts):
+        x_base = label_w + c_idx * (cell_w + padding_x)
+        c_bbox = draw.textbbox((0, 0), concept, font=header_font)
+        c_w = c_bbox[2] - c_bbox[0]
+        c_x = x_base + (cell_w - c_w) // 2
+        draw.text((c_x, header_y), concept, fill="black", font=header_font)
     
-    for m_idx, method in enumerate(methods):
-        x_base = label_w + (m_idx + 1) * (cell_w + padding_x)
-        # Main method header (Centered over cell_w)
-        method_name = "LeGrad-OSP"
-        method_bbox = draw.textbbox((0, 0), method_name, font=header_font)
-        method_w = method_bbox[2] - method_bbox[0]
-        method_x = x_base + (cell_w - method_w) // 2
-        draw.text((method_x, header_y), method_name, fill="black", font=header_font)
+    # Draw row labels
+    row_starts = [padding_y + header_h + padding_y, padding_y + header_h + padding_y + cell_h + padding_y]
+    row_labels = ["LeGrad", "LeGrad-OSP"]
     
-    # Draw content
-    content_start_y = padding_y + header_h + padding_y
-    for r_idx, concept in enumerate(concepts):
-        y_offset = content_start_y + r_idx * (cell_h + padding_y)
-        draw.text((10, y_offset + cell_h//2 - 12), concept, fill="black", font=font)
+    for r_idx, label in enumerate(row_labels):
+        y_center = row_starts[r_idx] + cell_h // 2 - 14
+        draw.text((10, y_center), label, fill="black", font=font)
         
-        # Draw LeGrad (Before) 
+    # Draw images
+    for c_idx, concept in enumerate(concepts):
+        x_base = label_w + c_idx * (cell_w + padding_x)
+        
+        # LeGrad (Before)
         vis_before, _ = vis_dict_all_methods[methods[0]][concept]
         vis_before_resized = vis_before.resize((cell_w, cell_h), Image.BILINEAR)
-        grid_img.paste(vis_before_resized, (label_w, y_offset))
+        grid_img.paste(vis_before_resized, (x_base, row_starts[0]))
         
-        # Draw After images for each method
-        for m_idx, method in enumerate(methods):
-            x_base = label_w + (m_idx + 1) * (cell_w + padding_x)
-            
-            _, vis_after = vis_dict_all_methods[method][concept]
-            vis_after_resized = vis_after.resize((cell_w, cell_h), Image.BILINEAR)
-            
-            grid_img.paste(vis_after_resized, (x_base, y_offset))
-            
-            _, vis_after = vis_dict_all_methods[method][concept]
-            vis_after_resized = vis_after.resize((cell_w, cell_h), Image.BILINEAR)
-            
-            grid_img.paste(vis_after_resized, (x_base, y_offset))
+        # LeGrad-OSP (After)
+        _, vis_after = vis_dict_all_methods[methods[0]][concept]
+        vis_after_resized = vis_after.resize((cell_w, cell_h), Image.BILINEAR)
+        grid_img.paste(vis_after_resized, (x_base, row_starts[1]))
             
     return grid_img
 
