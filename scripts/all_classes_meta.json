@@ -1,0 +1,1782 @@
+[
+  {
+    "wnid": "n01322343",
+    "name": "pup"
+  },
+  {
+    "wnid": "n01322604",
+    "name": "puppy"
+  },
+  {
+    "wnid": "n01323068",
+    "name": "tiger cub"
+  },
+  {
+    "wnid": "n01752736",
+    "name": "asp"
+  },
+  {
+    "wnid": "n01872401",
+    "name": "echidna"
+  },
+  {
+    "wnid": "n01873310",
+    "name": "platypus"
+  },
+  {
+    "wnid": "n01876667",
+    "name": "rabbit-eared bandicoot"
+  },
+  {
+    "wnid": "n01877606",
+    "name": "giant kangaroo"
+  },
+  {
+    "wnid": "n01877812",
+    "name": "wallaby"
+  },
+  {
+    "wnid": "n01878061",
+    "name": "common wallaby"
+  },
+  {
+    "wnid": "n01878335",
+    "name": "hare wallaby"
+  },
+  {
+    "wnid": "n01878639",
+    "name": "nail-tailed wallaby"
+  },
+  {
+    "wnid": "n01878929",
+    "name": "rock wallaby"
+  },
+  {
+    "wnid": "n01879509",
+    "name": "tree wallaby"
+  },
+  {
+    "wnid": "n01879837",
+    "name": "musk kangaroo"
+  },
+  {
+    "wnid": "n01880152",
+    "name": "rat kangaroo"
+  },
+  {
+    "wnid": "n01880473",
+    "name": "potoroo"
+  },
+  {
+    "wnid": "n01880716",
+    "name": "bettong"
+  },
+  {
+    "wnid": "n01880813",
+    "name": "jerboa kangaroo"
+  },
+  {
+    "wnid": "n01881171",
+    "name": "phalanger"
+  },
+  {
+    "wnid": "n01881564",
+    "name": "cuscus"
+  },
+  {
+    "wnid": "n01881857",
+    "name": "brush-tailed phalanger"
+  },
+  {
+    "wnid": "n01882125",
+    "name": "flying phalanger"
+  },
+  {
+    "wnid": "n01882714",
+    "name": "koala"
+  },
+  {
+    "wnid": "n01883070",
+    "name": "wombat"
+  },
+  {
+    "wnid": "n01883920",
+    "name": "dasyure"
+  },
+  {
+    "wnid": "n01884104",
+    "name": "eastern dasyure"
+  },
+  {
+    "wnid": "n01884203",
+    "name": "native cat"
+  },
+  {
+    "wnid": "n01884476",
+    "name": "thylacine"
+  },
+  {
+    "wnid": "n01884834",
+    "name": "tasmanian devil"
+  },
+  {
+    "wnid": "n01885498",
+    "name": "numbat"
+  },
+  {
+    "wnid": "n02064000",
+    "name": "bowhead"
+  },
+  {
+    "wnid": "n02064338",
+    "name": "rorqual"
+  },
+  {
+    "wnid": "n02065026",
+    "name": "finback"
+  },
+  {
+    "wnid": "n02065263",
+    "name": "sei whale"
+  },
+  {
+    "wnid": "n02065407",
+    "name": "lesser rorqual"
+  },
+  {
+    "wnid": "n02070430",
+    "name": "porpoise"
+  },
+  {
+    "wnid": "n02070624",
+    "name": "harbor porpoise"
+  },
+  {
+    "wnid": "n02070776",
+    "name": "vaquita"
+  },
+  {
+    "wnid": "n02071294",
+    "name": "killer whale"
+  },
+  {
+    "wnid": "n02073831",
+    "name": "manatee"
+  },
+  {
+    "wnid": "n02074367",
+    "name": "dugong"
+  },
+  {
+    "wnid": "n02088238",
+    "name": "basset"
+  },
+  {
+    "wnid": "n02088364",
+    "name": "beagle"
+  },
+  {
+    "wnid": "n02088466",
+    "name": "bloodhound"
+  },
+  {
+    "wnid": "n02088839",
+    "name": "coonhound"
+  },
+  {
+    "wnid": "n02089555",
+    "name": "foxhound"
+  },
+  {
+    "wnid": "n02089867",
+    "name": "walker hound"
+  },
+  {
+    "wnid": "n02090379",
+    "name": "redbone"
+  },
+  {
+    "wnid": "n02090475",
+    "name": "wolfhound"
+  },
+  {
+    "wnid": "n02090721",
+    "name": "irish wolfhound"
+  },
+  {
+    "wnid": "n02091032",
+    "name": "italian greyhound"
+  },
+  {
+    "wnid": "n02091134",
+    "name": "whippet"
+  },
+  {
+    "wnid": "n02091635",
+    "name": "otterhound"
+  },
+  {
+    "wnid": "n02092002",
+    "name": "scottish deerhound"
+  },
+  {
+    "wnid": "n02092173",
+    "name": "staghound"
+  },
+  {
+    "wnid": "n02093256",
+    "name": "staffordshire bullterrier"
+  },
+  {
+    "wnid": "n02093428",
+    "name": "american staffordshire terrier"
+  },
+  {
+    "wnid": "n02095570",
+    "name": "lakeland terrier"
+  },
+  {
+    "wnid": "n02095727",
+    "name": "welsh terrier"
+  },
+  {
+    "wnid": "n02095889",
+    "name": "sealyham terrier"
+  },
+  {
+    "wnid": "n02096294",
+    "name": "australian terrier"
+  },
+  {
+    "wnid": "n02097047",
+    "name": "miniature schnauzer"
+  },
+  {
+    "wnid": "n02097130",
+    "name": "giant schnauzer"
+  },
+  {
+    "wnid": "n02097209",
+    "name": "standard schnauzer"
+  },
+  {
+    "wnid": "n02104365",
+    "name": "schipperke"
+  },
+  {
+    "wnid": "n02104882",
+    "name": "belgian sheepdog"
+  },
+  {
+    "wnid": "n02105056",
+    "name": "groenendael"
+  },
+  {
+    "wnid": "n02105162",
+    "name": "malinois"
+  },
+  {
+    "wnid": "n02105251",
+    "name": "briard"
+  },
+  {
+    "wnid": "n02105505",
+    "name": "komondor"
+  },
+  {
+    "wnid": "n02106966",
+    "name": "pinscher"
+  },
+  {
+    "wnid": "n02107142",
+    "name": "doberman"
+  },
+  {
+    "wnid": "n02107312",
+    "name": "miniature pinscher"
+  },
+  {
+    "wnid": "n02110627",
+    "name": "affenpinscher"
+  },
+  {
+    "wnid": "n02115641",
+    "name": "dingo"
+  },
+  {
+    "wnid": "n02115913",
+    "name": "dhole"
+  },
+  {
+    "wnid": "n02123045",
+    "name": "tabby"
+  },
+  {
+    "wnid": "n02125311",
+    "name": "cougar"
+  },
+  {
+    "wnid": "n02126640",
+    "name": "margay"
+  },
+  {
+    "wnid": "n02127052",
+    "name": "lynx"
+  },
+  {
+    "wnid": "n02127381",
+    "name": "canada lynx"
+  },
+  {
+    "wnid": "n02127482",
+    "name": "bobcat"
+  },
+  {
+    "wnid": "n02127678",
+    "name": "caracal"
+  },
+  {
+    "wnid": "n02128385",
+    "name": "leopard"
+  },
+  {
+    "wnid": "n02128925",
+    "name": "jaguar"
+  },
+  {
+    "wnid": "n02129165",
+    "name": "lion"
+  },
+  {
+    "wnid": "n02129463",
+    "name": "lioness"
+  },
+  {
+    "wnid": "n02129530",
+    "name": "lionet"
+  },
+  {
+    "wnid": "n02129604",
+    "name": "tiger"
+  },
+  {
+    "wnid": "n02129991",
+    "name": "liger"
+  },
+  {
+    "wnid": "n02135610",
+    "name": "large civet"
+  },
+  {
+    "wnid": "n02135844",
+    "name": "small civet"
+  },
+  {
+    "wnid": "n02136103",
+    "name": "binturong"
+  },
+  {
+    "wnid": "n02136794",
+    "name": "fanaloka"
+  },
+  {
+    "wnid": "n02137302",
+    "name": "banded palm civet"
+  },
+  {
+    "wnid": "n02137549",
+    "name": "mongoose"
+  },
+  {
+    "wnid": "n02137722",
+    "name": "indian mongoose"
+  },
+  {
+    "wnid": "n02137888",
+    "name": "ichneumon"
+  },
+  {
+    "wnid": "n02138169",
+    "name": "palm cat"
+  },
+  {
+    "wnid": "n02138441",
+    "name": "meerkat"
+  },
+  {
+    "wnid": "n02138647",
+    "name": "slender-tailed meerkat"
+  },
+  {
+    "wnid": "n02138777",
+    "name": "suricate"
+  },
+  {
+    "wnid": "n02145424",
+    "name": "vespertilian bat"
+  },
+  {
+    "wnid": "n02145910",
+    "name": "frosted bat"
+  },
+  {
+    "wnid": "n02146201",
+    "name": "red bat"
+  },
+  {
+    "wnid": "n02146700",
+    "name": "little brown bat"
+  },
+  {
+    "wnid": "n02146879",
+    "name": "cave myotis"
+  },
+  {
+    "wnid": "n02147173",
+    "name": "big brown bat"
+  },
+  {
+    "wnid": "n02147328",
+    "name": "serotine"
+  },
+  {
+    "wnid": "n02147591",
+    "name": "pallid bat"
+  },
+  {
+    "wnid": "n02147947",
+    "name": "pipistrelle"
+  },
+  {
+    "wnid": "n02148088",
+    "name": "eastern pipistrel"
+  },
+  {
+    "wnid": "n02148512",
+    "name": "jackass bat"
+  },
+  {
+    "wnid": "n02148835",
+    "name": "long-eared bat"
+  },
+  {
+    "wnid": "n02148991",
+    "name": "western big-eared bat"
+  },
+  {
+    "wnid": "n02149420",
+    "name": "freetail"
+  },
+  {
+    "wnid": "n02149653",
+    "name": "guano bat"
+  },
+  {
+    "wnid": "n02149861",
+    "name": "pocketed bat"
+  },
+  {
+    "wnid": "n02324045",
+    "name": "rabbit"
+  },
+  {
+    "wnid": "n02324514",
+    "name": "lapin"
+  },
+  {
+    "wnid": "n02324587",
+    "name": "bunny"
+  },
+  {
+    "wnid": "n02324850",
+    "name": "european rabbit"
+  },
+  {
+    "wnid": "n02325366",
+    "name": "wood rabbit"
+  },
+  {
+    "wnid": "n02325722",
+    "name": "eastern cottontail"
+  },
+  {
+    "wnid": "n02325884",
+    "name": "swamp rabbit"
+  },
+  {
+    "wnid": "n02326074",
+    "name": "marsh hare"
+  },
+  {
+    "wnid": "n02326432",
+    "name": "hare"
+  },
+  {
+    "wnid": "n02326763",
+    "name": "leveret"
+  },
+  {
+    "wnid": "n02326862",
+    "name": "european hare"
+  },
+  {
+    "wnid": "n02327028",
+    "name": "jackrabbit"
+  },
+  {
+    "wnid": "n02327175",
+    "name": "white-tailed jackrabbit"
+  },
+  {
+    "wnid": "n02327435",
+    "name": "blacktail jackrabbit"
+  },
+  {
+    "wnid": "n02327656",
+    "name": "polar hare"
+  },
+  {
+    "wnid": "n02327842",
+    "name": "snowshoe hare"
+  },
+  {
+    "wnid": "n02328009",
+    "name": "belgian hare"
+  },
+  {
+    "wnid": "n02328150",
+    "name": "angora"
+  },
+  {
+    "wnid": "n02352932",
+    "name": "loir"
+  },
+  {
+    "wnid": "n02353411",
+    "name": "lerot"
+  },
+  {
+    "wnid": "n02355477",
+    "name": "tree squirrel"
+  },
+  {
+    "wnid": "n02356381",
+    "name": "eastern grey squirrel"
+  },
+  {
+    "wnid": "n02356612",
+    "name": "western grey squirrel"
+  },
+  {
+    "wnid": "n02356798",
+    "name": "fox squirrel"
+  },
+  {
+    "wnid": "n02356977",
+    "name": "black squirrel"
+  },
+  {
+    "wnid": "n02357111",
+    "name": "red squirrel"
+  },
+  {
+    "wnid": "n02357401",
+    "name": "american red squirrel"
+  },
+  {
+    "wnid": "n02357585",
+    "name": "chickeree"
+  },
+  {
+    "wnid": "n02357911",
+    "name": "antelope squirrel"
+  },
+  {
+    "wnid": "n02358091",
+    "name": "ground squirrel"
+  },
+  {
+    "wnid": "n02358390",
+    "name": "mantled ground squirrel"
+  },
+  {
+    "wnid": "n02358584",
+    "name": "suslik"
+  },
+  {
+    "wnid": "n02358712",
+    "name": "flickertail"
+  },
+  {
+    "wnid": "n02358890",
+    "name": "rock squirrel"
+  },
+  {
+    "wnid": "n02359047",
+    "name": "arctic ground squirrel"
+  },
+  {
+    "wnid": "n02360282",
+    "name": "chipmunk"
+  },
+  {
+    "wnid": "n02377291",
+    "name": "stud"
+  },
+  {
+    "wnid": "n02377388",
+    "name": "gelding"
+  },
+  {
+    "wnid": "n02378415",
+    "name": "warhorse"
+  },
+  {
+    "wnid": "n02378541",
+    "name": "cavalry horse"
+  },
+  {
+    "wnid": "n02378625",
+    "name": "charger"
+  },
+  {
+    "wnid": "n02380745",
+    "name": "bronco"
+  },
+  {
+    "wnid": "n02380875",
+    "name": "bucking bronco"
+  },
+  {
+    "wnid": "n02381261",
+    "name": "dun"
+  },
+  {
+    "wnid": "n02384741",
+    "name": "steeplechaser"
+  },
+  {
+    "wnid": "n02386496",
+    "name": "draft horse"
+  },
+  {
+    "wnid": "n02386746",
+    "name": "packhorse"
+  },
+  {
+    "wnid": "n02386853",
+    "name": "carthorse"
+  },
+  {
+    "wnid": "n02386968",
+    "name": "clydesdale"
+  },
+  {
+    "wnid": "n02387093",
+    "name": "percheron"
+  },
+  {
+    "wnid": "n02387346",
+    "name": "shire"
+  },
+  {
+    "wnid": "n02387452",
+    "name": "pole horse"
+  },
+  {
+    "wnid": "n02387887",
+    "name": "coach horse"
+  },
+  {
+    "wnid": "n02388143",
+    "name": "pacer"
+  },
+  {
+    "wnid": "n02389559",
+    "name": "domestic ass"
+  },
+  {
+    "wnid": "n02389779",
+    "name": "burro"
+  },
+  {
+    "wnid": "n02389865",
+    "name": "moke"
+  },
+  {
+    "wnid": "n02390015",
+    "name": "jennet"
+  },
+  {
+    "wnid": "n02390454",
+    "name": "wild ass"
+  },
+  {
+    "wnid": "n02390640",
+    "name": "african wild ass"
+  },
+  {
+    "wnid": "n02390834",
+    "name": "onager"
+  },
+  {
+    "wnid": "n02390938",
+    "name": "chigetai"
+  },
+  {
+    "wnid": "n02395406",
+    "name": "hog"
+  },
+  {
+    "wnid": "n02396427",
+    "name": "wild boar"
+  },
+  {
+    "wnid": "n02397096",
+    "name": "warthog"
+  },
+  {
+    "wnid": "n02403003",
+    "name": "ox"
+  },
+  {
+    "wnid": "n02403325",
+    "name": "bull"
+  },
+  {
+    "wnid": "n02403454",
+    "name": "cow"
+  },
+  {
+    "wnid": "n02403820",
+    "name": "bullock"
+  },
+  {
+    "wnid": "n02404186",
+    "name": "beef"
+  },
+  {
+    "wnid": "n02404432",
+    "name": "longhorn"
+  },
+  {
+    "wnid": "n02405440",
+    "name": "banteng"
+  },
+  {
+    "wnid": "n02405799",
+    "name": "santa gertrudis"
+  },
+  {
+    "wnid": "n02405929",
+    "name": "aberdeen angus"
+  },
+  {
+    "wnid": "n02406647",
+    "name": "charolais"
+  },
+  {
+    "wnid": "n02407071",
+    "name": "durham"
+  },
+  {
+    "wnid": "n02407276",
+    "name": "galloway"
+  },
+  {
+    "wnid": "n02407625",
+    "name": "hereford"
+  },
+  {
+    "wnid": "n02408429",
+    "name": "water buffalo"
+  },
+  {
+    "wnid": "n02408660",
+    "name": "indian buffalo"
+  },
+  {
+    "wnid": "n02408817",
+    "name": "carabao"
+  },
+  {
+    "wnid": "n02409038",
+    "name": "anoa"
+  },
+  {
+    "wnid": "n02410011",
+    "name": "gaur"
+  },
+  {
+    "wnid": "n02410141",
+    "name": "gayal"
+  },
+  {
+    "wnid": "n02412210",
+    "name": "wether"
+  },
+  {
+    "wnid": "n02413131",
+    "name": "domestic sheep"
+  },
+  {
+    "wnid": "n02413593",
+    "name": "hampshire"
+  },
+  {
+    "wnid": "n02413824",
+    "name": "exmoor"
+  },
+  {
+    "wnid": "n02414043",
+    "name": "broadtail"
+  },
+  {
+    "wnid": "n02414209",
+    "name": "longwool"
+  },
+  {
+    "wnid": "n02414442",
+    "name": "rambouillet"
+  },
+  {
+    "wnid": "n02414763",
+    "name": "argali"
+  },
+  {
+    "wnid": "n02415435",
+    "name": "mountain sheep"
+  },
+  {
+    "wnid": "n02415577",
+    "name": "bighorn"
+  },
+  {
+    "wnid": "n02415829",
+    "name": "mouflon"
+  },
+  {
+    "wnid": "n02416104",
+    "name": "aoudad"
+  },
+  {
+    "wnid": "n02418770",
+    "name": "goral"
+  },
+  {
+    "wnid": "n02419056",
+    "name": "serow"
+  },
+  {
+    "wnid": "n02419634",
+    "name": "takin"
+  },
+  {
+    "wnid": "n02420509",
+    "name": "blackbuck"
+  },
+  {
+    "wnid": "n02421449",
+    "name": "gnu"
+  },
+  {
+    "wnid": "n02421792",
+    "name": "dik-dik"
+  },
+  {
+    "wnid": "n02422106",
+    "name": "hartebeest"
+  },
+  {
+    "wnid": "n02422391",
+    "name": "sassaby"
+  },
+  {
+    "wnid": "n02422699",
+    "name": "impala"
+  },
+  {
+    "wnid": "n02423022",
+    "name": "gazelle"
+  },
+  {
+    "wnid": "n02423218",
+    "name": "thomson's gazelle"
+  },
+  {
+    "wnid": "n02423362",
+    "name": "gazella subgutturosa"
+  },
+  {
+    "wnid": "n02423589",
+    "name": "springbok"
+  },
+  {
+    "wnid": "n02424305",
+    "name": "kudu"
+  },
+  {
+    "wnid": "n02424486",
+    "name": "greater kudu"
+  },
+  {
+    "wnid": "n02424589",
+    "name": "lesser kudu"
+  },
+  {
+    "wnid": "n02424695",
+    "name": "harnessed antelope"
+  },
+  {
+    "wnid": "n02424909",
+    "name": "nyala"
+  },
+  {
+    "wnid": "n02425228",
+    "name": "bushbuck"
+  },
+  {
+    "wnid": "n02425532",
+    "name": "nilgai"
+  },
+  {
+    "wnid": "n02426481",
+    "name": "steenbok"
+  },
+  {
+    "wnid": "n02426813",
+    "name": "eland"
+  },
+  {
+    "wnid": "n02427032",
+    "name": "common eland"
+  },
+  {
+    "wnid": "n02427183",
+    "name": "giant eland"
+  },
+  {
+    "wnid": "n02427470",
+    "name": "kob"
+  },
+  {
+    "wnid": "n02427576",
+    "name": "lechwe"
+  },
+  {
+    "wnid": "n02427724",
+    "name": "waterbuck"
+  },
+  {
+    "wnid": "n02428089",
+    "name": "puku"
+  },
+  {
+    "wnid": "n02428349",
+    "name": "oryx"
+  },
+  {
+    "wnid": "n02428508",
+    "name": "gemsbok"
+  },
+  {
+    "wnid": "n02431122",
+    "name": "red deer"
+  },
+  {
+    "wnid": "n02431441",
+    "name": "hind"
+  },
+  {
+    "wnid": "n02431542",
+    "name": "brocket"
+  },
+  {
+    "wnid": "n02431628",
+    "name": "sambar"
+  },
+  {
+    "wnid": "n02431785",
+    "name": "wapiti"
+  },
+  {
+    "wnid": "n02432983",
+    "name": "elk"
+  },
+  {
+    "wnid": "n02433546",
+    "name": "roe deer"
+  },
+  {
+    "wnid": "n02433729",
+    "name": "roebuck"
+  },
+  {
+    "wnid": "n02434190",
+    "name": "woodland caribou"
+  },
+  {
+    "wnid": "n02434415",
+    "name": "barren ground caribou"
+  },
+  {
+    "wnid": "n02434954",
+    "name": "muntjac"
+  },
+  {
+    "wnid": "n02441942",
+    "name": "weasel"
+  },
+  {
+    "wnid": "n02442172",
+    "name": "ermine"
+  },
+  {
+    "wnid": "n02442336",
+    "name": "stoat"
+  },
+  {
+    "wnid": "n02442446",
+    "name": "new world least weasel"
+  },
+  {
+    "wnid": "n02442572",
+    "name": "old world least weasel"
+  },
+  {
+    "wnid": "n02442668",
+    "name": "longtail weasel"
+  },
+  {
+    "wnid": "n02443015",
+    "name": "american mink"
+  },
+  {
+    "wnid": "n02443346",
+    "name": "ferret"
+  },
+  {
+    "wnid": "n02443484",
+    "name": "black-footed ferret"
+  },
+  {
+    "wnid": "n02443808",
+    "name": "muishond"
+  },
+  {
+    "wnid": "n02443959",
+    "name": "snake muishond"
+  },
+  {
+    "wnid": "n02444819",
+    "name": "otter"
+  },
+  {
+    "wnid": "n02445171",
+    "name": "eurasian otter"
+  },
+  {
+    "wnid": "n02445715",
+    "name": "skunk"
+  },
+  {
+    "wnid": "n02446352",
+    "name": "hooded skunk"
+  },
+  {
+    "wnid": "n02446645",
+    "name": "hog-nosed skunk"
+  },
+  {
+    "wnid": "n02447021",
+    "name": "spotted skunk"
+  },
+  {
+    "wnid": "n02447366",
+    "name": "badger"
+  },
+  {
+    "wnid": "n02447762",
+    "name": "american badger"
+  },
+  {
+    "wnid": "n02448060",
+    "name": "eurasian badger"
+  },
+  {
+    "wnid": "n02448318",
+    "name": "ratel"
+  },
+  {
+    "wnid": "n02448885",
+    "name": "hog badger"
+  },
+  {
+    "wnid": "n02450034",
+    "name": "marten"
+  },
+  {
+    "wnid": "n02450295",
+    "name": "pine marten"
+  },
+  {
+    "wnid": "n02450426",
+    "name": "sable"
+  },
+  {
+    "wnid": "n02450561",
+    "name": "american marten"
+  },
+  {
+    "wnid": "n02450677",
+    "name": "stone marten"
+  },
+  {
+    "wnid": "n02450829",
+    "name": "fisher"
+  },
+  {
+    "wnid": "n02451125",
+    "name": "yellow-throated marten"
+  },
+  {
+    "wnid": "n02451415",
+    "name": "tayra"
+  },
+  {
+    "wnid": "n02454379",
+    "name": "armadillo"
+  },
+  {
+    "wnid": "n02454794",
+    "name": "peba"
+  },
+  {
+    "wnid": "n02455135",
+    "name": "apar"
+  },
+  {
+    "wnid": "n02455720",
+    "name": "peludo"
+  },
+  {
+    "wnid": "n02456008",
+    "name": "giant armadillo"
+  },
+  {
+    "wnid": "n02456275",
+    "name": "pichiciago"
+  },
+  {
+    "wnid": "n02460451",
+    "name": "ant bear"
+  },
+  {
+    "wnid": "n02460817",
+    "name": "silky anteater"
+  },
+  {
+    "wnid": "n02461128",
+    "name": "tamandua"
+  },
+  {
+    "wnid": "n02473307",
+    "name": "homo erectus"
+  },
+  {
+    "wnid": "n02473720",
+    "name": "java man"
+  },
+  {
+    "wnid": "n02473857",
+    "name": "peking man"
+  },
+  {
+    "wnid": "n02474777",
+    "name": "homo sapiens"
+  },
+  {
+    "wnid": "n02475358",
+    "name": "cro-magnon"
+  },
+  {
+    "wnid": "n02475669",
+    "name": "homo sapiens sapiens"
+  },
+  {
+    "wnid": "n02476219",
+    "name": "australopithecine"
+  },
+  {
+    "wnid": "n02476567",
+    "name": "australopithecus afarensis"
+  },
+  {
+    "wnid": "n02476870",
+    "name": "australopithecus africanus"
+  },
+  {
+    "wnid": "n02477187",
+    "name": "zinjanthropus"
+  },
+  {
+    "wnid": "n02477516",
+    "name": "paranthropus"
+  },
+  {
+    "wnid": "n02480495",
+    "name": "orangutan"
+  },
+  {
+    "wnid": "n02480855",
+    "name": "gorilla"
+  },
+  {
+    "wnid": "n02481103",
+    "name": "western lowland gorilla"
+  },
+  {
+    "wnid": "n02481500",
+    "name": "silverback"
+  },
+  {
+    "wnid": "n02484975",
+    "name": "guenon"
+  },
+  {
+    "wnid": "n02485371",
+    "name": "grivet"
+  },
+  {
+    "wnid": "n02485536",
+    "name": "vervet"
+  },
+  {
+    "wnid": "n02485688",
+    "name": "green monkey"
+  },
+  {
+    "wnid": "n02486261",
+    "name": "patas"
+  },
+  {
+    "wnid": "n02486410",
+    "name": "baboon"
+  },
+  {
+    "wnid": "n02486657",
+    "name": "chacma"
+  },
+  {
+    "wnid": "n02487347",
+    "name": "macaque"
+  },
+  {
+    "wnid": "n02487547",
+    "name": "rhesus"
+  },
+  {
+    "wnid": "n02487675",
+    "name": "bonnet macaque"
+  },
+  {
+    "wnid": "n02487847",
+    "name": "barbary ape"
+  },
+  {
+    "wnid": "n02488415",
+    "name": "entellus"
+  },
+  {
+    "wnid": "n02488702",
+    "name": "colobus"
+  },
+  {
+    "wnid": "n02488894",
+    "name": "guereza"
+  },
+  {
+    "wnid": "n02490597",
+    "name": "true marmoset"
+  },
+  {
+    "wnid": "n02490811",
+    "name": "pygmy marmoset"
+  },
+  {
+    "wnid": "n02491107",
+    "name": "tamarin"
+  },
+  {
+    "wnid": "n02491329",
+    "name": "silky tamarin"
+  },
+  {
+    "wnid": "n02499808",
+    "name": "galago"
+  },
+  {
+    "wnid": "n02500267",
+    "name": "indri"
+  },
+  {
+    "wnid": "n02508021",
+    "name": "raccoon"
+  },
+  {
+    "wnid": "n02508213",
+    "name": "common raccoon"
+  },
+  {
+    "wnid": "n02508742",
+    "name": "bassarisk"
+  },
+  {
+    "wnid": "n02509515",
+    "name": "coati"
+  },
+  {
+    "wnid": "n02509815",
+    "name": "lesser panda"
+  },
+  {
+    "wnid": "n02686121",
+    "name": "airbus"
+  },
+  {
+    "wnid": "n02690373",
+    "name": "airliner"
+  },
+  {
+    "wnid": "n02692086",
+    "name": "airplane propeller"
+  },
+  {
+    "wnid": "n02692877",
+    "name": "airship"
+  },
+  {
+    "wnid": "n02772700",
+    "name": "badminton racket"
+  },
+  {
+    "wnid": "n02782093",
+    "name": "balloon"
+  },
+  {
+    "wnid": "n02794972",
+    "name": "barrage balloon"
+  },
+  {
+    "wnid": "n02797295",
+    "name": "barrow"
+  },
+  {
+    "wnid": "n02799071",
+    "name": "baseball"
+  },
+  {
+    "wnid": "n02800213",
+    "name": "baseball glove"
+  },
+  {
+    "wnid": "n02802215",
+    "name": "basket"
+  },
+  {
+    "wnid": "n02802426",
+    "name": "basketball"
+  },
+  {
+    "wnid": "n02803666",
+    "name": "bass drum"
+  },
+  {
+    "wnid": "n02804252",
+    "name": "bass horn"
+  },
+  {
+    "wnid": "n02828299",
+    "name": "belt buckle"
+  },
+  {
+    "wnid": "n02842573",
+    "name": "biplane"
+  },
+  {
+    "wnid": "n02850950",
+    "name": "blimp"
+  },
+  {
+    "wnid": "n02867715",
+    "name": "bomber"
+  },
+  {
+    "wnid": "n02869737",
+    "name": "bongo"
+  },
+  {
+    "wnid": "n02871314",
+    "name": "bookmobile"
+  },
+  {
+    "wnid": "n02900987",
+    "name": "briefcase computer"
+  },
+  {
+    "wnid": "n02917377",
+    "name": "bullhorn"
+  },
+  {
+    "wnid": "n02928608",
+    "name": "button"
+  },
+  {
+    "wnid": "n02948072",
+    "name": "candle"
+  },
+  {
+    "wnid": "n02963692",
+    "name": "cardioid microphone"
+  },
+  {
+    "wnid": "n02981792",
+    "name": "catamaran"
+  },
+  {
+    "wnid": "n02982416",
+    "name": "catboat"
+  },
+  {
+    "wnid": "n02982599",
+    "name": "catch"
+  },
+  {
+    "wnid": "n02998563",
+    "name": "cesspool"
+  },
+  {
+    "wnid": "n03005515",
+    "name": "chandlery"
+  },
+  {
+    "wnid": "n03035510",
+    "name": "cistern"
+  },
+  {
+    "wnid": "n03057541",
+    "name": "coat button"
+  },
+  {
+    "wnid": "n03085602",
+    "name": "computer screen"
+  },
+  {
+    "wnid": "n03087816",
+    "name": "condenser microphone"
+  },
+  {
+    "wnid": "n03135030",
+    "name": "croquet mallet"
+  },
+  {
+    "wnid": "n03143572",
+    "name": "crystal microphone"
+  },
+  {
+    "wnid": "n03145522",
+    "name": "cue"
+  },
+  {
+    "wnid": "n03173929",
+    "name": "delivery truck"
+  },
+  {
+    "wnid": "n03180011",
+    "name": "desktop computer"
+  },
+  {
+    "wnid": "n03205143",
+    "name": "directional microphone"
+  },
+  {
+    "wnid": "n03215191",
+    "name": "dive bomber"
+  },
+  {
+    "wnid": "n03249569",
+    "name": "drum"
+  },
+  {
+    "wnid": "n03267113",
+    "name": "eight ball"
+  },
+  {
+    "wnid": "n03301568",
+    "name": "euphonium"
+  },
+  {
+    "wnid": "n03335030",
+    "name": "fighter"
+  },
+  {
+    "wnid": "n03365231",
+    "name": "floatplane"
+  },
+  {
+    "wnid": "n03373611",
+    "name": "flying boat"
+  },
+  {
+    "wnid": "n03394916",
+    "name": "french horn"
+  },
+  {
+    "wnid": "n03485407",
+    "name": "hand-held computer"
+  },
+  {
+    "wnid": "n03497352",
+    "name": "hasp"
+  },
+  {
+    "wnid": "n03512030",
+    "name": "helicon"
+  },
+  {
+    "wnid": "n03531982",
+    "name": "hood latch"
+  },
+  {
+    "wnid": "n03532919",
+    "name": "hook"
+  },
+  {
+    "wnid": "n03541923",
+    "name": "hot-air balloon"
+  },
+  {
+    "wnid": "n03577672",
+    "name": "interceptor"
+  },
+  {
+    "wnid": "n03595860",
+    "name": "jet"
+  },
+  {
+    "wnid": "n03604311",
+    "name": "jumbojet"
+  },
+  {
+    "wnid": "n03621694",
+    "name": "kite balloon"
+  },
+  {
+    "wnid": "n03644858",
+    "name": "latch"
+  },
+  {
+    "wnid": "n03715892",
+    "name": "mallet"
+  },
+  {
+    "wnid": "n03721384",
+    "name": "marimba"
+  },
+  {
+    "wnid": "n03752922",
+    "name": "meteorological balloon"
+  },
+  {
+    "wnid": "n03759954",
+    "name": "microphone"
+  },
+  {
+    "wnid": "n03764822",
+    "name": "milk float"
+  },
+  {
+    "wnid": "n03770679",
+    "name": "minivan"
+  },
+  {
+    "wnid": "n03782190",
+    "name": "monitor"
+  },
+  {
+    "wnid": "n03783873",
+    "name": "monoplane"
+  },
+  {
+    "wnid": "n03796401",
+    "name": "moving van"
+  },
+  {
+    "wnid": "n03809312",
+    "name": "narrowbody aircraft"
+  },
+  {
+    "wnid": "n03832673",
+    "name": "notebook"
+  },
+  {
+    "wnid": "n03868863",
+    "name": "oxygen mask"
+  },
+  {
+    "wnid": "n03884639",
+    "name": "pantechnicon"
+  },
+  {
+    "wnid": "n03896419",
+    "name": "passenger van"
+  },
+  {
+    "wnid": "n03956785",
+    "name": "planner"
+  },
+  {
+    "wnid": "n03978686",
+    "name": "polo mallet"
+  },
+  {
+    "wnid": "n03982232",
+    "name": "pool ball"
+  },
+  {
+    "wnid": "n03985232",
+    "name": "portable computer"
+  },
+  {
+    "wnid": "n04012084",
+    "name": "propeller plane"
+  },
+  {
+    "wnid": "n04012482",
+    "name": "propjet"
+  },
+  {
+    "wnid": "n04039381",
+    "name": "racket"
+  },
+  {
+    "wnid": "n04049303",
+    "name": "rain barrel"
+  },
+  {
+    "wnid": "n04121228",
+    "name": "rushlight"
+  },
+  {
+    "wnid": "n04128499",
+    "name": "sailboat"
+  },
+  {
+    "wnid": "n04152593",
+    "name": "screen"
+  },
+  {
+    "wnid": "n04154152",
+    "name": "screw"
+  },
+  {
+    "wnid": "n04160586",
+    "name": "seaplane"
+  },
+  {
+    "wnid": "n04222723",
+    "name": "single prop"
+  },
+  {
+    "wnid": "n04230487",
+    "name": "ski-plane"
+  },
+  {
+    "wnid": "n04254680",
+    "name": "soccer ball"
+  },
+  {
+    "wnid": "n04292414",
+    "name": "squash racket"
+  },
+  {
+    "wnid": "n04292572",
+    "name": "squawk box"
+  },
+  {
+    "wnid": "n04308273",
+    "name": "stealth bomber"
+  },
+  {
+    "wnid": "n04308397",
+    "name": "stealth fighter"
+  },
+  {
+    "wnid": "n04335886",
+    "name": "streetlight"
+  },
+  {
+    "wnid": "n04349401",
+    "name": "subwoofer"
+  },
+  {
+    "wnid": "n04387400",
+    "name": "tambourine"
+  },
+  {
+    "wnid": "n04390873",
+    "name": "tannoy"
+  },
+  {
+    "wnid": "n04409806",
+    "name": "tennis racket"
+  },
+  {
+    "wnid": "n04458843",
+    "name": "touch screen"
+  },
+  {
+    "wnid": "n04475411",
+    "name": "trapeze"
+  },
+  {
+    "wnid": "n04480527",
+    "name": "trial balloon"
+  },
+  {
+    "wnid": "n04483307",
+    "name": "trimaran"
+  },
+  {
+    "wnid": "n04520170",
+    "name": "van"
+  },
+  {
+    "wnid": "n04521571",
+    "name": "variable-pitch propeller"
+  },
+  {
+    "wnid": "n04534895",
+    "name": "vigil light"
+  },
+  {
+    "wnid": "n04583620",
+    "name": "widebody aircraft"
+  },
+  {
+    "wnid": "n04599124",
+    "name": "woofer"
+  },
+  {
+    "wnid": "n06277135",
+    "name": "radio"
+  },
+  {
+    "wnid": "n06278338",
+    "name": "cable television"
+  },
+  {
+    "wnid": "n06278475",
+    "name": "high-definition television"
+  }
+]
