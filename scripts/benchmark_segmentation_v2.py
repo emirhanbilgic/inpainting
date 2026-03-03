@@ -76,7 +76,7 @@ IMAGENET_CLASS_INDEX_URL = (
 
 try:
     from daam_segmentation import DAAMSegmenter
-except ImportError as e:
+except Exception as e:
     print(f"Warning: Failed to import DAAMSegmenter. Error: {e}")
     DAAMSegmenter = None
 
@@ -89,8 +89,16 @@ try:
     from daam.hook import UNetCrossAttentionLocator
     from daam.heatmap import RawHeatMapCollection
     from daam.utils import auto_autocast
-except ImportError:
+except Exception:
     print("Warning: Failed to import DAAM/Diffusers dependencies.")
+    StableDiffusionPipeline = None
+    Attention = None
+    daam_trace = None
+    DiffusionHeatMapHooker = None
+    UNetCrossAttentionHooker = None
+    UNetCrossAttentionLocator = None
+    RawHeatMapCollection = None
+    auto_autocast = None
 
 
 

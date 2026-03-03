@@ -24,8 +24,8 @@ warnings.filterwarnings("ignore", category=FutureWarning, message=".*torch.cuda.
 try:
     from diffusers import StableDiffusionPipeline
     from daam import trace
-except ImportError as e:
-    print(f"Warning: diffusers or daam not installed. DAAMSegmenter will fail if initialized. Error: {e}")
+except Exception as e:
+    print(f"Warning: diffusers or daam not available. DAAMSegmenter will fail if initialized. Error: {e}")
     StableDiffusionPipeline = None
     trace = None
 

@@ -107,7 +107,7 @@ from sparse_encoding import (
 # Import DAAM segmenter
 try:
     from daam_segmentation import DAAMSegmenter
-except ImportError:
+except Exception:
     DAAMSegmenter = None
 
 # DAAM/Diffusers imports for true key-space OMP
@@ -117,8 +117,12 @@ try:
     from daam.hook import UNetCrossAttentionLocator
     from daam.heatmap import RawHeatMapCollection
     from daam.utils import auto_autocast
-except ImportError:
+except Exception:
     StableDiffusionPipeline = None
+    Attention = None
+    UNetCrossAttentionLocator = None
+    RawHeatMapCollection = None
+    auto_autocast = None
 
 
 # ==============================================================================
