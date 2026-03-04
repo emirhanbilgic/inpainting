@@ -53,9 +53,63 @@ import open_clip
 from sparse_encoding import omp_sparse_residual
 
 
+from sklearn.metrics import average_precision_score, roc_auc_score
+
 # ==============================================================================
 # Metric Functions (from benchmark_segmentation_v2.py)
 # ==============================================================================
+
+def batch_pix_accuracy(predict, target):
+    """
+    Batch Pixel Accuracy (reference implementation)
+    
+    Args:
+        predict: input 3D tensor [C, H, W] with class probabilities
+        target: label 2D tensor [H, W] with class indices
+    
+    Returns:
+        pixel_correct, pixel_labeled
+    """
+    _, predict = torch.max(predict, 0)
+    predict = predict.cpu().numpy() + 1
+    target = target.cpu().numpy() + 1
+    
+    pixel_labeled = np.sum(target > 0)
+    pixel_correct = np.sum((predict == target) * (target > 0))
+    
+    return pixel_correct, pixel_labeled
+
+
+def get_ap_scores(predict, target, ignore_index=-1):
+    """
+    Compute Average Precision (reference implementation)
+    
+    Args:
+        predict: Prediction tensor [C, H, W]
+        target: Target tensor [H, W]
+    
+    Returns:
+        List of AP scores
+    """
+    total = []
+    target_expand = target.unsqueeze(0).expand_as(predict)
+    target_expand_numpy = target_expand.data.cpu().numpy().reshape(-1)
+    
+    # One-hot encoding
+    x = torch.zeros_like(target_expand)
+    t = target.unsqueeze(0).clamp(min=0).long()
+    target_1hot = x.scatter_(0, t, 1)
+    
+    predict_flat = predict.data.cpu().numpy().reshape(-1)
+    target_flat = target_1hot.data.cpu().numpy().reshape(-1)
+    
+    p = predict_flat[target_expand_numpy != ignore_index]
+    t_filtered = target_flat[target_expand_numpy != ignore_index]
+    
+    ap = np.nan_to_num(average_precision_score(t_filtered, p))
+    total.append(ap)
+    
+    return total
 
 def batch_intersection_union(predict, target, nclass=2):
     """
@@ -95,9 +149,15 @@ def compute_miou(heatmap_norm, gt_tensor, threshold):
     output = torch.stack([Res_0, Res_1], dim=0)
     
     inter, union = batch_intersection_union(output, gt_tensor, nclass=2)
+    pixel_correct, pixel_labeled = batch_pix_accuracy(output, gt_tensor)
+    
+    output_AP = torch.stack([1.0 - heatmap_norm, heatmap_norm], dim=0)
+    ap = get_ap_scores(output_AP, gt_tensor)
+    ap_val = ap[0] if ap else 0.0
+    
     iou = inter.astype(np.float64) / (union.astype(np.float64) + 1e-10)
     miou = iou.mean()
-    return miou, iou
+    return miou, iou, pixel_correct, pixel_labeled, ap_val
 
 
 # ==============================================================================
@@ -175,61 +235,42 @@ def build_omp_embedding_llm(
     return sparse_1x
 
 
-def build_confusion_dictionary(all_text_embs, all_wnids, dict_top_k=40):
-    """
-    Build a class-conditional negative mining dictionary from CLIP cosine similarity.
-    
-    For each class, find the top-K most similar OTHER classes in CLIP embedding space.
-    These are the classes CLIP is most likely to confuse with the target.
-    
-    Args:
-        all_text_embs: [N, embed_dim] tensor of all class text embeddings
-        all_wnids: list of N wnids
-        dict_top_k: number of top confusers per class
-    
-    Returns:
-        confusion_dict: dict mapping class_idx -> tensor of confuser embeddings [K, embed_dim]
-    """
-    with torch.no_grad():
-        # Cosine similarity matrix [N, N]
-        sim_matrix = all_text_embs @ all_text_embs.t()
-        # Zero out self-similarity
-        sim_matrix.fill_diagonal_(-1.0)
-    
-    confusion_dict = {}
-    for i in range(len(all_wnids)):
-        # Get top-K most similar (most confused) classes
-        top_k = min(dict_top_k, len(all_wnids) - 1)
-        _, top_indices = torch.topk(sim_matrix[i], k=top_k)
-        # Store the embeddings of the confusers
-        confusion_dict[i] = all_text_embs[top_indices]  # [K, embed_dim]
-    
-    return confusion_dict
-
-
-def build_omp_embedding_clip_confusion(
+def build_omp_embedding_from_predictions(
     predicted_idx,
     target_text_emb_1x,
-    confusion_dict,
+    similarities,
+    all_text_embs,
+    dict_top_k=40,
     atoms=30,
     max_dict_cos_sim=0.65,
 ):
     """
-    Build OMP sparse residual using class-conditional negative mining dictionary.
+    Build OMP sparse residual using per-image CLIP top-K predictions as dictionary.
     
-    Uses the top-K most confused classes (from CLIP's own similarity matrix) as
-    OMP dictionary atoms. This removes the specific competitors CLIP confuses
-    with the predicted class.
+    For each image, CLIP predicts similarity scores for all 445 classes.
+    We take the top-K runner-up predictions (excluding #1) and use their
+    text embeddings as OMP dictionary atoms.
     
-    For correctly classified images: sharpens the right signal by removing
-    similar-but-different class components.
-    For incorrectly classified images: may remove the very signal causing
-    the misclassification, potentially degrading the heatmap.
+    This is maximally targeted: the dictionary is exactly what CLIP thinks
+    THIS specific image could be (its confusers for this particular image).
+    
+    For correctly classified images: removes the specific competing signals
+    that CLIP sees in this image, sharpening the correct prediction.
+    For incorrectly classified images: the runner-ups may include the GT class,
+    and removing them may degrade the heatmap further.
     """
-    D = confusion_dict.get(predicted_idx)
-    if D is None or D.shape[0] == 0:
+    # Get top-(K+1) predictions, skip the #1 (which is the predicted class)
+    top_k_total = min(dict_top_k + 1, len(similarities))
+    _, top_indices = torch.topk(similarities, k=top_k_total)
+    
+    # Exclude the predicted class itself (index 0 in sorted top-k)
+    confuser_indices = [i.item() for i in top_indices if i.item() != predicted_idx]
+    confuser_indices = confuser_indices[:dict_top_k]  # limit to dict_top_k
+    
+    if len(confuser_indices) == 0:
         return F.normalize(target_text_emb_1x, dim=-1)
     
+    D = all_text_embs[confuser_indices]  # [K, embed_dim]
     D = F.normalize(D, dim=-1)
     
     # Filter by cosine similarity
@@ -355,7 +396,6 @@ def main():
     # 4. Build OMP Dictionary
     # ------------------------------------------------------------------
     llm_dictionary = None
-    confusion_dict = None
     
     if args.dict_mode == 'llm':
         print(f"Loading LLM visual concept dictionary from {args.dictionary_file}...")
@@ -363,22 +403,7 @@ def main():
             llm_dictionary = json.load(jf)
         print(f"  Loaded dictionary with {len(llm_dictionary)} classes")
     elif args.dict_mode == 'clip_confusion':
-        print(f"Building class-conditional confusion dictionary (top-{args.dict_top_k} confusers per class)...")
-        confusion_dict = build_confusion_dictionary(all_text_embs, all_wnids, dict_top_k=args.dict_top_k)
-        print(f"  Built confusion dictionary for {len(confusion_dict)} classes")
-        
-        # Print a few examples
-        for show_idx in [0, len(all_wnids)//2, len(all_wnids)-1]:
-            show_wnid = all_wnids[show_idx]
-            show_name = wnid_to_name[show_wnid]
-            # Find top-3 confusers for display
-            with torch.no_grad():
-                sim_row = (all_text_embs[show_idx:show_idx+1] @ all_text_embs.t()).squeeze(0)
-                sim_row[show_idx] = -1.0
-                top3 = torch.topk(sim_row, k=3)
-            confuser_names = [wnid_to_name[all_wnids[i]] for i in top3.indices.tolist()]
-            confuser_sims = [f"{s:.3f}" for s in top3.values.tolist()]
-            print(f"    {show_name}: confused with {confuser_names} (sim={confuser_sims})")
+        print(f"Using per-image CLIP prediction dictionary (top-{args.dict_top_k} runner-ups per image)")
     
     # ------------------------------------------------------------------
     # 5. Open Dataset
@@ -441,6 +466,44 @@ def main():
     correct_signed_unions = np.zeros(2)
     incorrect_signed_inters = np.zeros(2)
     incorrect_signed_unions = np.zeros(2)
+    
+    # Pix Acc, AP accumulators
+    correct_vanilla_pixel_correct = 0; correct_vanilla_pixel_labeled = 0
+    incorrect_vanilla_pixel_correct = 0; incorrect_vanilla_pixel_labeled = 0
+    
+    correct_omp_pixel_correct = 0; correct_omp_pixel_labeled = 0
+    incorrect_omp_pixel_correct = 0; incorrect_omp_pixel_labeled = 0
+    
+    correct_diff_pixel_correct = 0; correct_diff_pixel_labeled = 0
+    incorrect_diff_pixel_correct = 0; incorrect_diff_pixel_labeled = 0
+    
+    correct_signed_pixel_correct = 0; correct_signed_pixel_labeled = 0
+    incorrect_signed_pixel_correct = 0; incorrect_signed_pixel_labeled = 0
+    
+    correct_vanilla_aps = []
+    incorrect_vanilla_aps = []
+    
+    correct_omp_aps = []
+    incorrect_omp_aps = []
+    
+    correct_diff_aps = []
+    incorrect_diff_aps = []
+    
+    correct_signed_aps = []
+    incorrect_signed_aps = []
+    
+    # AUROC
+    correct_vanilla_aurocs = []
+    incorrect_vanilla_aurocs = []
+    
+    correct_omp_aurocs = []
+    incorrect_omp_aurocs = []
+    
+    correct_diff_aurocs = []
+    incorrect_diff_aurocs = []
+    
+    correct_signed_aurocs = []
+    incorrect_signed_aurocs = []
     
     for idx in tqdm(range(limit), desc="Processing"):
         try:
@@ -511,10 +574,12 @@ def main():
             
             # --- LeGrad + OMP ---
             if args.dict_mode == 'clip_confusion':
-                omp_emb = build_omp_embedding_clip_confusion(
+                omp_emb = build_omp_embedding_from_predictions(
                     predicted_idx=predicted_idx,
                     target_text_emb_1x=pred_text_emb,
-                    confusion_dict=confusion_dict,
+                    similarities=similarities,
+                    all_text_embs=all_text_embs,
+                    dict_top_k=args.dict_top_k,
                     atoms=args.atoms,
                     max_dict_cos_sim=args.max_dict_cos_sim,
                 )
@@ -554,17 +619,27 @@ def main():
             diff_signed_norm = (diff_raw + 1.0) / 2.0
             diff_signed_norm = diff_signed_norm.clamp(0, 1)
             
-            # --- Compute mIoU for ReLU difference ---
-            diff_miou, diff_iou = compute_miou(diff_relu_norm, gt_tensor, args.sparse_threshold)
+            # --- Compute mIoU, AP, Acc for ReLU difference ---
+            diff_miou, diff_iou, diff_pix_c, diff_pix_l, diff_ap = compute_miou(diff_relu_norm, gt_tensor, args.sparse_threshold)
             
-            # --- Compute mIoU for signed difference ---
+            # --- Compute mIoU, AP, Acc for signed difference ---
             # For signed: threshold at 0.5 + threshold/2 means "positive change above threshold"
             signed_thr = 0.5 + args.sparse_threshold / 2.0
-            signed_miou, signed_iou = compute_miou(diff_signed_norm, gt_tensor, signed_thr)
+            signed_miou, signed_iou, signed_pix_c, signed_pix_l, signed_ap = compute_miou(diff_signed_norm, gt_tensor, signed_thr)
             
-            # --- Also compute mIoU for vanilla and OMP individually ---
-            vanilla_miou, vanilla_iou = compute_miou(heatmap_vanilla_resized, gt_tensor, args.sparse_threshold)
-            omp_miou, omp_iou = compute_miou(heatmap_omp_resized, gt_tensor, args.sparse_threshold)
+            # --- Also compute mIoU, AP, Acc for vanilla and OMP individually ---
+            vanilla_miou, vanilla_iou, v_pix_c, v_pix_l, v_ap = compute_miou(heatmap_vanilla_resized, gt_tensor, args.sparse_threshold)
+            omp_miou, omp_iou, o_pix_c, o_pix_l, o_ap = compute_miou(heatmap_omp_resized, gt_tensor, args.sparse_threshold)
+            
+            # --- Compute AUROC ---
+            gt_binary = (gt_mask > 0).astype(int).flatten()
+            if len(np.unique(gt_binary)) > 1:
+                v_auroc = roc_auc_score(gt_binary, heatmap_vanilla_resized.numpy().flatten())
+                o_auroc = roc_auc_score(gt_binary, heatmap_omp_resized.numpy().flatten())
+                diff_auroc = roc_auc_score(gt_binary, diff_relu_norm.numpy().flatten())
+                signed_auroc = roc_auc_score(gt_binary, diff_signed_norm.numpy().flatten())
+            else:
+                v_auroc = np.nan; o_auroc = np.nan; diff_auroc = np.nan; signed_auroc = np.nan
             
             # --- Compute IoU accumulators ---
             vanilla_output = torch.stack([
@@ -589,6 +664,11 @@ def main():
             d_inter, d_union = batch_intersection_union(diff_output, gt_tensor, nclass=2)
             s_inter, s_union = batch_intersection_union(signed_output, gt_tensor, nclass=2)
             
+            # --- Focus Change Drop: avg(vanilla, OMP) mIoU - signed diff mIoU ---
+            avg_miou = (float(vanilla_miou) + float(omp_miou)) / 2.0
+            focus_drop = avg_miou - float(signed_miou)
+            omp_drop = float(omp_miou) - float(signed_miou)
+            
             # --- Store result ---
             result = {
                 'idx': idx,
@@ -602,12 +682,18 @@ def main():
                 'omp_miou': float(omp_miou),
                 'diff_miou': float(diff_miou),
                 'signed_diff_miou': float(signed_miou),
+                'focus_drop': float(focus_drop),
+                'omp_drop': float(omp_drop),
+                'avg_miou': float(avg_miou),
                 'diff_heatmap_max': float(diff_relu.max().item()),
                 'diff_heatmap_mean': float(diff_relu.mean().item()),
                 'signed_diff_max': float(diff_raw.max().item()),
                 'signed_diff_min': float(diff_raw.min().item()),
                 'signed_diff_mean': float(diff_raw.mean().item()),
             }
+            
+            # --- Average heatmap for visualization ---
+            avg_heatmap = (heatmap_vanilla_resized.numpy() + heatmap_omp_resized.numpy()) / 2.0
             
             # --- Collect visualization data ---
             vis_data = {
@@ -616,6 +702,7 @@ def main():
                 'gt_mask': gt_mask,
                 'heatmap_vanilla': heatmap_vanilla_resized.numpy(),
                 'heatmap_omp': heatmap_omp_resized.numpy(),
+                'heatmap_avg': avg_heatmap,
                 'diff_relu': diff_relu.numpy(),
                 'diff_relu_norm': diff_relu_norm.numpy(),
                 'diff_signed': diff_raw.numpy(),
@@ -625,8 +712,11 @@ def main():
                 'predicted_conf': predicted_conf,
                 'vanilla_miou': float(vanilla_miou),
                 'omp_miou': float(omp_miou),
+                'avg_miou': float(avg_miou),
                 'diff_miou': float(diff_miou),
                 'signed_diff_miou': float(signed_miou),
+                'focus_drop': float(focus_drop),
+                'omp_drop': float(omp_drop),
             }
             
             if is_correct:
@@ -640,6 +730,26 @@ def main():
                 correct_omp_unions += o_union
                 correct_signed_inters += s_inter
                 correct_signed_unions += s_union
+                
+                correct_vanilla_pixel_correct += v_pix_c
+                correct_vanilla_pixel_labeled += v_pix_l
+                correct_omp_pixel_correct += o_pix_c
+                correct_omp_pixel_labeled += o_pix_l
+                correct_diff_pixel_correct += diff_pix_c
+                correct_diff_pixel_labeled += diff_pix_l
+                correct_signed_pixel_correct += signed_pix_c
+                correct_signed_pixel_labeled += signed_pix_l
+                
+                correct_vanilla_aps.append(v_ap)
+                correct_omp_aps.append(o_ap)
+                correct_diff_aps.append(diff_ap)
+                correct_signed_aps.append(signed_ap)
+                
+                if not np.isnan(v_auroc): correct_vanilla_aurocs.append(v_auroc)
+                if not np.isnan(o_auroc): correct_omp_aurocs.append(o_auroc)
+                if not np.isnan(diff_auroc): correct_diff_aurocs.append(diff_auroc)
+                if not np.isnan(signed_auroc): correct_signed_aurocs.append(signed_auroc)
+                
                 if len(vis_correct) < args.vis_examples:
                     vis_correct.append(vis_data)
             else:
@@ -653,6 +763,26 @@ def main():
                 incorrect_omp_unions += o_union
                 incorrect_signed_inters += s_inter
                 incorrect_signed_unions += s_union
+                
+                incorrect_vanilla_pixel_correct += v_pix_c
+                incorrect_vanilla_pixel_labeled += v_pix_l
+                incorrect_omp_pixel_correct += o_pix_c
+                incorrect_omp_pixel_labeled += o_pix_l
+                incorrect_diff_pixel_correct += diff_pix_c
+                incorrect_diff_pixel_labeled += diff_pix_l
+                incorrect_signed_pixel_correct += signed_pix_c
+                incorrect_signed_pixel_labeled += signed_pix_l
+                
+                incorrect_vanilla_aps.append(v_ap)
+                incorrect_omp_aps.append(o_ap)
+                incorrect_diff_aps.append(diff_ap)
+                incorrect_signed_aps.append(signed_ap)
+                
+                if not np.isnan(v_auroc): incorrect_vanilla_aurocs.append(v_auroc)
+                if not np.isnan(o_auroc): incorrect_omp_aurocs.append(o_auroc)
+                if not np.isnan(diff_auroc): incorrect_diff_aurocs.append(diff_auroc)
+                if not np.isnan(signed_auroc): incorrect_signed_aurocs.append(signed_auroc)
+                
                 if len(vis_incorrect) < args.vis_examples:
                     vis_incorrect.append(vis_data)
             
@@ -681,30 +811,83 @@ def main():
         iou = inter.astype(np.float64) / (union.astype(np.float64) + 1e-10)
         return 100.0 * iou.mean()
     
+    def global_acc(correct, labeled):
+        return 100.0 * (correct / (labeled + 1e-10))
+    
+    def mean_met(arr):
+        return 100.0 * np.mean(arr) if len(arr) > 0 else 0.0
+    
     print(f"\n{'Metric':<25} {'Correct':>12} {'Incorrect':>12} {'Gap':>10}")
     print("-" * 60)
     
+    # Vanilla
     corr_v = global_miou(correct_vanilla_inters, correct_vanilla_unions)
     incorr_v = global_miou(incorrect_vanilla_inters, incorrect_vanilla_unions)
     print(f"{'LeGrad vanilla mIoU':<25} {corr_v:>11.2f}% {incorr_v:>11.2f}% {corr_v-incorr_v:>9.2f}")
     
+    corr_v_acc = global_acc(correct_vanilla_pixel_correct, correct_vanilla_pixel_labeled)
+    incorr_v_acc = global_acc(incorrect_vanilla_pixel_correct, incorrect_vanilla_pixel_labeled)
+    print(f"{'LeGrad vanilla Acc':<25} {corr_v_acc:>11.2f}% {incorr_v_acc:>11.2f}% {corr_v_acc-incorr_v_acc:>9.2f}")
+    
+    corr_v_ap = mean_met(correct_vanilla_aps)
+    incorr_v_ap = mean_met(incorrect_vanilla_aps)
+    print(f"{'LeGrad vanilla mAP':<25} {corr_v_ap:>11.2f}% {incorr_v_ap:>11.2f}% {corr_v_ap-incorr_v_ap:>9.2f}")
+    
+    corr_v_auroc = mean_met(correct_vanilla_aurocs)
+    incorr_v_auroc = mean_met(incorrect_vanilla_aurocs)
+    print(f"{'LeGrad vanilla AUROC':<25} {corr_v_auroc:>11.2f}% {incorr_v_auroc:>11.2f}% {corr_v_auroc-incorr_v_auroc:>9.2f}")
+    print()
+    
+    # OMP
     corr_o = global_miou(correct_omp_inters, correct_omp_unions)
     incorr_o = global_miou(incorrect_omp_inters, incorrect_omp_unions)
     print(f"{'LeGrad+OMP mIoU':<25} {corr_o:>11.2f}% {incorr_o:>11.2f}% {corr_o-incorr_o:>9.2f}")
     
+    corr_o_acc = global_acc(correct_omp_pixel_correct, correct_omp_pixel_labeled)
+    incorr_o_acc = global_acc(incorrect_omp_pixel_correct, incorrect_omp_pixel_labeled)
+    print(f"{'LeGrad+OMP Acc':<25} {corr_o_acc:>11.2f}% {incorr_o_acc:>11.2f}% {corr_o_acc-incorr_o_acc:>9.2f}")
+    
+    corr_o_ap = mean_met(correct_omp_aps)
+    incorr_o_ap = mean_met(incorrect_omp_aps)
+    print(f"{'LeGrad+OMP mAP':<25} {corr_o_ap:>11.2f}% {incorr_o_ap:>11.2f}% {corr_o_ap-incorr_o_ap:>9.2f}")
+    
+    corr_o_auroc = mean_met(correct_omp_aurocs)
+    incorr_o_auroc = mean_met(incorrect_omp_aurocs)
+    print(f"{'LeGrad+OMP AUROC':<25} {corr_o_auroc:>11.2f}% {incorr_o_auroc:>11.2f}% {corr_o_auroc-incorr_o_auroc:>9.2f}")
+    print()
+    
+    # ReLU Diff
     corr_d = global_miou(correct_diff_inters, correct_diff_unions)
     incorr_d = global_miou(incorrect_diff_inters, incorrect_diff_unions)
     print(f"{'ReLU Diff mIoU':<25} {corr_d:>11.2f}% {incorr_d:>11.2f}% {corr_d-incorr_d:>9.2f}")
     
+    # Signed Diff
     corr_s = global_miou(correct_signed_inters, correct_signed_unions)
     incorr_s = global_miou(incorrect_signed_inters, incorrect_signed_unions)
     print(f"{'Signed Diff mIoU':<25} {corr_s:>11.2f}% {incorr_s:>11.2f}% {corr_s-incorr_s:>9.2f}")
+    print("-" * 60)
     
     # Per-image mean mIoU
     correct_diff_mious = [r['diff_miou'] for r in results['correct']]
     incorrect_diff_mious = [r['diff_miou'] for r in results['incorrect']]
     correct_signed_mious = [r['signed_diff_miou'] for r in results['correct']]
     incorrect_signed_mious = [r['signed_diff_miou'] for r in results['incorrect']]
+    correct_focus_drops = [r['focus_drop'] for r in results['correct']]
+    incorrect_focus_drops = [r['focus_drop'] for r in results['incorrect']]
+    correct_omp_drops = [r['omp_drop'] for r in results['correct']]
+    incorrect_omp_drops = [r['omp_drop'] for r in results['incorrect']]
+    
+    # Focus Change Drop = avg(vanilla, OMP) mIoU - signed diff mIoU
+    corr_avg = (corr_v + corr_o) / 2.0
+    incorr_avg = (incorr_v + incorr_o) / 2.0
+    corr_drop = corr_avg - corr_s
+    incorr_drop = incorr_avg - incorr_s
+    print(f"{'Focus Change Drop':<25} {corr_drop:>11.2f}  {incorr_drop:>11.2f}  {corr_drop-incorr_drop:>9.2f}")
+    
+    # OMP Drop = OMP mIoU - signed diff mIoU
+    corr_omp_drop = corr_o - corr_s
+    incorr_omp_drop = incorr_o - incorr_s
+    print(f"{'OMP Drop':<25} {corr_omp_drop:>11.2f}  {incorr_omp_drop:>11.2f}  {corr_omp_drop-incorr_omp_drop:>9.2f}")
     
     if correct_diff_mious:
         print(f"\n  Correct   ReLU diff mIoU  (per-image): {100*np.mean(correct_diff_mious):.2f}% ± {100*np.std(correct_diff_mious):.2f}%")
@@ -714,11 +897,19 @@ def main():
         print(f"  Correct   signed diff mIoU(per-image): {100*np.mean(correct_signed_mious):.2f}% ± {100*np.std(correct_signed_mious):.2f}%")
     if incorrect_signed_mious:
         print(f"  Incorrect signed diff mIoU(per-image): {100*np.mean(incorrect_signed_mious):.2f}% ± {100*np.std(incorrect_signed_mious):.2f}%")
+    if correct_focus_drops:
+        print(f"  Correct   focus drop      (per-image): {100*np.mean(correct_focus_drops):.2f}% ± {100*np.std(correct_focus_drops):.2f}%")
+    if incorrect_focus_drops:
+        print(f"  Incorrect focus drop      (per-image): {100*np.mean(incorrect_focus_drops):.2f}% ± {100*np.std(incorrect_focus_drops):.2f}%")
+    if correct_omp_drops:
+        print(f"  Correct   OMP drop        (per-image): {100*np.mean(correct_omp_drops):.2f}% ± {100*np.std(correct_omp_drops):.2f}%")
+    if incorrect_omp_drops:
+        print(f"  Incorrect OMP drop        (per-image): {100*np.mean(incorrect_omp_drops):.2f}% ± {100*np.std(incorrect_omp_drops):.2f}%")
     
     # ------------------------------------------------------------------
     # 8. Plot Histograms
     # ------------------------------------------------------------------
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
     
     # Histogram 1: Vanilla LeGrad mIoU
     correct_vanilla_mious = [r['vanilla_miou'] for r in results['correct']]
@@ -751,7 +942,7 @@ def main():
     ax.grid(alpha=0.3)
     
     # Histogram 3: ReLU Difference mIoU
-    ax = axes[1, 0]
+    ax = axes[0, 2]
     if correct_diff_mious:
         ax.hist(correct_diff_mious, bins=30, alpha=0.6, color='#2196F3', label=f'Correct (n={len(correct_diff_mious)})', edgecolor='white', linewidth=0.5)
     if incorrect_diff_mious:
@@ -763,7 +954,7 @@ def main():
     ax.grid(alpha=0.3)
     
     # Histogram 4: Signed Difference mIoU
-    ax = axes[1, 1]
+    ax = axes[1, 0]
     if correct_signed_mious:
         ax.hist(correct_signed_mious, bins=30, alpha=0.6, color='#2196F3', label=f'Correct (n={len(correct_signed_mious)})', edgecolor='white', linewidth=0.5)
     if incorrect_signed_mious:
@@ -773,6 +964,34 @@ def main():
     ax.set_title('Signed (OMP − Vanilla) vs GT', fontsize=12, fontweight='bold')
     ax.legend(fontsize=9)
     ax.grid(alpha=0.3)
+    
+    # Histogram 5: Focus Change Drop
+    ax = axes[1, 1]
+    if correct_omp_drops:
+        ax.hist(correct_omp_drops, bins=30, alpha=0.6, color='#2196F3', label=f'Correct (μ={100*np.mean(correct_omp_drops):.1f}%)', edgecolor='white', linewidth=0.5)
+    if incorrect_omp_drops:
+        ax.hist(incorrect_omp_drops, bins=30, alpha=0.6, color='#F44336', label=f'Incorrect (μ={100*np.mean(incorrect_omp_drops):.1f}%)', edgecolor='white', linewidth=0.5)
+    ax.set_xlabel('OMP Drop (OMP mIoU − signed diff mIoU)', fontsize=10)
+    ax.set_ylabel('Count', fontsize=11)
+    ax.set_title('OMP Drop', fontsize=12, fontweight='bold')
+    ax.legend(fontsize=9)
+    ax.grid(alpha=0.3)
+    
+    # Panel 6: summary text
+    ax = axes[1, 2]
+    ax.axis('off')
+    summary_text = (
+        f"Classification (top-{args.top_k}):\n"
+        f"  Correct:   {num_correct}/{total} ({100*num_correct/max(total,1):.1f}%)\n"
+        f"  Incorrect: {num_incorrect}/{total} ({100*num_incorrect/max(total,1):.1f}%)\n\n"
+        f"OMP Drop (OMP mIoU - signed diff):\n"
+        f"  Correct:   {100*np.mean(correct_omp_drops):.1f}% ± {100*np.std(correct_omp_drops):.1f}%\n"
+        f"  Incorrect: {100*np.mean(incorrect_omp_drops):.1f}% ± {100*np.std(incorrect_omp_drops):.1f}%\n"
+        f"  Gap: {100*(np.mean(correct_omp_drops)-np.mean(incorrect_omp_drops)):+.1f}%"
+    )
+    ax.text(0.1, 0.5, summary_text, transform=ax.transAxes,
+           fontsize=11, va='center', fontfamily='monospace',
+           bbox=dict(boxstyle='round,pad=0.5', facecolor='lightyellow', alpha=0.8))
     
     plt.suptitle(
         f'Classification-Aware Segmentation Analysis (top-{args.top_k}, threshold={args.sparse_threshold})',
@@ -826,16 +1045,16 @@ def main():
             return
         
         n = len(vis_list)
-        ncols = 7  # Original, GT, Vanilla, OMP, ReLU Diff, Signed Diff, Diff Binary
-        fig, axes = plt.subplots(n, ncols, figsize=(ncols * 2.8, n * 2.8))
+        ncols = 8  # Original, GT, Vanilla, OMP, Avg, ReLU Diff, Signed Diff, Diff Binary
+        fig, axes = plt.subplots(n, ncols, figsize=(ncols * 2.5, n * 2.5))
         if n == 1:
             axes = axes[np.newaxis, :]  # ensure 2D
         
         # Column headers
-        col_titles = ['Original', 'GT Mask', 'LeGrad', 'LeGrad+OMP', 
-                       'ReLU(Δ)', 'Signed(Δ)', 'Δ Binary']
+        col_titles = ['Original', 'GT Mask', 'LeGrad', 'LeGrad+OMP',
+                       'Avg(V,O)', 'Signed(Δ)', 'ReLU(Δ)', 'Δ Binary']
         for j, title in enumerate(col_titles):
-            axes[0, j].set_title(title, fontsize=10, fontweight='bold', pad=8)
+            axes[0, j].set_title(title, fontsize=9, fontweight='bold', pad=8)
         
         for i, vd in enumerate(vis_list):
             # Col 0: Original image
@@ -843,9 +1062,9 @@ def main():
             label = f"GT: {vd['gt_class']}"
             if vd['predicted_class'] != vd['gt_class']:
                 label += f"\nPred: {vd['predicted_class']}"
-            axes[i, 0].set_ylabel(f"#{vd['idx']}", fontsize=9, rotation=0, labelpad=30, va='center')
+            axes[i, 0].set_ylabel(f"#{vd['idx']}", fontsize=8, rotation=0, labelpad=25, va='center')
             axes[i, 0].text(0.02, 0.98, label, transform=axes[i, 0].transAxes,
-                           fontsize=6, va='top', ha='left',
+                           fontsize=5, va='top', ha='left',
                            bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.8))
             
             # Col 1: GT mask
@@ -854,30 +1073,37 @@ def main():
             # Col 2: Vanilla heatmap
             axes[i, 2].imshow(vd['heatmap_vanilla'], cmap='jet', vmin=0, vmax=1)
             axes[i, 2].text(0.02, 0.02, f"{100*vd['vanilla_miou']:.1f}%",
-                           transform=axes[i, 2].transAxes, fontsize=7, va='bottom',
+                           transform=axes[i, 2].transAxes, fontsize=6, va='bottom',
                            bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.8))
             
             # Col 3: OMP heatmap
             axes[i, 3].imshow(vd['heatmap_omp'], cmap='jet', vmin=0, vmax=1)
             axes[i, 3].text(0.02, 0.02, f"{100*vd['omp_miou']:.1f}%",
-                           transform=axes[i, 3].transAxes, fontsize=7, va='bottom',
+                           transform=axes[i, 3].transAxes, fontsize=6, va='bottom',
                            bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.8))
             
-            # Col 4: ReLU difference heatmap
-            axes[i, 4].imshow(vd['diff_relu_norm'], cmap='hot', vmin=0, vmax=1)
-            axes[i, 4].text(0.02, 0.02, f"{100*vd['diff_miou']:.1f}%",
-                           transform=axes[i, 4].transAxes, fontsize=7, va='bottom',
+            # Col 4: Average heatmap (vanilla + OMP) / 2
+            axes[i, 4].imshow(vd['heatmap_avg'], cmap='jet', vmin=0, vmax=1)
+            axes[i, 4].text(0.02, 0.02, f"{100*vd['avg_miou']:.1f}%",
+                           transform=axes[i, 4].transAxes, fontsize=6, va='bottom',
                            bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.8))
             
             # Col 5: Signed difference (diverging colormap: blue=negative, red=positive)
             axes[i, 5].imshow(vd['diff_signed'], cmap='RdBu_r', vmin=-1, vmax=1)
-            axes[i, 5].text(0.02, 0.02, f"{100*vd['signed_diff_miou']:.1f}%",
-                           transform=axes[i, 5].transAxes, fontsize=7, va='bottom',
+            drop_val = vd['omp_drop']
+            axes[i, 5].text(0.02, 0.02, f"drop:{100*drop_val:.0f}%",
+                           transform=axes[i, 5].transAxes, fontsize=6, va='bottom',
                            bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.8))
             
-            # Col 6: Difference binary (thresholded ReLU)
+            # Col 6: ReLU difference heatmap
+            axes[i, 6].imshow(vd['diff_relu_norm'], cmap='hot', vmin=0, vmax=1)
+            axes[i, 6].text(0.02, 0.02, f"{100*vd['diff_miou']:.1f}%",
+                           transform=axes[i, 6].transAxes, fontsize=6, va='bottom',
+                           bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.8))
+            
+            # Col 7: Difference binary (thresholded ReLU)
             diff_binary = (vd['diff_relu_norm'] > threshold).astype(np.uint8)
-            axes[i, 6].imshow(diff_binary, cmap='gray', vmin=0, vmax=1)
+            axes[i, 7].imshow(diff_binary, cmap='gray', vmin=0, vmax=1)
             
             # Remove ticks
             for j in range(ncols):
