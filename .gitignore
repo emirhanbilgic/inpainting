@@ -171,11 +171,6 @@ poetry.toml
 pyrightconfig.json
 
 outputs/
-daam_key_space_omp/
-HCI_animals/
-HCI_animals_comparison_v2/
-HCI_animals_restructured/
-web_application/
 docs/ 
 data/
 
@@ -204,10 +199,6 @@ generate_cat_dog_sheep_final.py
 plot_sem_omp_figure.py
 plot_sem_omp_pipeline.py
 main.tex
-bird.png
-cat_3.jpg
-cat_4.png
-cat_2.png
 cat_prompt.jpg
 legrad.tex
 main.tex
