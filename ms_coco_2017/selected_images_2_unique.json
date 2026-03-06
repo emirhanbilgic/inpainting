@@ -1,0 +1,5778 @@
+{
+    "579321": {
+        "file_name": "000000579321.jpg",
+        "objects": [
+            "dog",
+            "person"
+        ],
+        "chosen": "dog"
+    },
+    "170893": {
+        "file_name": "000000170893.jpg",
+        "objects": [
+            "dog",
+            "toilet"
+        ],
+        "chosen": "dog"
+    },
+    "65485": {
+        "file_name": "000000065485.jpg",
+        "objects": [
+            "dog",
+            "car"
+        ],
+        "chosen": "car"
+    },
+    "42276": {
+        "file_name": "000000042276.jpg",
+        "objects": [
+            "potted plant",
+            "toilet"
+        ],
+        "chosen": "potted plant"
+    },
+    "109055": {
+        "file_name": "000000109055.jpg",
+        "objects": [
+            "cat",
+            "bicycle"
+        ],
+        "chosen": "cat"
+    },
+    "23272": {
+        "file_name": "000000023272.jpg",
+        "objects": [
+            "cat",
+            "car"
+        ],
+        "chosen": "car"
+    },
+    "125850": {
+        "file_name": "000000125850.jpg",
+        "objects": [
+            "cat",
+            "bowl"
+        ],
+        "chosen": "cat"
+    },
+    "245764": {
+        "file_name": "000000245764.jpg",
+        "objects": [
+            "cat",
+            "toilet"
+        ],
+        "chosen": "cat"
+    },
+    "211042": {
+        "file_name": "000000211042.jpg",
+        "objects": [
+            "cat",
+            "toilet"
+        ],
+        "chosen": "toilet"
+    },
+    "361621": {
+        "file_name": "000000361621.jpg",
+        "objects": [
+            "cat",
+            "sink"
+        ],
+        "chosen": "sink"
+    },
+    "530099": {
+        "file_name": "000000530099.jpg",
+        "objects": [
+            "cat",
+            "car"
+        ],
+        "chosen": "car"
+    },
+    "209747": {
+        "file_name": "000000209747.jpg",
+        "objects": [
+            "cat",
+            "sink"
+        ],
+        "chosen": "sink"
+    },
+    "153217": {
+        "file_name": "000000153217.jpg",
+        "objects": [
+            "cat",
+            "motorcycle"
+        ],
+        "chosen": "cat"
+    },
+    "176778": {
+        "file_name": "000000176778.jpg",
+        "objects": [
+            "cat",
+            "toilet"
+        ],
+        "chosen": "toilet"
+    },
+    "568690": {
+        "file_name": "000000568690.jpg",
+        "objects": [
+            "cat",
+            "toilet"
+        ],
+        "chosen": "cat"
+    },
+    "29187": {
+        "file_name": "000000029187.jpg",
+        "objects": [
+            "horse",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "51598": {
+        "file_name": "000000051598.jpg",
+        "objects": [
+            "bottle",
+            "sink"
+        ],
+        "chosen": "sink"
+    },
+    "101762": {
+        "file_name": "000000101762.jpg",
+        "objects": [
+            "bicycle",
+            "cat"
+        ],
+        "chosen": "bicycle"
+    },
+    "481567": {
+        "file_name": "000000481567.jpg",
+        "objects": [
+            "motorcycle",
+            "person"
+        ],
+        "chosen": "motorcycle"
+    },
+    "394199": {
+        "file_name": "000000394199.jpg",
+        "objects": [
+            "motorcycle",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "102331": {
+        "file_name": "000000102331.jpg",
+        "objects": [
+            "motorcycle",
+            "person"
+        ],
+        "chosen": "motorcycle"
+    },
+    "210299": {
+        "file_name": "000000210299.jpg",
+        "objects": [
+            "person",
+            "bicycle"
+        ],
+        "chosen": "person"
+    },
+    "136033": {
+        "file_name": "000000136033.jpg",
+        "objects": [
+            "potted plant",
+            "sink"
+        ],
+        "chosen": "sink"
+    },
+    "262895": {
+        "file_name": "000000262895.jpg",
+        "objects": [
+            "tie",
+            "person"
+        ],
+        "chosen": "tie"
+    },
+    "452793": {
+        "file_name": "000000452793.jpg",
+        "objects": [
+            "refrigerator",
+            "sink"
+        ],
+        "chosen": "sink"
+    },
+    "129113": {
+        "file_name": "000000129113.jpg",
+        "objects": [
+            "dining table",
+            "spoon"
+        ],
+        "chosen": "dining table"
+    },
+    "54654": {
+        "file_name": "000000054654.jpg",
+        "objects": [
+            "person",
+            "oven"
+        ],
+        "chosen": "oven"
+    },
+    "117645": {
+        "file_name": "000000117645.jpg",
+        "objects": [
+            "person",
+            "snowboard"
+        ],
+        "chosen": "snowboard"
+    },
+    "565045": {
+        "file_name": "000000565045.jpg",
+        "objects": [
+            "person",
+            "orange"
+        ],
+        "chosen": "orange"
+    },
+    "233370": {
+        "file_name": "000000233370.jpg",
+        "objects": [
+            "person",
+            "suitcase"
+        ],
+        "chosen": "person"
+    },
+    "481573": {
+        "file_name": "000000481573.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "skateboard"
+    },
+    "484415": {
+        "file_name": "000000484415.jpg",
+        "objects": [
+            "person",
+            "toilet"
+        ],
+        "chosen": "person"
+    },
+    "2532": {
+        "file_name": "000000002532.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "person"
+    },
+    "314177": {
+        "file_name": "000000314177.jpg",
+        "objects": [
+            "person",
+            "toilet"
+        ],
+        "chosen": "toilet"
+    },
+    "489339": {
+        "file_name": "000000489339.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "surfboard"
+    },
+    "474095": {
+        "file_name": "000000474095.jpg",
+        "objects": [
+            "person",
+            "toilet"
+        ],
+        "chosen": "person"
+    },
+    "163562": {
+        "file_name": "000000163562.jpg",
+        "objects": [
+            "person",
+            "frisbee"
+        ],
+        "chosen": "person"
+    },
+    "206411": {
+        "file_name": "000000206411.jpg",
+        "objects": [
+            "person",
+            "toilet"
+        ],
+        "chosen": "toilet"
+    },
+    "504711": {
+        "file_name": "000000504711.jpg",
+        "objects": [
+            "fork",
+            "cake"
+        ],
+        "chosen": "cake"
+    },
+    "136772": {
+        "file_name": "000000136772.jpg",
+        "objects": [
+            "bowl",
+            "orange"
+        ],
+        "chosen": "orange"
+    },
+    "550714": {
+        "file_name": "000000550714.jpg",
+        "objects": [
+            "banana",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "267903": {
+        "file_name": "000000267903.jpg",
+        "objects": [
+            "toilet",
+            "sink"
+        ],
+        "chosen": "sink"
+    },
+    "27982": {
+        "file_name": "000000027982.jpg",
+        "objects": [
+            "toilet",
+            "sink"
+        ],
+        "chosen": "sink"
+    },
+    "397327": {
+        "file_name": "000000397327.jpg",
+        "objects": [
+            "toilet",
+            "sink"
+        ],
+        "chosen": "sink"
+    },
+    "163258": {
+        "file_name": "000000163258.jpg",
+        "objects": [
+            "toilet",
+            "sink"
+        ],
+        "chosen": "toilet"
+    },
+    "58029": {
+        "file_name": "000000058029.jpg",
+        "objects": [
+            "toilet",
+            "sink"
+        ],
+        "chosen": "sink"
+    },
+    "489091": {
+        "file_name": "000000489091.jpg",
+        "objects": [
+            "toilet",
+            "sink"
+        ],
+        "chosen": "toilet"
+    },
+    "560279": {
+        "file_name": "000000560279.jpg",
+        "objects": [
+            "toilet",
+            "bottle"
+        ],
+        "chosen": "bottle"
+    },
+    "431140": {
+        "file_name": "000000431140.jpg",
+        "objects": [
+            "toilet",
+            "sink"
+        ],
+        "chosen": "sink"
+    },
+    "507893": {
+        "file_name": "000000507893.jpg",
+        "objects": [
+            "toilet",
+            "sink"
+        ],
+        "chosen": "sink"
+    },
+    "138819": {
+        "file_name": "000000138819.jpg",
+        "objects": [
+            "toilet",
+            "sink"
+        ],
+        "chosen": "toilet"
+    },
+    "537812": {
+        "file_name": "000000537812.jpg",
+        "objects": [
+            "toilet",
+            "chair"
+        ],
+        "chosen": "chair"
+    },
+    "357567": {
+        "file_name": "000000357567.jpg",
+        "objects": [
+            "toilet",
+            "sink"
+        ],
+        "chosen": "sink"
+    },
+    "416745": {
+        "file_name": "000000416745.jpg",
+        "objects": [
+            "toilet",
+            "sink"
+        ],
+        "chosen": "toilet"
+    },
+    "570736": {
+        "file_name": "000000570736.jpg",
+        "objects": [
+            "toilet",
+            "sink"
+        ],
+        "chosen": "sink"
+    },
+    "487583": {
+        "file_name": "000000487583.jpg",
+        "objects": [
+            "toilet",
+            "cup"
+        ],
+        "chosen": "cup"
+    },
+    "10977": {
+        "file_name": "000000010977.jpg",
+        "objects": [
+            "toilet",
+            "sink"
+        ],
+        "chosen": "sink"
+    },
+    "376442": {
+        "file_name": "000000376442.jpg",
+        "objects": [
+            "toilet",
+            "teddy bear"
+        ],
+        "chosen": "toilet"
+    },
+    "308466": {
+        "file_name": "000000308466.jpg",
+        "objects": [
+            "toilet",
+            "sink"
+        ],
+        "chosen": "sink"
+    },
+    "55002": {
+        "file_name": "000000055002.jpg",
+        "objects": [
+            "toilet",
+            "person"
+        ],
+        "chosen": "toilet"
+    },
+    "331352": {
+        "file_name": "000000331352.jpg",
+        "objects": [
+            "toilet",
+            "sink"
+        ],
+        "chosen": "toilet"
+    },
+    "403385": {
+        "file_name": "000000403385.jpg",
+        "objects": [
+            "toilet",
+            "sink"
+        ],
+        "chosen": "sink"
+    },
+    "350833": {
+        "file_name": "000000350833.jpg",
+        "objects": [
+            "toilet",
+            "sink"
+        ],
+        "chosen": "sink"
+    },
+    "409358": {
+        "file_name": "000000409358.jpg",
+        "objects": [
+            "toilet",
+            "sink"
+        ],
+        "chosen": "sink"
+    },
+    "360564": {
+        "file_name": "000000360564.jpg",
+        "objects": [
+            "toilet",
+            "sink"
+        ],
+        "chosen": "sink"
+    },
+    "389804": {
+        "file_name": "000000389804.jpg",
+        "objects": [
+            "toilet",
+            "sink"
+        ],
+        "chosen": "sink"
+    },
+    "154718": {
+        "file_name": "000000154718.jpg",
+        "objects": [
+            "toilet",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "343466": {
+        "file_name": "000000343466.jpg",
+        "objects": [
+            "oven",
+            "sink"
+        ],
+        "chosen": "sink"
+    },
+    "307145": {
+        "file_name": "000000307145.jpg",
+        "objects": [
+            "oven",
+            "sink"
+        ],
+        "chosen": "oven"
+    },
+    "453634": {
+        "file_name": "000000453634.jpg",
+        "objects": [
+            "sink",
+            "toilet"
+        ],
+        "chosen": "toilet"
+    },
+    "187513": {
+        "file_name": "000000187513.jpg",
+        "objects": [
+            "sink",
+            "toilet"
+        ],
+        "chosen": "sink"
+    },
+    "237316": {
+        "file_name": "000000237316.jpg",
+        "objects": [
+            "sink",
+            "toilet"
+        ],
+        "chosen": "toilet"
+    },
+    "267670": {
+        "file_name": "000000267670.jpg",
+        "objects": [
+            "sink",
+            "bottle"
+        ],
+        "chosen": "sink"
+    },
+    "323202": {
+        "file_name": "000000323202.jpg",
+        "objects": [
+            "book",
+            "toilet"
+        ],
+        "chosen": "book"
+    },
+    "261161": {
+        "file_name": "000000261161.jpg",
+        "objects": [
+            "dog",
+            "bench"
+        ],
+        "chosen": "dog"
+    },
+    "546829": {
+        "file_name": "000000546829.jpg",
+        "objects": [
+            "dog",
+            "bench"
+        ],
+        "chosen": "bench"
+    },
+    "224200": {
+        "file_name": "000000224200.jpg",
+        "objects": [
+            "dog",
+            "fire hydrant"
+        ],
+        "chosen": "dog"
+    },
+    "205834": {
+        "file_name": "000000205834.jpg",
+        "objects": [
+            "dog",
+            "bowl"
+        ],
+        "chosen": "bowl"
+    },
+    "452891": {
+        "file_name": "000000452891.jpg",
+        "objects": [
+            "dog",
+            "bench"
+        ],
+        "chosen": "bench"
+    },
+    "291664": {
+        "file_name": "000000291664.jpg",
+        "objects": [
+            "dog",
+            "fire hydrant"
+        ],
+        "chosen": "dog"
+    },
+    "377575": {
+        "file_name": "000000377575.jpg",
+        "objects": [
+            "dog",
+            "fire hydrant"
+        ],
+        "chosen": "dog"
+    },
+    "560312": {
+        "file_name": "000000560312.jpg",
+        "objects": [
+            "tv",
+            "couch"
+        ],
+        "chosen": "couch"
+    },
+    "46378": {
+        "file_name": "000000046378.jpg",
+        "objects": [
+            "bird",
+            "cat"
+        ],
+        "chosen": "cat"
+    },
+    "80666": {
+        "file_name": "000000080666.jpg",
+        "objects": [
+            "cat",
+            "bench"
+        ],
+        "chosen": "cat"
+    },
+    "277584": {
+        "file_name": "000000277584.jpg",
+        "objects": [
+            "cat",
+            "bench"
+        ],
+        "chosen": "cat"
+    },
+    "118515": {
+        "file_name": "000000118515.jpg",
+        "objects": [
+            "cat",
+            "bench"
+        ],
+        "chosen": "cat"
+    },
+    "456292": {
+        "file_name": "000000456292.jpg",
+        "objects": [
+            "cat",
+            "bottle"
+        ],
+        "chosen": "bottle"
+    },
+    "320554": {
+        "file_name": "000000320554.jpg",
+        "objects": [
+            "cat",
+            "bench"
+        ],
+        "chosen": "cat"
+    },
+    "463037": {
+        "file_name": "000000463037.jpg",
+        "objects": [
+            "car",
+            "airplane"
+        ],
+        "chosen": "airplane"
+    },
+    "165518": {
+        "file_name": "000000165518.jpg",
+        "objects": [
+            "motorcycle",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "190756": {
+        "file_name": "000000190756.jpg",
+        "objects": [
+            "motorcycle",
+            "person"
+        ],
+        "chosen": "motorcycle"
+    },
+    "553776": {
+        "file_name": "000000553776.jpg",
+        "objects": [
+            "motorcycle",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "571264": {
+        "file_name": "000000571264.jpg",
+        "objects": [
+            "motorcycle",
+            "person"
+        ],
+        "chosen": "motorcycle"
+    },
+    "270066": {
+        "file_name": "000000270066.jpg",
+        "objects": [
+            "motorcycle",
+            "truck"
+        ],
+        "chosen": "truck"
+    },
+    "499622": {
+        "file_name": "000000499622.jpg",
+        "objects": [
+            "motorcycle",
+            "person"
+        ],
+        "chosen": "motorcycle"
+    },
+    "578792": {
+        "file_name": "000000578792.jpg",
+        "objects": [
+            "motorcycle",
+            "person"
+        ],
+        "chosen": "motorcycle"
+    },
+    "272136": {
+        "file_name": "000000272136.jpg",
+        "objects": [
+            "airplane",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "110721": {
+        "file_name": "000000110721.jpg",
+        "objects": [
+            "airplane",
+            "person"
+        ],
+        "chosen": "airplane"
+    },
+    "52017": {
+        "file_name": "000000052017.jpg",
+        "objects": [
+            "airplane",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "144114": {
+        "file_name": "000000144114.jpg",
+        "objects": [
+            "airplane",
+            "person"
+        ],
+        "chosen": "airplane"
+    },
+    "455085": {
+        "file_name": "000000455085.jpg",
+        "objects": [
+            "bus",
+            "person"
+        ],
+        "chosen": "bus"
+    },
+    "347544": {
+        "file_name": "000000347544.jpg",
+        "objects": [
+            "bus",
+            "truck"
+        ],
+        "chosen": "bus"
+    },
+    "516143": {
+        "file_name": "000000516143.jpg",
+        "objects": [
+            "bus",
+            "person"
+        ],
+        "chosen": "bus"
+    },
+    "460967": {
+        "file_name": "000000460967.jpg",
+        "objects": [
+            "bus",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "143931": {
+        "file_name": "000000143931.jpg",
+        "objects": [
+            "bus",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "365655": {
+        "file_name": "000000365655.jpg",
+        "objects": [
+            "bus",
+            "person"
+        ],
+        "chosen": "bus"
+    },
+    "129135": {
+        "file_name": "000000129135.jpg",
+        "objects": [
+            "train",
+            "bench"
+        ],
+        "chosen": "bench"
+    },
+    "566436": {
+        "file_name": "000000566436.jpg",
+        "objects": [
+            "person",
+            "bench"
+        ],
+        "chosen": "person"
+    },
+    "284698": {
+        "file_name": "000000284698.jpg",
+        "objects": [
+            "person",
+            "motorcycle"
+        ],
+        "chosen": "motorcycle"
+    },
+    "102356": {
+        "file_name": "000000102356.jpg",
+        "objects": [
+            "person",
+            "motorcycle"
+        ],
+        "chosen": "person"
+    },
+    "183500": {
+        "file_name": "000000183500.jpg",
+        "objects": [
+            "person",
+            "airplane"
+        ],
+        "chosen": "person"
+    },
+    "214869": {
+        "file_name": "000000214869.jpg",
+        "objects": [
+            "cell phone",
+            "person"
+        ],
+        "chosen": "cell phone"
+    },
+    "283037": {
+        "file_name": "000000283037.jpg",
+        "objects": [
+            "car",
+            "traffic light"
+        ],
+        "chosen": "car"
+    },
+    "152120": {
+        "file_name": "000000152120.jpg",
+        "objects": [
+            "motorcycle",
+            "person"
+        ],
+        "chosen": "motorcycle"
+    },
+    "372317": {
+        "file_name": "000000372317.jpg",
+        "objects": [
+            "bus",
+            "parking meter"
+        ],
+        "chosen": "parking meter"
+    },
+    "237984": {
+        "file_name": "000000237984.jpg",
+        "objects": [
+            "chair",
+            "bench"
+        ],
+        "chosen": "bench"
+    },
+    "69138": {
+        "file_name": "000000069138.jpg",
+        "objects": [
+            "traffic light",
+            "truck"
+        ],
+        "chosen": "traffic light"
+    },
+    "372203": {
+        "file_name": "000000372203.jpg",
+        "objects": [
+            "fire hydrant",
+            "bench"
+        ],
+        "chosen": "fire hydrant"
+    },
+    "8899": {
+        "file_name": "000000008899.jpg",
+        "objects": [
+            "fire hydrant",
+            "bicycle"
+        ],
+        "chosen": "fire hydrant"
+    },
+    "449909": {
+        "file_name": "000000449909.jpg",
+        "objects": [
+            "person",
+            "giraffe"
+        ],
+        "chosen": "giraffe"
+    },
+    "395575": {
+        "file_name": "000000395575.jpg",
+        "objects": [
+            "person",
+            "bench"
+        ],
+        "chosen": "person"
+    },
+    "60347": {
+        "file_name": "000000060347.jpg",
+        "objects": [
+            "person",
+            "bench"
+        ],
+        "chosen": "bench"
+    },
+    "391375": {
+        "file_name": "000000391375.jpg",
+        "objects": [
+            "person",
+            "bench"
+        ],
+        "chosen": "person"
+    },
+    "48153": {
+        "file_name": "000000048153.jpg",
+        "objects": [
+            "person",
+            "bench"
+        ],
+        "chosen": "person"
+    },
+    "67180": {
+        "file_name": "000000067180.jpg",
+        "objects": [
+            "person",
+            "bench"
+        ],
+        "chosen": "person"
+    },
+    "94326": {
+        "file_name": "000000094326.jpg",
+        "objects": [
+            "bench",
+            "person"
+        ],
+        "chosen": "bench"
+    },
+    "340451": {
+        "file_name": "000000340451.jpg",
+        "objects": [
+            "bench",
+            "person"
+        ],
+        "chosen": "bench"
+    },
+    "221502": {
+        "file_name": "000000221502.jpg",
+        "objects": [
+            "bench",
+            "potted plant"
+        ],
+        "chosen": "potted plant"
+    },
+    "446117": {
+        "file_name": "000000446117.jpg",
+        "objects": [
+            "bench",
+            "orange"
+        ],
+        "chosen": "orange"
+    },
+    "506454": {
+        "file_name": "000000506454.jpg",
+        "objects": [
+            "bench",
+            "person"
+        ],
+        "chosen": "bench"
+    },
+    "433243": {
+        "file_name": "000000433243.jpg",
+        "objects": [
+            "zebra",
+            "giraffe"
+        ],
+        "chosen": "giraffe"
+    },
+    "248810": {
+        "file_name": "000000248810.jpg",
+        "objects": [
+            "giraffe",
+            "person"
+        ],
+        "chosen": "giraffe"
+    },
+    "2149": {
+        "file_name": "000000002149.jpg",
+        "objects": [
+            "bowl",
+            "apple"
+        ],
+        "chosen": "apple"
+    },
+    "532575": {
+        "file_name": "000000532575.jpg",
+        "objects": [
+            "dog",
+            "boat"
+        ],
+        "chosen": "boat"
+    },
+    "311190": {
+        "file_name": "000000311190.jpg",
+        "objects": [
+            "dog",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "117525": {
+        "file_name": "000000117525.jpg",
+        "objects": [
+            "dog",
+            "person"
+        ],
+        "chosen": "dog"
+    },
+    "236166": {
+        "file_name": "000000236166.jpg",
+        "objects": [
+            "dog",
+            "person"
+        ],
+        "chosen": "dog"
+    },
+    "305343": {
+        "file_name": "000000305343.jpg",
+        "objects": [
+            "dog",
+            "cup"
+        ],
+        "chosen": "dog"
+    },
+    "131131": {
+        "file_name": "000000131131.jpg",
+        "objects": [
+            "tv",
+            "cat"
+        ],
+        "chosen": "tv"
+    },
+    "533536": {
+        "file_name": "000000533536.jpg",
+        "objects": [
+            "tv",
+            "cat"
+        ],
+        "chosen": "tv"
+    },
+    "475904": {
+        "file_name": "000000475904.jpg",
+        "objects": [
+            "bird",
+            "boat"
+        ],
+        "chosen": "boat"
+    },
+    "222235": {
+        "file_name": "000000222235.jpg",
+        "objects": [
+            "bird",
+            "cat"
+        ],
+        "chosen": "bird"
+    },
+    "399560": {
+        "file_name": "000000399560.jpg",
+        "objects": [
+            "cat",
+            "laptop"
+        ],
+        "chosen": "laptop"
+    },
+    "312213": {
+        "file_name": "000000312213.jpg",
+        "objects": [
+            "cat",
+            "laptop"
+        ],
+        "chosen": "laptop"
+    },
+    "565962": {
+        "file_name": "000000565962.jpg",
+        "objects": [
+            "cat",
+            "person"
+        ],
+        "chosen": "cat"
+    },
+    "432468": {
+        "file_name": "000000432468.jpg",
+        "objects": [
+            "cat",
+            "suitcase"
+        ],
+        "chosen": "suitcase"
+    },
+    "264441": {
+        "file_name": "000000264441.jpg",
+        "objects": [
+            "cat",
+            "chair"
+        ],
+        "chosen": "cat"
+    },
+    "51008": {
+        "file_name": "000000051008.jpg",
+        "objects": [
+            "cat",
+            "laptop"
+        ],
+        "chosen": "cat"
+    },
+    "387383": {
+        "file_name": "000000387383.jpg",
+        "objects": [
+            "cat",
+            "bed"
+        ],
+        "chosen": "bed"
+    },
+    "353970": {
+        "file_name": "000000353970.jpg",
+        "objects": [
+            "cat",
+            "chair"
+        ],
+        "chosen": "cat"
+    },
+    "540928": {
+        "file_name": "000000540928.jpg",
+        "objects": [
+            "cat",
+            "chair"
+        ],
+        "chosen": "chair"
+    },
+    "405306": {
+        "file_name": "000000405306.jpg",
+        "objects": [
+            "cat",
+            "bed"
+        ],
+        "chosen": "cat"
+    },
+    "343076": {
+        "file_name": "000000343076.jpg",
+        "objects": [
+            "cat",
+            "laptop"
+        ],
+        "chosen": "cat"
+    },
+    "291490": {
+        "file_name": "000000291490.jpg",
+        "objects": [
+            "cat",
+            "bed"
+        ],
+        "chosen": "bed"
+    },
+    "366199": {
+        "file_name": "000000366199.jpg",
+        "objects": [
+            "cat",
+            "bed"
+        ],
+        "chosen": "cat"
+    },
+    "131938": {
+        "file_name": "000000131938.jpg",
+        "objects": [
+            "cat",
+            "tie"
+        ],
+        "chosen": "tie"
+    },
+    "416330": {
+        "file_name": "000000416330.jpg",
+        "objects": [
+            "cat",
+            "bed"
+        ],
+        "chosen": "cat"
+    },
+    "210099": {
+        "file_name": "000000210099.jpg",
+        "objects": [
+            "cat",
+            "chair"
+        ],
+        "chosen": "cat"
+    },
+    "385205": {
+        "file_name": "000000385205.jpg",
+        "objects": [
+            "cat",
+            "carrot"
+        ],
+        "chosen": "cat"
+    },
+    "269314": {
+        "file_name": "000000269314.jpg",
+        "objects": [
+            "cat",
+            "banana"
+        ],
+        "chosen": "banana"
+    },
+    "525247": {
+        "file_name": "000000525247.jpg",
+        "objects": [
+            "cat",
+            "laptop"
+        ],
+        "chosen": "cat"
+    },
+    "545826": {
+        "file_name": "000000545826.jpg",
+        "objects": [
+            "cat",
+            "chair"
+        ],
+        "chosen": "cat"
+    },
+    "416170": {
+        "file_name": "000000416170.jpg",
+        "objects": [
+            "cat",
+            "potted plant"
+        ],
+        "chosen": "cat"
+    },
+    "183675": {
+        "file_name": "000000183675.jpg",
+        "objects": [
+            "horse",
+            "person"
+        ],
+        "chosen": "horse"
+    },
+    "525155": {
+        "file_name": "000000525155.jpg",
+        "objects": [
+            "sheep",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "284991": {
+        "file_name": "000000284991.jpg",
+        "objects": [
+            "bottle",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "101420": {
+        "file_name": "000000101420.jpg",
+        "objects": [
+            "couch",
+            "cat"
+        ],
+        "chosen": "cat"
+    },
+    "566758": {
+        "file_name": "000000566758.jpg",
+        "objects": [
+            "car",
+            "bus"
+        ],
+        "chosen": "bus"
+    },
+    "14380": {
+        "file_name": "000000014380.jpg",
+        "objects": [
+            "car",
+            "train"
+        ],
+        "chosen": "car"
+    },
+    "499775": {
+        "file_name": "000000499775.jpg",
+        "objects": [
+            "car",
+            "bus"
+        ],
+        "chosen": "bus"
+    },
+    "272049": {
+        "file_name": "000000272049.jpg",
+        "objects": [
+            "airplane",
+            "truck"
+        ],
+        "chosen": "truck"
+    },
+    "122606": {
+        "file_name": "000000122606.jpg",
+        "objects": [
+            "bus",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "389684": {
+        "file_name": "000000389684.jpg",
+        "objects": [
+            "bus",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "415536": {
+        "file_name": "000000415536.jpg",
+        "objects": [
+            "bus",
+            "person"
+        ],
+        "chosen": "bus"
+    },
+    "429718": {
+        "file_name": "000000429718.jpg",
+        "objects": [
+            "train",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "134722": {
+        "file_name": "000000134722.jpg",
+        "objects": [
+            "train",
+            "bench"
+        ],
+        "chosen": "train"
+    },
+    "482978": {
+        "file_name": "000000482978.jpg",
+        "objects": [
+            "train",
+            "chair"
+        ],
+        "chosen": "chair"
+    },
+    "440617": {
+        "file_name": "000000440617.jpg",
+        "objects": [
+            "train",
+            "traffic light"
+        ],
+        "chosen": "traffic light"
+    },
+    "133567": {
+        "file_name": "000000133567.jpg",
+        "objects": [
+            "train",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "198510": {
+        "file_name": "000000198510.jpg",
+        "objects": [
+            "train",
+            "person"
+        ],
+        "chosen": "train"
+    },
+    "225946": {
+        "file_name": "000000225946.jpg",
+        "objects": [
+            "train",
+            "stop sign"
+        ],
+        "chosen": "train"
+    },
+    "184400": {
+        "file_name": "000000184400.jpg",
+        "objects": [
+            "train",
+            "traffic light"
+        ],
+        "chosen": "traffic light"
+    },
+    "275727": {
+        "file_name": "000000275727.jpg",
+        "objects": [
+            "train",
+            "traffic light"
+        ],
+        "chosen": "traffic light"
+    },
+    "159684": {
+        "file_name": "000000159684.jpg",
+        "objects": [
+            "train",
+            "clock"
+        ],
+        "chosen": "clock"
+    },
+    "500423": {
+        "file_name": "000000500423.jpg",
+        "objects": [
+            "train",
+            "person"
+        ],
+        "chosen": "train"
+    },
+    "206994": {
+        "file_name": "000000206994.jpg",
+        "objects": [
+            "train",
+            "bench"
+        ],
+        "chosen": "train"
+    },
+    "396518": {
+        "file_name": "000000396518.jpg",
+        "objects": [
+            "boat",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "500477": {
+        "file_name": "000000500477.jpg",
+        "objects": [
+            "person",
+            "sheep"
+        ],
+        "chosen": "person"
+    },
+    "572303": {
+        "file_name": "000000572303.jpg",
+        "objects": [
+            "train",
+            "car"
+        ],
+        "chosen": "train"
+    },
+    "309173": {
+        "file_name": "000000309173.jpg",
+        "objects": [
+            "stop sign",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "565153": {
+        "file_name": "000000565153.jpg",
+        "objects": [
+            "stop sign",
+            "parking meter"
+        ],
+        "chosen": "stop sign"
+    },
+    "336587": {
+        "file_name": "000000336587.jpg",
+        "objects": [
+            "stop sign",
+            "truck"
+        ],
+        "chosen": "truck"
+    },
+    "196754": {
+        "file_name": "000000196754.jpg",
+        "objects": [
+            "stop sign",
+            "chair"
+        ],
+        "chosen": "chair"
+    },
+    "14831": {
+        "file_name": "000000014831.jpg",
+        "objects": [
+            "cat",
+            "bed"
+        ],
+        "chosen": "cat"
+    },
+    "131444": {
+        "file_name": "000000131444.jpg",
+        "objects": [
+            "tie",
+            "person"
+        ],
+        "chosen": "tie"
+    },
+    "456559": {
+        "file_name": "000000456559.jpg",
+        "objects": [
+            "tie",
+            "person"
+        ],
+        "chosen": "tie"
+    },
+    "519491": {
+        "file_name": "000000519491.jpg",
+        "objects": [
+            "clock",
+            "bird"
+        ],
+        "chosen": "clock"
+    },
+    "354829": {
+        "file_name": "000000354829.jpg",
+        "objects": [
+            "car",
+            "fire hydrant"
+        ],
+        "chosen": "car"
+    },
+    "521052": {
+        "file_name": "000000521052.jpg",
+        "objects": [
+            "car",
+            "truck"
+        ],
+        "chosen": "truck"
+    },
+    "205289": {
+        "file_name": "000000205289.jpg",
+        "objects": [
+            "truck",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "192607": {
+        "file_name": "000000192607.jpg",
+        "objects": [
+            "truck",
+            "person"
+        ],
+        "chosen": "truck"
+    },
+    "188439": {
+        "file_name": "000000188439.jpg",
+        "objects": [
+            "truck",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "427500": {
+        "file_name": "000000427500.jpg",
+        "objects": [
+            "fire hydrant",
+            "car"
+        ],
+        "chosen": "fire hydrant"
+    },
+    "523194": {
+        "file_name": "000000523194.jpg",
+        "objects": [
+            "fire hydrant",
+            "stop sign"
+        ],
+        "chosen": "stop sign"
+    },
+    "328683": {
+        "file_name": "000000328683.jpg",
+        "objects": [
+            "parking meter",
+            "potted plant"
+        ],
+        "chosen": "potted plant"
+    },
+    "430871": {
+        "file_name": "000000430871.jpg",
+        "objects": [
+            "parking meter",
+            "traffic light"
+        ],
+        "chosen": "parking meter"
+    },
+    "203488": {
+        "file_name": "000000203488.jpg",
+        "objects": [
+            "parking meter",
+            "bench"
+        ],
+        "chosen": "parking meter"
+    },
+    "333956": {
+        "file_name": "000000333956.jpg",
+        "objects": [
+            "parking meter",
+            "bench"
+        ],
+        "chosen": "parking meter"
+    },
+    "29397": {
+        "file_name": "000000029397.jpg",
+        "objects": [
+            "person",
+            "bench"
+        ],
+        "chosen": "person"
+    },
+    "101068": {
+        "file_name": "000000101068.jpg",
+        "objects": [
+            "person",
+            "baseball bat"
+        ],
+        "chosen": "baseball bat"
+    },
+    "212226": {
+        "file_name": "000000212226.jpg",
+        "objects": [
+            "person",
+            "truck"
+        ],
+        "chosen": "person"
+    },
+    "449198": {
+        "file_name": "000000449198.jpg",
+        "objects": [
+            "traffic light",
+            "stop sign"
+        ],
+        "chosen": "stop sign"
+    },
+    "118405": {
+        "file_name": "000000118405.jpg",
+        "objects": [
+            "bowl",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "49269": {
+        "file_name": "000000049269.jpg",
+        "objects": [
+            "dog",
+            "horse"
+        ],
+        "chosen": "dog"
+    },
+    "505573": {
+        "file_name": "000000505573.jpg",
+        "objects": [
+            "dog",
+            "tie"
+        ],
+        "chosen": "dog"
+    },
+    "237864": {
+        "file_name": "000000237864.jpg",
+        "objects": [
+            "dog",
+            "elephant"
+        ],
+        "chosen": "dog"
+    },
+    "292330": {
+        "file_name": "000000292330.jpg",
+        "objects": [
+            "dog",
+            "baseball bat"
+        ],
+        "chosen": "baseball bat"
+    },
+    "170278": {
+        "file_name": "000000170278.jpg",
+        "objects": [
+            "dog",
+            "bed"
+        ],
+        "chosen": "dog"
+    },
+    "486479": {
+        "file_name": "000000486479.jpg",
+        "objects": [
+            "dog",
+            "bed"
+        ],
+        "chosen": "dog"
+    },
+    "30494": {
+        "file_name": "000000030494.jpg",
+        "objects": [
+            "dog",
+            "frisbee"
+        ],
+        "chosen": "frisbee"
+    },
+    "399655": {
+        "file_name": "000000399655.jpg",
+        "objects": [
+            "dog",
+            "couch"
+        ],
+        "chosen": "dog"
+    },
+    "273642": {
+        "file_name": "000000273642.jpg",
+        "objects": [
+            "dog",
+            "remote"
+        ],
+        "chosen": "remote"
+    },
+    "389933": {
+        "file_name": "000000389933.jpg",
+        "objects": [
+            "dog",
+            "couch"
+        ],
+        "chosen": "couch"
+    },
+    "575357": {
+        "file_name": "000000575357.jpg",
+        "objects": [
+            "dog",
+            "frisbee"
+        ],
+        "chosen": "dog"
+    },
+    "181969": {
+        "file_name": "000000181969.jpg",
+        "objects": [
+            "dog",
+            "couch"
+        ],
+        "chosen": "dog"
+    },
+    "517832": {
+        "file_name": "000000517832.jpg",
+        "objects": [
+            "dog",
+            "chair"
+        ],
+        "chosen": "chair"
+    },
+    "138492": {
+        "file_name": "000000138492.jpg",
+        "objects": [
+            "dog",
+            "frisbee"
+        ],
+        "chosen": "frisbee"
+    },
+    "297830": {
+        "file_name": "000000297830.jpg",
+        "objects": [
+            "dog",
+            "bottle"
+        ],
+        "chosen": "dog"
+    },
+    "186422": {
+        "file_name": "000000186422.jpg",
+        "objects": [
+            "bird",
+            "bear"
+        ],
+        "chosen": "bear"
+    },
+    "572517": {
+        "file_name": "000000572517.jpg",
+        "objects": [
+            "bird",
+            "bear"
+        ],
+        "chosen": "bear"
+    },
+    "492992": {
+        "file_name": "000000492992.jpg",
+        "objects": [
+            "bird",
+            "cow"
+        ],
+        "chosen": "bird"
+    },
+    "1675": {
+        "file_name": "000000001675.jpg",
+        "objects": [
+            "cat",
+            "keyboard"
+        ],
+        "chosen": "cat"
+    },
+    "425390": {
+        "file_name": "000000425390.jpg",
+        "objects": [
+            "cat",
+            "laptop"
+        ],
+        "chosen": "laptop"
+    },
+    "311789": {
+        "file_name": "000000311789.jpg",
+        "objects": [
+            "cat",
+            "keyboard"
+        ],
+        "chosen": "keyboard"
+    },
+    "181859": {
+        "file_name": "000000181859.jpg",
+        "objects": [
+            "cat",
+            "sink"
+        ],
+        "chosen": "cat"
+    },
+    "491757": {
+        "file_name": "000000491757.jpg",
+        "objects": [
+            "cat",
+            "bed"
+        ],
+        "chosen": "cat"
+    },
+    "94336": {
+        "file_name": "000000094336.jpg",
+        "objects": [
+            "cat",
+            "sink"
+        ],
+        "chosen": "cat"
+    },
+    "294855": {
+        "file_name": "000000294855.jpg",
+        "objects": [
+            "bottle",
+            "suitcase"
+        ],
+        "chosen": "suitcase"
+    },
+    "112626": {
+        "file_name": "000000112626.jpg",
+        "objects": [
+            "couch",
+            "suitcase"
+        ],
+        "chosen": "suitcase"
+    },
+    "267940": {
+        "file_name": "000000267940.jpg",
+        "objects": [
+            "boat",
+            "bench"
+        ],
+        "chosen": "boat"
+    },
+    "396580": {
+        "file_name": "000000396580.jpg",
+        "objects": [
+            "boat",
+            "bench"
+        ],
+        "chosen": "boat"
+    },
+    "519688": {
+        "file_name": "000000519688.jpg",
+        "objects": [
+            "person",
+            "bear"
+        ],
+        "chosen": "bear"
+    },
+    "399764": {
+        "file_name": "000000399764.jpg",
+        "objects": [
+            "person",
+            "cow"
+        ],
+        "chosen": "cow"
+    },
+    "32861": {
+        "file_name": "000000032861.jpg",
+        "objects": [
+            "umbrella",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "339823": {
+        "file_name": "000000339823.jpg",
+        "objects": [
+            "umbrella",
+            "person"
+        ],
+        "chosen": "umbrella"
+    },
+    "292155": {
+        "file_name": "000000292155.jpg",
+        "objects": [
+            "umbrella",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "9448": {
+        "file_name": "000000009448.jpg",
+        "objects": [
+            "umbrella",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "442306": {
+        "file_name": "000000442306.jpg",
+        "objects": [
+            "umbrella",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "265108": {
+        "file_name": "000000265108.jpg",
+        "objects": [
+            "umbrella",
+            "suitcase"
+        ],
+        "chosen": "suitcase"
+    },
+    "60052": {
+        "file_name": "000000060052.jpg",
+        "objects": [
+            "umbrella",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "493772": {
+        "file_name": "000000493772.jpg",
+        "objects": [
+            "umbrella",
+            "person"
+        ],
+        "chosen": "umbrella"
+    },
+    "161032": {
+        "file_name": "000000161032.jpg",
+        "objects": [
+            "umbrella",
+            "person"
+        ],
+        "chosen": "umbrella"
+    },
+    "540466": {
+        "file_name": "000000540466.jpg",
+        "objects": [
+            "umbrella",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "4395": {
+        "file_name": "000000004395.jpg",
+        "objects": [
+            "tie",
+            "person"
+        ],
+        "chosen": "tie"
+    },
+    "476415": {
+        "file_name": "000000476415.jpg",
+        "objects": [
+            "tie",
+            "person"
+        ],
+        "chosen": "tie"
+    },
+    "244496": {
+        "file_name": "000000244496.jpg",
+        "objects": [
+            "tie",
+            "person"
+        ],
+        "chosen": "tie"
+    },
+    "289229": {
+        "file_name": "000000289229.jpg",
+        "objects": [
+            "tie",
+            "person"
+        ],
+        "chosen": "tie"
+    },
+    "344268": {
+        "file_name": "000000344268.jpg",
+        "objects": [
+            "tie",
+            "person"
+        ],
+        "chosen": "tie"
+    },
+    "257896": {
+        "file_name": "000000257896.jpg",
+        "objects": [
+            "tie",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "19924": {
+        "file_name": "000000019924.jpg",
+        "objects": [
+            "tie",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "18770": {
+        "file_name": "000000018770.jpg",
+        "objects": [
+            "tie",
+            "person"
+        ],
+        "chosen": "tie"
+    },
+    "170955": {
+        "file_name": "000000170955.jpg",
+        "objects": [
+            "tie",
+            "person"
+        ],
+        "chosen": "tie"
+    },
+    "8532": {
+        "file_name": "000000008532.jpg",
+        "objects": [
+            "tie",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "21604": {
+        "file_name": "000000021604.jpg",
+        "objects": [
+            "tie",
+            "person"
+        ],
+        "chosen": "tie"
+    },
+    "258541": {
+        "file_name": "000000258541.jpg",
+        "objects": [
+            "tie",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "562243": {
+        "file_name": "000000562243.jpg",
+        "objects": [
+            "tie",
+            "person"
+        ],
+        "chosen": "tie"
+    },
+    "152214": {
+        "file_name": "000000152214.jpg",
+        "objects": [
+            "tie",
+            "person"
+        ],
+        "chosen": "tie"
+    },
+    "271997": {
+        "file_name": "000000271997.jpg",
+        "objects": [
+            "tie",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "133343": {
+        "file_name": "000000133343.jpg",
+        "objects": [
+            "tie",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "161875": {
+        "file_name": "000000161875.jpg",
+        "objects": [
+            "tie",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "274219": {
+        "file_name": "000000274219.jpg",
+        "objects": [
+            "tie",
+            "person"
+        ],
+        "chosen": "tie"
+    },
+    "471087": {
+        "file_name": "000000471087.jpg",
+        "objects": [
+            "tie",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "206025": {
+        "file_name": "000000206025.jpg",
+        "objects": [
+            "tie",
+            "person"
+        ],
+        "chosen": "tie"
+    },
+    "167067": {
+        "file_name": "000000167067.jpg",
+        "objects": [
+            "tie",
+            "person"
+        ],
+        "chosen": "tie"
+    },
+    "565989": {
+        "file_name": "000000565989.jpg",
+        "objects": [
+            "clock",
+            "elephant"
+        ],
+        "chosen": "elephant"
+    },
+    "166664": {
+        "file_name": "000000166664.jpg",
+        "objects": [
+            "car",
+            "elephant"
+        ],
+        "chosen": "car"
+    },
+    "88485": {
+        "file_name": "000000088485.jpg",
+        "objects": [
+            "person",
+            "frisbee"
+        ],
+        "chosen": "person"
+    },
+    "337055": {
+        "file_name": "000000337055.jpg",
+        "objects": [
+            "person",
+            "suitcase"
+        ],
+        "chosen": "suitcase"
+    },
+    "519208": {
+        "file_name": "000000519208.jpg",
+        "objects": [
+            "person",
+            "elephant"
+        ],
+        "chosen": "person"
+    },
+    "393115": {
+        "file_name": "000000393115.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "skateboard"
+    },
+    "415748": {
+        "file_name": "000000415748.jpg",
+        "objects": [
+            "person",
+            "elephant"
+        ],
+        "chosen": "elephant"
+    },
+    "203639": {
+        "file_name": "000000203639.jpg",
+        "objects": [
+            "person",
+            "tie"
+        ],
+        "chosen": "tie"
+    },
+    "112110": {
+        "file_name": "000000112110.jpg",
+        "objects": [
+            "person",
+            "suitcase"
+        ],
+        "chosen": "suitcase"
+    },
+    "343803": {
+        "file_name": "000000343803.jpg",
+        "objects": [
+            "person",
+            "frisbee"
+        ],
+        "chosen": "frisbee"
+    },
+    "486112": {
+        "file_name": "000000486112.jpg",
+        "objects": [
+            "person",
+            "elephant"
+        ],
+        "chosen": "elephant"
+    },
+    "6894": {
+        "file_name": "000000006894.jpg",
+        "objects": [
+            "person",
+            "elephant"
+        ],
+        "chosen": "elephant"
+    },
+    "341094": {
+        "file_name": "000000341094.jpg",
+        "objects": [
+            "person",
+            "bear"
+        ],
+        "chosen": "bear"
+    },
+    "85329": {
+        "file_name": "000000085329.jpg",
+        "objects": [
+            "person",
+            "tie"
+        ],
+        "chosen": "person"
+    },
+    "308476": {
+        "file_name": "000000308476.jpg",
+        "objects": [
+            "bear",
+            "sports ball"
+        ],
+        "chosen": "sports ball"
+    },
+    "370813": {
+        "file_name": "000000370813.jpg",
+        "objects": [
+            "skateboard",
+            "person"
+        ],
+        "chosen": "skateboard"
+    },
+    "44068": {
+        "file_name": "000000044068.jpg",
+        "objects": [
+            "teddy bear",
+            "chair"
+        ],
+        "chosen": "teddy bear"
+    },
+    "23023": {
+        "file_name": "000000023023.jpg",
+        "objects": [
+            "handbag",
+            "suitcase"
+        ],
+        "chosen": "suitcase"
+    },
+    "127660": {
+        "file_name": "000000127660.jpg",
+        "objects": [
+            "suitcase",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "350019": {
+        "file_name": "000000350019.jpg",
+        "objects": [
+            "suitcase",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "477689": {
+        "file_name": "000000477689.jpg",
+        "objects": [
+            "tie",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "255664": {
+        "file_name": "000000255664.jpg",
+        "objects": [
+            "dog",
+            "frisbee"
+        ],
+        "chosen": "frisbee"
+    },
+    "221693": {
+        "file_name": "000000221693.jpg",
+        "objects": [
+            "dog",
+            "frisbee"
+        ],
+        "chosen": "frisbee"
+    },
+    "236592": {
+        "file_name": "000000236592.jpg",
+        "objects": [
+            "dog",
+            "oven"
+        ],
+        "chosen": "oven"
+    },
+    "364636": {
+        "file_name": "000000364636.jpg",
+        "objects": [
+            "dog",
+            "bench"
+        ],
+        "chosen": "dog"
+    },
+    "367818": {
+        "file_name": "000000367818.jpg",
+        "objects": [
+            "horse",
+            "person"
+        ],
+        "chosen": "horse"
+    },
+    "242678": {
+        "file_name": "000000242678.jpg",
+        "objects": [
+            "horse",
+            "person"
+        ],
+        "chosen": "horse"
+    },
+    "576052": {
+        "file_name": "000000576052.jpg",
+        "objects": [
+            "horse",
+            "person"
+        ],
+        "chosen": "horse"
+    },
+    "244099": {
+        "file_name": "000000244099.jpg",
+        "objects": [
+            "horse",
+            "person"
+        ],
+        "chosen": "horse"
+    },
+    "553990": {
+        "file_name": "000000553990.jpg",
+        "objects": [
+            "horse",
+            "person"
+        ],
+        "chosen": "horse"
+    },
+    "491683": {
+        "file_name": "000000491683.jpg",
+        "objects": [
+            "horse",
+            "train"
+        ],
+        "chosen": "train"
+    },
+    "353051": {
+        "file_name": "000000353051.jpg",
+        "objects": [
+            "horse",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "54931": {
+        "file_name": "000000054931.jpg",
+        "objects": [
+            "horse",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "45070": {
+        "file_name": "000000045070.jpg",
+        "objects": [
+            "horse",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "574297": {
+        "file_name": "000000574297.jpg",
+        "objects": [
+            "horse",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "269932": {
+        "file_name": "000000269932.jpg",
+        "objects": [
+            "horse",
+            "chair"
+        ],
+        "chosen": "horse"
+    },
+    "140270": {
+        "file_name": "000000140270.jpg",
+        "objects": [
+            "horse",
+            "person"
+        ],
+        "chosen": "horse"
+    },
+    "191288": {
+        "file_name": "000000191288.jpg",
+        "objects": [
+            "horse",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "275392": {
+        "file_name": "000000275392.jpg",
+        "objects": [
+            "horse",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "163951": {
+        "file_name": "000000163951.jpg",
+        "objects": [
+            "chair",
+            "banana"
+        ],
+        "chosen": "banana"
+    },
+    "506279": {
+        "file_name": "000000506279.jpg",
+        "objects": [
+            "dining table",
+            "wine glass"
+        ],
+        "chosen": "dining table"
+    },
+    "357742": {
+        "file_name": "000000357742.jpg",
+        "objects": [
+            "person",
+            "backpack"
+        ],
+        "chosen": "backpack"
+    },
+    "325991": {
+        "file_name": "000000325991.jpg",
+        "objects": [
+            "person",
+            "frisbee"
+        ],
+        "chosen": "person"
+    },
+    "190853": {
+        "file_name": "000000190853.jpg",
+        "objects": [
+            "person",
+            "banana"
+        ],
+        "chosen": "banana"
+    },
+    "266409": {
+        "file_name": "000000266409.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "person"
+    },
+    "199055": {
+        "file_name": "000000199055.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "person"
+    },
+    "336265": {
+        "file_name": "000000336265.jpg",
+        "objects": [
+            "person",
+            "frisbee"
+        ],
+        "chosen": "person"
+    },
+    "38118": {
+        "file_name": "000000038118.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "person"
+    },
+    "136334": {
+        "file_name": "000000136334.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "skis"
+    },
+    "52591": {
+        "file_name": "000000052591.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "person"
+    },
+    "227482": {
+        "file_name": "000000227482.jpg",
+        "objects": [
+            "person",
+            "frisbee"
+        ],
+        "chosen": "person"
+    },
+    "362520": {
+        "file_name": "000000362520.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "skateboard"
+    },
+    "535306": {
+        "file_name": "000000535306.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "skateboard"
+    },
+    "347265": {
+        "file_name": "000000347265.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "person"
+    },
+    "378454": {
+        "file_name": "000000378454.jpg",
+        "objects": [
+            "person",
+            "frisbee"
+        ],
+        "chosen": "frisbee"
+    },
+    "213171": {
+        "file_name": "000000213171.jpg",
+        "objects": [
+            "person",
+            "baseball glove"
+        ],
+        "chosen": "baseball glove"
+    },
+    "128654": {
+        "file_name": "000000128654.jpg",
+        "objects": [
+            "person",
+            "frisbee"
+        ],
+        "chosen": "frisbee"
+    },
+    "312720": {
+        "file_name": "000000312720.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "person"
+    },
+    "556158": {
+        "file_name": "000000556158.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "skis"
+    },
+    "364102": {
+        "file_name": "000000364102.jpg",
+        "objects": [
+            "person",
+            "frisbee"
+        ],
+        "chosen": "person"
+    },
+    "404249": {
+        "file_name": "000000404249.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "person"
+    },
+    "259097": {
+        "file_name": "000000259097.jpg",
+        "objects": [
+            "person",
+            "frisbee"
+        ],
+        "chosen": "frisbee"
+    },
+    "493442": {
+        "file_name": "000000493442.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "person"
+    },
+    "130579": {
+        "file_name": "000000130579.jpg",
+        "objects": [
+            "person",
+            "baseball glove"
+        ],
+        "chosen": "baseball glove"
+    },
+    "257478": {
+        "file_name": "000000257478.jpg",
+        "objects": [
+            "person",
+            "baseball glove"
+        ],
+        "chosen": "baseball glove"
+    },
+    "469828": {
+        "file_name": "000000469828.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "person"
+    },
+    "785": {
+        "file_name": "000000000785.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "person"
+    },
+    "552842": {
+        "file_name": "000000552842.jpg",
+        "objects": [
+            "person",
+            "baseball glove"
+        ],
+        "chosen": "baseball glove"
+    },
+    "138115": {
+        "file_name": "000000138115.jpg",
+        "objects": [
+            "person",
+            "orange"
+        ],
+        "chosen": "orange"
+    },
+    "64462": {
+        "file_name": "000000064462.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "skis"
+    },
+    "169356": {
+        "file_name": "000000169356.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "skateboard"
+    },
+    "292415": {
+        "file_name": "000000292415.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "skateboard"
+    },
+    "162415": {
+        "file_name": "000000162415.jpg",
+        "objects": [
+            "person",
+            "baseball glove"
+        ],
+        "chosen": "baseball glove"
+    },
+    "61747": {
+        "file_name": "000000061747.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "skis"
+    },
+    "51712": {
+        "file_name": "000000051712.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "skis"
+    },
+    "216516": {
+        "file_name": "000000216516.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "skis"
+    },
+    "407002": {
+        "file_name": "000000407002.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "person"
+    },
+    "128112": {
+        "file_name": "000000128112.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "person"
+    },
+    "223955": {
+        "file_name": "000000223955.jpg",
+        "objects": [
+            "person",
+            "frisbee"
+        ],
+        "chosen": "frisbee"
+    },
+    "308165": {
+        "file_name": "000000308165.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "skateboard"
+    },
+    "401244": {
+        "file_name": "000000401244.jpg",
+        "objects": [
+            "person",
+            "frisbee"
+        ],
+        "chosen": "frisbee"
+    },
+    "10764": {
+        "file_name": "000000010764.jpg",
+        "objects": [
+            "person",
+            "baseball glove"
+        ],
+        "chosen": "baseball glove"
+    },
+    "451043": {
+        "file_name": "000000451043.jpg",
+        "objects": [
+            "person",
+            "snowboard"
+        ],
+        "chosen": "person"
+    },
+    "74860": {
+        "file_name": "000000074860.jpg",
+        "objects": [
+            "person",
+            "snowboard"
+        ],
+        "chosen": "person"
+    },
+    "352760": {
+        "file_name": "000000352760.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "person"
+    },
+    "5529": {
+        "file_name": "000000005529.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "skis"
+    },
+    "186042": {
+        "file_name": "000000186042.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "person"
+    },
+    "329827": {
+        "file_name": "000000329827.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "skis"
+    },
+    "108495": {
+        "file_name": "000000108495.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "skateboard"
+    },
+    "19221": {
+        "file_name": "000000019221.jpg",
+        "objects": [
+            "person",
+            "broccoli"
+        ],
+        "chosen": "person"
+    },
+    "184978": {
+        "file_name": "000000184978.jpg",
+        "objects": [
+            "person",
+            "snowboard"
+        ],
+        "chosen": "snowboard"
+    },
+    "328337": {
+        "file_name": "000000328337.jpg",
+        "objects": [
+            "person",
+            "frisbee"
+        ],
+        "chosen": "person"
+    },
+    "13201": {
+        "file_name": "000000013201.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "person"
+    },
+    "13774": {
+        "file_name": "000000013774.jpg",
+        "objects": [
+            "person",
+            "frisbee"
+        ],
+        "chosen": "person"
+    },
+    "481413": {
+        "file_name": "000000481413.jpg",
+        "objects": [
+            "person",
+            "frisbee"
+        ],
+        "chosen": "person"
+    },
+    "374369": {
+        "file_name": "000000374369.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "person"
+    },
+    "173830": {
+        "file_name": "000000173830.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "person"
+    },
+    "423104": {
+        "file_name": "000000423104.jpg",
+        "objects": [
+            "frisbee",
+            "person"
+        ],
+        "chosen": "frisbee"
+    },
+    "342971": {
+        "file_name": "000000342971.jpg",
+        "objects": [
+            "frisbee",
+            "person"
+        ],
+        "chosen": "frisbee"
+    },
+    "80671": {
+        "file_name": "000000080671.jpg",
+        "objects": [
+            "skis",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "197658": {
+        "file_name": "000000197658.jpg",
+        "objects": [
+            "baseball glove",
+            "person"
+        ],
+        "chosen": "baseball glove"
+    },
+    "550471": {
+        "file_name": "000000550471.jpg",
+        "objects": [
+            "fork",
+            "orange"
+        ],
+        "chosen": "fork"
+    },
+    "157138": {
+        "file_name": "000000157138.jpg",
+        "objects": [
+            "fork",
+            "cake"
+        ],
+        "chosen": "cake"
+    },
+    "327780": {
+        "file_name": "000000327780.jpg",
+        "objects": [
+            "fork",
+            "cake"
+        ],
+        "chosen": "fork"
+    },
+    "312406": {
+        "file_name": "000000312406.jpg",
+        "objects": [
+            "banana",
+            "bowl"
+        ],
+        "chosen": "banana"
+    },
+    "279769": {
+        "file_name": "000000279769.jpg",
+        "objects": [
+            "banana",
+            "dining table"
+        ],
+        "chosen": "dining table"
+    },
+    "2587": {
+        "file_name": "000000002587.jpg",
+        "objects": [
+            "banana",
+            "donut"
+        ],
+        "chosen": "donut"
+    },
+    "114871": {
+        "file_name": "000000114871.jpg",
+        "objects": [
+            "banana",
+            "dining table"
+        ],
+        "chosen": "banana"
+    },
+    "13004": {
+        "file_name": "000000013004.jpg",
+        "objects": [
+            "banana",
+            "dining table"
+        ],
+        "chosen": "dining table"
+    },
+    "6614": {
+        "file_name": "000000006614.jpg",
+        "objects": [
+            "apple",
+            "orange"
+        ],
+        "chosen": "orange"
+    },
+    "79014": {
+        "file_name": "000000079014.jpg",
+        "objects": [
+            "orange",
+            "person"
+        ],
+        "chosen": "orange"
+    },
+    "347370": {
+        "file_name": "000000347370.jpg",
+        "objects": [
+            "orange",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "194746": {
+        "file_name": "000000194746.jpg",
+        "objects": [
+            "pizza",
+            "oven"
+        ],
+        "chosen": "pizza"
+    },
+    "155179": {
+        "file_name": "000000155179.jpg",
+        "objects": [
+            "cake",
+            "dining table"
+        ],
+        "chosen": "cake"
+    },
+    "13597": {
+        "file_name": "000000013597.jpg",
+        "objects": [
+            "cake",
+            "dining table"
+        ],
+        "chosen": "cake"
+    },
+    "324715": {
+        "file_name": "000000324715.jpg",
+        "objects": [
+            "laptop",
+            "scissors"
+        ],
+        "chosen": "laptop"
+    },
+    "235784": {
+        "file_name": "000000235784.jpg",
+        "objects": [
+            "backpack",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "45728": {
+        "file_name": "000000045728.jpg",
+        "objects": [
+            "fork",
+            "knife"
+        ],
+        "chosen": "knife"
+    },
+    "253695": {
+        "file_name": "000000253695.jpg",
+        "objects": [
+            "person",
+            "baseball glove"
+        ],
+        "chosen": "person"
+    },
+    "464786": {
+        "file_name": "000000464786.jpg",
+        "objects": [
+            "hot dog",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "530624": {
+        "file_name": "000000530624.jpg",
+        "objects": [
+            "dog",
+            "bed"
+        ],
+        "chosen": "bed"
+    },
+    "366611": {
+        "file_name": "000000366611.jpg",
+        "objects": [
+            "dog",
+            "sports ball"
+        ],
+        "chosen": "sports ball"
+    },
+    "460929": {
+        "file_name": "000000460929.jpg",
+        "objects": [
+            "bottle",
+            "hot dog"
+        ],
+        "chosen": "bottle"
+    },
+    "190007": {
+        "file_name": "000000190007.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "surfboard"
+    },
+    "1425": {
+        "file_name": "000000001425.jpg",
+        "objects": [
+            "sandwich",
+            "bowl"
+        ],
+        "chosen": "sandwich"
+    },
+    "197004": {
+        "file_name": "000000197004.jpg",
+        "objects": [
+            "sandwich",
+            "keyboard"
+        ],
+        "chosen": "keyboard"
+    },
+    "493334": {
+        "file_name": "000000493334.jpg",
+        "objects": [
+            "cell phone",
+            "cake"
+        ],
+        "chosen": "cell phone"
+    },
+    "551780": {
+        "file_name": "000000551780.jpg",
+        "objects": [
+            "clock",
+            "spoon"
+        ],
+        "chosen": "clock"
+    },
+    "107554": {
+        "file_name": "000000107554.jpg",
+        "objects": [
+            "car",
+            "surfboard"
+        ],
+        "chosen": "surfboard"
+    },
+    "426795": {
+        "file_name": "000000426795.jpg",
+        "objects": [
+            "chair",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "102820": {
+        "file_name": "000000102820.jpg",
+        "objects": [
+            "person",
+            "cake"
+        ],
+        "chosen": "person"
+    },
+    "450559": {
+        "file_name": "000000450559.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "person"
+    },
+    "185950": {
+        "file_name": "000000185950.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "skateboard"
+    },
+    "106912": {
+        "file_name": "000000106912.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "skateboard"
+    },
+    "401250": {
+        "file_name": "000000401250.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "skis"
+    },
+    "253819": {
+        "file_name": "000000253819.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "person"
+    },
+    "187362": {
+        "file_name": "000000187362.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "person"
+    },
+    "512985": {
+        "file_name": "000000512985.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "surfboard"
+    },
+    "451084": {
+        "file_name": "000000451084.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "skateboard"
+    },
+    "343937": {
+        "file_name": "000000343937.jpg",
+        "objects": [
+            "person",
+            "snowboard"
+        ],
+        "chosen": "person"
+    },
+    "89078": {
+        "file_name": "000000089078.jpg",
+        "objects": [
+            "person",
+            "snowboard"
+        ],
+        "chosen": "person"
+    },
+    "72281": {
+        "file_name": "000000072281.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "person"
+    },
+    "417911": {
+        "file_name": "000000417911.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "person"
+    },
+    "121673": {
+        "file_name": "000000121673.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "surfboard"
+    },
+    "492968": {
+        "file_name": "000000492968.jpg",
+        "objects": [
+            "person",
+            "snowboard"
+        ],
+        "chosen": "person"
+    },
+    "561223": {
+        "file_name": "000000561223.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "surfboard"
+    },
+    "188592": {
+        "file_name": "000000188592.jpg",
+        "objects": [
+            "person",
+            "apple"
+        ],
+        "chosen": "person"
+    },
+    "464144": {
+        "file_name": "000000464144.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "person"
+    },
+    "83540": {
+        "file_name": "000000083540.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "person"
+    },
+    "229553": {
+        "file_name": "000000229553.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "person"
+    },
+    "190841": {
+        "file_name": "000000190841.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "skateboard"
+    },
+    "424521": {
+        "file_name": "000000424521.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "skateboard"
+    },
+    "314709": {
+        "file_name": "000000314709.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "person"
+    },
+    "51314": {
+        "file_name": "000000051314.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "person"
+    },
+    "145665": {
+        "file_name": "000000145665.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "person"
+    },
+    "270677": {
+        "file_name": "000000270677.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "person"
+    },
+    "373315": {
+        "file_name": "000000373315.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "person"
+    },
+    "563349": {
+        "file_name": "000000563349.jpg",
+        "objects": [
+            "person",
+            "snowboard"
+        ],
+        "chosen": "person"
+    },
+    "252507": {
+        "file_name": "000000252507.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "person"
+    },
+    "359677": {
+        "file_name": "000000359677.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "surfboard"
+    },
+    "473121": {
+        "file_name": "000000473121.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "person"
+    },
+    "442463": {
+        "file_name": "000000442463.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "skateboard"
+    },
+    "194471": {
+        "file_name": "000000194471.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "person"
+    },
+    "532493": {
+        "file_name": "000000532493.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "person"
+    },
+    "125472": {
+        "file_name": "000000125472.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "skateboard"
+    },
+    "199442": {
+        "file_name": "000000199442.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "person"
+    },
+    "343453": {
+        "file_name": "000000343453.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "skis"
+    },
+    "358195": {
+        "file_name": "000000358195.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "person"
+    },
+    "132703": {
+        "file_name": "000000132703.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "skateboard"
+    },
+    "125257": {
+        "file_name": "000000125257.jpg",
+        "objects": [
+            "person",
+            "snowboard"
+        ],
+        "chosen": "person"
+    },
+    "177357": {
+        "file_name": "000000177357.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "person"
+    },
+    "20992": {
+        "file_name": "000000020992.jpg",
+        "objects": [
+            "person",
+            "hot dog"
+        ],
+        "chosen": "hot dog"
+    },
+    "109992": {
+        "file_name": "000000109992.jpg",
+        "objects": [
+            "person",
+            "snowboard"
+        ],
+        "chosen": "person"
+    },
+    "548555": {
+        "file_name": "000000548555.jpg",
+        "objects": [
+            "person",
+            "hot dog"
+        ],
+        "chosen": "hot dog"
+    },
+    "74457": {
+        "file_name": "000000074457.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "person"
+    },
+    "161879": {
+        "file_name": "000000161879.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "skateboard"
+    },
+    "554595": {
+        "file_name": "000000554595.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "surfboard"
+    },
+    "129812": {
+        "file_name": "000000129812.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "skis"
+    },
+    "327306": {
+        "file_name": "000000327306.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "person"
+    },
+    "90956": {
+        "file_name": "000000090956.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "skis"
+    },
+    "185292": {
+        "file_name": "000000185292.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "person"
+    },
+    "426376": {
+        "file_name": "000000426376.jpg",
+        "objects": [
+            "person",
+            "snowboard"
+        ],
+        "chosen": "snowboard"
+    },
+    "489924": {
+        "file_name": "000000489924.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "skateboard"
+    },
+    "172649": {
+        "file_name": "000000172649.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "skateboard"
+    },
+    "122672": {
+        "file_name": "000000122672.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "surfboard"
+    },
+    "180135": {
+        "file_name": "000000180135.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "person"
+    },
+    "275058": {
+        "file_name": "000000275058.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "surfboard"
+    },
+    "581062": {
+        "file_name": "000000581062.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "person"
+    },
+    "3553": {
+        "file_name": "000000003553.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "person"
+    },
+    "187990": {
+        "file_name": "000000187990.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "skateboard"
+    },
+    "217872": {
+        "file_name": "000000217872.jpg",
+        "objects": [
+            "person",
+            "snowboard"
+        ],
+        "chosen": "snowboard"
+    },
+    "532855": {
+        "file_name": "000000532855.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "person"
+    },
+    "151051": {
+        "file_name": "000000151051.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "skis"
+    },
+    "121591": {
+        "file_name": "000000121591.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "person"
+    },
+    "80273": {
+        "file_name": "000000080273.jpg",
+        "objects": [
+            "person",
+            "snowboard"
+        ],
+        "chosen": "person"
+    },
+    "193429": {
+        "file_name": "000000193429.jpg",
+        "objects": [
+            "person",
+            "snowboard"
+        ],
+        "chosen": "person"
+    },
+    "449603": {
+        "file_name": "000000449603.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "surfboard"
+    },
+    "270122": {
+        "file_name": "000000270122.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "person"
+    },
+    "1490": {
+        "file_name": "000000001490.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "person"
+    },
+    "187585": {
+        "file_name": "000000187585.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "person"
+    },
+    "99242": {
+        "file_name": "000000099242.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "skis"
+    },
+    "177539": {
+        "file_name": "000000177539.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "surfboard"
+    },
+    "476258": {
+        "file_name": "000000476258.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "skateboard"
+    },
+    "349594": {
+        "file_name": "000000349594.jpg",
+        "objects": [
+            "person",
+            "donut"
+        ],
+        "chosen": "person"
+    },
+    "161781": {
+        "file_name": "000000161781.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "person"
+    },
+    "395903": {
+        "file_name": "000000395903.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "surfboard"
+    },
+    "402118": {
+        "file_name": "000000402118.jpg",
+        "objects": [
+            "person",
+            "snowboard"
+        ],
+        "chosen": "person"
+    },
+    "54164": {
+        "file_name": "000000054164.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "surfboard"
+    },
+    "544444": {
+        "file_name": "000000544444.jpg",
+        "objects": [
+            "person",
+            "skis"
+        ],
+        "chosen": "skis"
+    },
+    "97278": {
+        "file_name": "000000097278.jpg",
+        "objects": [
+            "person",
+            "snowboard"
+        ],
+        "chosen": "snowboard"
+    },
+    "68628": {
+        "file_name": "000000068628.jpg",
+        "objects": [
+            "person",
+            "skateboard"
+        ],
+        "chosen": "person"
+    },
+    "407650": {
+        "file_name": "000000407650.jpg",
+        "objects": [
+            "person",
+            "snowboard"
+        ],
+        "chosen": "snowboard"
+    },
+    "574520": {
+        "file_name": "000000574520.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "person"
+    },
+    "4765": {
+        "file_name": "000000004765.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "surfboard"
+    },
+    "230819": {
+        "file_name": "000000230819.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "surfboard"
+    },
+    "23359": {
+        "file_name": "000000023359.jpg",
+        "objects": [
+            "person",
+            "snowboard"
+        ],
+        "chosen": "person"
+    },
+    "326462": {
+        "file_name": "000000326462.jpg",
+        "objects": [
+            "person",
+            "donut"
+        ],
+        "chosen": "donut"
+    },
+    "400044": {
+        "file_name": "000000400044.jpg",
+        "objects": [
+            "snowboard",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "263068": {
+        "file_name": "000000263068.jpg",
+        "objects": [
+            "skateboard",
+            "person"
+        ],
+        "chosen": "skateboard"
+    },
+    "331604": {
+        "file_name": "000000331604.jpg",
+        "objects": [
+            "surfboard",
+            "person"
+        ],
+        "chosen": "surfboard"
+    },
+    "535858": {
+        "file_name": "000000535858.jpg",
+        "objects": [
+            "surfboard",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "164115": {
+        "file_name": "000000164115.jpg",
+        "objects": [
+            "surfboard",
+            "bicycle"
+        ],
+        "chosen": "surfboard"
+    },
+    "6460": {
+        "file_name": "000000006460.jpg",
+        "objects": [
+            "surfboard",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "251537": {
+        "file_name": "000000251537.jpg",
+        "objects": [
+            "carrot",
+            "dining table"
+        ],
+        "chosen": "carrot"
+    },
+    "521601": {
+        "file_name": "000000521601.jpg",
+        "objects": [
+            "donut",
+            "bowl"
+        ],
+        "chosen": "donut"
+    },
+    "453040": {
+        "file_name": "000000453040.jpg",
+        "objects": [
+            "cake",
+            "dining table"
+        ],
+        "chosen": "dining table"
+    },
+    "119677": {
+        "file_name": "000000119677.jpg",
+        "objects": [
+            "cake",
+            "fork"
+        ],
+        "chosen": "cake"
+    },
+    "495448": {
+        "file_name": "000000495448.jpg",
+        "objects": [
+            "cake",
+            "knife"
+        ],
+        "chosen": "knife"
+    },
+    "485130": {
+        "file_name": "000000485130.jpg",
+        "objects": [
+            "cake",
+            "dining table"
+        ],
+        "chosen": "dining table"
+    },
+    "344795": {
+        "file_name": "000000344795.jpg",
+        "objects": [
+            "oven",
+            "cake"
+        ],
+        "chosen": "oven"
+    },
+    "138954": {
+        "file_name": "000000138954.jpg",
+        "objects": [
+            "apple",
+            "dining table"
+        ],
+        "chosen": "apple"
+    },
+    "138241": {
+        "file_name": "000000138241.jpg",
+        "objects": [
+            "hot dog",
+            "dining table"
+        ],
+        "chosen": "dining table"
+    },
+    "251119": {
+        "file_name": "000000251119.jpg",
+        "objects": [
+            "sandwich",
+            "hot dog"
+        ],
+        "chosen": "sandwich"
+    },
+    "84431": {
+        "file_name": "000000084431.jpg",
+        "objects": [
+            "tv",
+            "pizza"
+        ],
+        "chosen": "pizza"
+    },
+    "202445": {
+        "file_name": "000000202445.jpg",
+        "objects": [
+            "cat",
+            "bed"
+        ],
+        "chosen": "bed"
+    },
+    "435299": {
+        "file_name": "000000435299.jpg",
+        "objects": [
+            "cat",
+            "bed"
+        ],
+        "chosen": "cat"
+    },
+    "213422": {
+        "file_name": "000000213422.jpg",
+        "objects": [
+            "chair",
+            "bed"
+        ],
+        "chosen": "bed"
+    },
+    "569972": {
+        "file_name": "000000569972.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "person"
+    },
+    "471756": {
+        "file_name": "000000471756.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "surfboard"
+    },
+    "179285": {
+        "file_name": "000000179285.jpg",
+        "objects": [
+            "sports ball",
+            "tennis racket"
+        ],
+        "chosen": "sports ball"
+    },
+    "365095": {
+        "file_name": "000000365095.jpg",
+        "objects": [
+            "sports ball",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "479953": {
+        "file_name": "000000479953.jpg",
+        "objects": [
+            "sports ball",
+            "person"
+        ],
+        "chosen": "sports ball"
+    },
+    "497628": {
+        "file_name": "000000497628.jpg",
+        "objects": [
+            "bed",
+            "couch"
+        ],
+        "chosen": "couch"
+    },
+    "39956": {
+        "file_name": "000000039956.jpg",
+        "objects": [
+            "bed",
+            "chair"
+        ],
+        "chosen": "bed"
+    },
+    "199551": {
+        "file_name": "000000199551.jpg",
+        "objects": [
+            "bed",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "243199": {
+        "file_name": "000000243199.jpg",
+        "objects": [
+            "bed",
+            "laptop"
+        ],
+        "chosen": "bed"
+    },
+    "347174": {
+        "file_name": "000000347174.jpg",
+        "objects": [
+            "bed",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "254368": {
+        "file_name": "000000254368.jpg",
+        "objects": [
+            "bed",
+            "person"
+        ],
+        "chosen": "bed"
+    },
+    "415882": {
+        "file_name": "000000415882.jpg",
+        "objects": [
+            "bed",
+            "person"
+        ],
+        "chosen": "bed"
+    },
+    "403353": {
+        "file_name": "000000403353.jpg",
+        "objects": [
+            "bed",
+            "book"
+        ],
+        "chosen": "bed"
+    },
+    "65074": {
+        "file_name": "000000065074.jpg",
+        "objects": [
+            "bed",
+            "book"
+        ],
+        "chosen": "book"
+    },
+    "190648": {
+        "file_name": "000000190648.jpg",
+        "objects": [
+            "bed",
+            "chair"
+        ],
+        "chosen": "bed"
+    },
+    "35062": {
+        "file_name": "000000035062.jpg",
+        "objects": [
+            "bed",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "384651": {
+        "file_name": "000000384651.jpg",
+        "objects": [
+            "bed",
+            "cup"
+        ],
+        "chosen": "bed"
+    },
+    "167159": {
+        "file_name": "000000167159.jpg",
+        "objects": [
+            "bed",
+            "book"
+        ],
+        "chosen": "book"
+    },
+    "468577": {
+        "file_name": "000000468577.jpg",
+        "objects": [
+            "bed",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "311394": {
+        "file_name": "000000311394.jpg",
+        "objects": [
+            "toothbrush",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "544519": {
+        "file_name": "000000544519.jpg",
+        "objects": [
+            "toothbrush",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "175251": {
+        "file_name": "000000175251.jpg",
+        "objects": [
+            "toothbrush",
+            "person"
+        ],
+        "chosen": "toothbrush"
+    },
+    "193348": {
+        "file_name": "000000193348.jpg",
+        "objects": [
+            "toothbrush",
+            "person"
+        ],
+        "chosen": "toothbrush"
+    },
+    "324614": {
+        "file_name": "000000324614.jpg",
+        "objects": [
+            "toothbrush",
+            "person"
+        ],
+        "chosen": "toothbrush"
+    },
+    "521405": {
+        "file_name": "000000521405.jpg",
+        "objects": [
+            "toothbrush",
+            "sink"
+        ],
+        "chosen": "sink"
+    },
+    "563281": {
+        "file_name": "000000563281.jpg",
+        "objects": [
+            "toothbrush",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "220584": {
+        "file_name": "000000220584.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "surfboard"
+    },
+    "263403": {
+        "file_name": "000000263403.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "person"
+    },
+    "297595": {
+        "file_name": "000000297595.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "person"
+    },
+    "320696": {
+        "file_name": "000000320696.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "surfboard"
+    },
+    "351823": {
+        "file_name": "000000351823.jpg",
+        "objects": [
+            "person",
+            "tennis racket"
+        ],
+        "chosen": "person"
+    },
+    "162581": {
+        "file_name": "000000162581.jpg",
+        "objects": [
+            "person",
+            "tennis racket"
+        ],
+        "chosen": "person"
+    },
+    "498807": {
+        "file_name": "000000498807.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "surfboard"
+    },
+    "549055": {
+        "file_name": "000000549055.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "person"
+    },
+    "149770": {
+        "file_name": "000000149770.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "surfboard"
+    },
+    "27972": {
+        "file_name": "000000027972.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "person"
+    },
+    "554156": {
+        "file_name": "000000554156.jpg",
+        "objects": [
+            "person",
+            "tennis racket"
+        ],
+        "chosen": "tennis racket"
+    },
+    "2261": {
+        "file_name": "000000002261.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "person"
+    },
+    "364126": {
+        "file_name": "000000364126.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "surfboard"
+    },
+    "148739": {
+        "file_name": "000000148739.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "person"
+    },
+    "210915": {
+        "file_name": "000000210915.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "person"
+    },
+    "381360": {
+        "file_name": "000000381360.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "person"
+    },
+    "321790": {
+        "file_name": "000000321790.jpg",
+        "objects": [
+            "person",
+            "tennis racket"
+        ],
+        "chosen": "tennis racket"
+    },
+    "475191": {
+        "file_name": "000000475191.jpg",
+        "objects": [
+            "person",
+            "tennis racket"
+        ],
+        "chosen": "person"
+    },
+    "133418": {
+        "file_name": "000000133418.jpg",
+        "objects": [
+            "person",
+            "tennis racket"
+        ],
+        "chosen": "person"
+    },
+    "7278": {
+        "file_name": "000000007278.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "surfboard"
+    },
+    "551215": {
+        "file_name": "000000551215.jpg",
+        "objects": [
+            "person",
+            "tennis racket"
+        ],
+        "chosen": "tennis racket"
+    },
+    "393056": {
+        "file_name": "000000393056.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "person"
+    },
+    "445999": {
+        "file_name": "000000445999.jpg",
+        "objects": [
+            "person",
+            "toothbrush"
+        ],
+        "chosen": "toothbrush"
+    },
+    "394559": {
+        "file_name": "000000394559.jpg",
+        "objects": [
+            "person",
+            "tennis racket"
+        ],
+        "chosen": "person"
+    },
+    "551804": {
+        "file_name": "000000551804.jpg",
+        "objects": [
+            "person",
+            "tennis racket"
+        ],
+        "chosen": "person"
+    },
+    "82715": {
+        "file_name": "000000082715.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "person"
+    },
+    "50943": {
+        "file_name": "000000050943.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "person"
+    },
+    "513524": {
+        "file_name": "000000513524.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "person"
+    },
+    "505451": {
+        "file_name": "000000505451.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "surfboard"
+    },
+    "554735": {
+        "file_name": "000000554735.jpg",
+        "objects": [
+            "person",
+            "pizza"
+        ],
+        "chosen": "person"
+    },
+    "32081": {
+        "file_name": "000000032081.jpg",
+        "objects": [
+            "person",
+            "tennis racket"
+        ],
+        "chosen": "tennis racket"
+    },
+    "190307": {
+        "file_name": "000000190307.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "person"
+    },
+    "115898": {
+        "file_name": "000000115898.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "surfboard"
+    },
+    "425702": {
+        "file_name": "000000425702.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "person"
+    },
+    "137106": {
+        "file_name": "000000137106.jpg",
+        "objects": [
+            "person",
+            "bed"
+        ],
+        "chosen": "bed"
+    },
+    "273760": {
+        "file_name": "000000273760.jpg",
+        "objects": [
+            "person",
+            "tennis racket"
+        ],
+        "chosen": "tennis racket"
+    },
+    "482735": {
+        "file_name": "000000482735.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "person"
+    },
+    "191672": {
+        "file_name": "000000191672.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "person"
+    },
+    "498032": {
+        "file_name": "000000498032.jpg",
+        "objects": [
+            "person",
+            "remote"
+        ],
+        "chosen": "remote"
+    },
+    "530820": {
+        "file_name": "000000530820.jpg",
+        "objects": [
+            "person",
+            "tennis racket"
+        ],
+        "chosen": "person"
+    },
+    "327617": {
+        "file_name": "000000327617.jpg",
+        "objects": [
+            "person",
+            "tennis racket"
+        ],
+        "chosen": "tennis racket"
+    },
+    "52507": {
+        "file_name": "000000052507.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "person"
+    },
+    "503755": {
+        "file_name": "000000503755.jpg",
+        "objects": [
+            "person",
+            "tennis racket"
+        ],
+        "chosen": "tennis racket"
+    },
+    "117744": {
+        "file_name": "000000117744.jpg",
+        "objects": [
+            "person",
+            "tennis racket"
+        ],
+        "chosen": "person"
+    },
+    "390246": {
+        "file_name": "000000390246.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "surfboard"
+    },
+    "257865": {
+        "file_name": "000000257865.jpg",
+        "objects": [
+            "person",
+            "tennis racket"
+        ],
+        "chosen": "person"
+    },
+    "441286": {
+        "file_name": "000000441286.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "person"
+    },
+    "376206": {
+        "file_name": "000000376206.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "person"
+    },
+    "278973": {
+        "file_name": "000000278973.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "surfboard"
+    },
+    "515350": {
+        "file_name": "000000515350.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "person"
+    },
+    "79031": {
+        "file_name": "000000079031.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "surfboard"
+    },
+    "380711": {
+        "file_name": "000000380711.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "person"
+    },
+    "25228": {
+        "file_name": "000000025228.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "person"
+    },
+    "378116": {
+        "file_name": "000000378116.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "surfboard"
+    },
+    "32570": {
+        "file_name": "000000032570.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "surfboard"
+    },
+    "292908": {
+        "file_name": "000000292908.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "person"
+    },
+    "183127": {
+        "file_name": "000000183127.jpg",
+        "objects": [
+            "surfboard",
+            "person"
+        ],
+        "chosen": "surfboard"
+    },
+    "51976": {
+        "file_name": "000000051976.jpg",
+        "objects": [
+            "surfboard",
+            "person"
+        ],
+        "chosen": "surfboard"
+    },
+    "63154": {
+        "file_name": "000000063154.jpg",
+        "objects": [
+            "surfboard",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "404805": {
+        "file_name": "000000404805.jpg",
+        "objects": [
+            "surfboard",
+            "person"
+        ],
+        "chosen": "surfboard"
+    },
+    "567011": {
+        "file_name": "000000567011.jpg",
+        "objects": [
+            "surfboard",
+            "person"
+        ],
+        "chosen": "surfboard"
+    },
+    "334530": {
+        "file_name": "000000334530.jpg",
+        "objects": [
+            "surfboard",
+            "person"
+        ],
+        "chosen": "surfboard"
+    },
+    "262587": {
+        "file_name": "000000262587.jpg",
+        "objects": [
+            "surfboard",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "356505": {
+        "file_name": "000000356505.jpg",
+        "objects": [
+            "surfboard",
+            "person"
+        ],
+        "chosen": "surfboard"
+    },
+    "437331": {
+        "file_name": "000000437331.jpg",
+        "objects": [
+            "surfboard",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "386879": {
+        "file_name": "000000386879.jpg",
+        "objects": [
+            "tennis racket",
+            "person"
+        ],
+        "chosen": "tennis racket"
+    },
+    "33005": {
+        "file_name": "000000033005.jpg",
+        "objects": [
+            "tennis racket",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "223959": {
+        "file_name": "000000223959.jpg",
+        "objects": [
+            "tennis racket",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "39480": {
+        "file_name": "000000039480.jpg",
+        "objects": [
+            "tennis racket",
+            "person"
+        ],
+        "chosen": "tennis racket"
+    },
+    "189451": {
+        "file_name": "000000189451.jpg",
+        "objects": [
+            "knife",
+            "cake"
+        ],
+        "chosen": "knife"
+    },
+    "342186": {
+        "file_name": "000000342186.jpg",
+        "objects": [
+            "pizza",
+            "dining table"
+        ],
+        "chosen": "dining table"
+    },
+    "312552": {
+        "file_name": "000000312552.jpg",
+        "objects": [
+            "pizza",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "82765": {
+        "file_name": "000000082765.jpg",
+        "objects": [
+            "laptop",
+            "bed"
+        ],
+        "chosen": "bed"
+    },
+    "402765": {
+        "file_name": "000000402765.jpg",
+        "objects": [
+            "remote",
+            "person"
+        ],
+        "chosen": "remote"
+    },
+    "541664": {
+        "file_name": "000000541664.jpg",
+        "objects": [
+            "keyboard",
+            "laptop"
+        ],
+        "chosen": "laptop"
+    },
+    "485071": {
+        "file_name": "000000485071.jpg",
+        "objects": [
+            "person",
+            "surfboard"
+        ],
+        "chosen": "surfboard"
+    },
+    "577735": {
+        "file_name": "000000577735.jpg",
+        "objects": [
+            "potted plant",
+            "vase"
+        ],
+        "chosen": "vase"
+    },
+    "69795": {
+        "file_name": "000000069795.jpg",
+        "objects": [
+            "potted plant",
+            "vase"
+        ],
+        "chosen": "vase"
+    },
+    "383339": {
+        "file_name": "000000383339.jpg",
+        "objects": [
+            "bird",
+            "person"
+        ],
+        "chosen": "bird"
+    },
+    "253433": {
+        "file_name": "000000253433.jpg",
+        "objects": [
+            "couch",
+            "teddy bear"
+        ],
+        "chosen": "teddy bear"
+    },
+    "400922": {
+        "file_name": "000000400922.jpg",
+        "objects": [
+            "airplane",
+            "clock"
+        ],
+        "chosen": "airplane"
+    },
+    "343706": {
+        "file_name": "000000343706.jpg",
+        "objects": [
+            "cell phone",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "450686": {
+        "file_name": "000000450686.jpg",
+        "objects": [
+            "cell phone",
+            "person"
+        ],
+        "chosen": "cell phone"
+    },
+    "480212": {
+        "file_name": "000000480212.jpg",
+        "objects": [
+            "cell phone",
+            "dining table"
+        ],
+        "chosen": "cell phone"
+    },
+    "430048": {
+        "file_name": "000000430048.jpg",
+        "objects": [
+            "clock",
+            "car"
+        ],
+        "chosen": "car"
+    },
+    "331317": {
+        "file_name": "000000331317.jpg",
+        "objects": [
+            "clock",
+            "person"
+        ],
+        "chosen": "clock"
+    },
+    "340015": {
+        "file_name": "000000340015.jpg",
+        "objects": [
+            "dining table",
+            "pizza"
+        ],
+        "chosen": "dining table"
+    },
+    "426836": {
+        "file_name": "000000426836.jpg",
+        "objects": [
+            "person",
+            "kite"
+        ],
+        "chosen": "kite"
+    },
+    "130586": {
+        "file_name": "000000130586.jpg",
+        "objects": [
+            "person",
+            "kite"
+        ],
+        "chosen": "kite"
+    },
+    "269121": {
+        "file_name": "000000269121.jpg",
+        "objects": [
+            "person",
+            "tennis racket"
+        ],
+        "chosen": "person"
+    },
+    "357238": {
+        "file_name": "000000357238.jpg",
+        "objects": [
+            "person",
+            "kite"
+        ],
+        "chosen": "kite"
+    },
+    "154425": {
+        "file_name": "000000154425.jpg",
+        "objects": [
+            "person",
+            "kite"
+        ],
+        "chosen": "kite"
+    },
+    "248752": {
+        "file_name": "000000248752.jpg",
+        "objects": [
+            "person",
+            "baseball bat"
+        ],
+        "chosen": "person"
+    },
+    "50638": {
+        "file_name": "000000050638.jpg",
+        "objects": [
+            "person",
+            "teddy bear"
+        ],
+        "chosen": "teddy bear"
+    },
+    "161861": {
+        "file_name": "000000161861.jpg",
+        "objects": [
+            "person",
+            "tennis racket"
+        ],
+        "chosen": "person"
+    },
+    "521956": {
+        "file_name": "000000521956.jpg",
+        "objects": [
+            "person",
+            "tennis racket"
+        ],
+        "chosen": "person"
+    },
+    "270908": {
+        "file_name": "000000270908.jpg",
+        "objects": [
+            "person",
+            "tennis racket"
+        ],
+        "chosen": "tennis racket"
+    },
+    "221291": {
+        "file_name": "000000221291.jpg",
+        "objects": [
+            "person",
+            "kite"
+        ],
+        "chosen": "kite"
+    },
+    "511647": {
+        "file_name": "000000511647.jpg",
+        "objects": [
+            "person",
+            "kite"
+        ],
+        "chosen": "kite"
+    },
+    "90284": {
+        "file_name": "000000090284.jpg",
+        "objects": [
+            "person",
+            "tennis racket"
+        ],
+        "chosen": "person"
+    },
+    "577959": {
+        "file_name": "000000577959.jpg",
+        "objects": [
+            "person",
+            "kite"
+        ],
+        "chosen": "kite"
+    },
+    "199310": {
+        "file_name": "000000199310.jpg",
+        "objects": [
+            "person",
+            "tennis racket"
+        ],
+        "chosen": "tennis racket"
+    },
+    "181303": {
+        "file_name": "000000181303.jpg",
+        "objects": [
+            "person",
+            "kite"
+        ],
+        "chosen": "kite"
+    },
+    "232684": {
+        "file_name": "000000232684.jpg",
+        "objects": [
+            "person",
+            "laptop"
+        ],
+        "chosen": "laptop"
+    },
+    "289960": {
+        "file_name": "000000289960.jpg",
+        "objects": [
+            "person",
+            "kite"
+        ],
+        "chosen": "kite"
+    },
+    "322944": {
+        "file_name": "000000322944.jpg",
+        "objects": [
+            "person",
+            "teddy bear"
+        ],
+        "chosen": "teddy bear"
+    },
+    "270474": {
+        "file_name": "000000270474.jpg",
+        "objects": [
+            "person",
+            "baseball bat"
+        ],
+        "chosen": "person"
+    },
+    "427077": {
+        "file_name": "000000427077.jpg",
+        "objects": [
+            "person",
+            "baseball bat"
+        ],
+        "chosen": "person"
+    },
+    "158227": {
+        "file_name": "000000158227.jpg",
+        "objects": [
+            "person",
+            "baseball bat"
+        ],
+        "chosen": "person"
+    },
+    "367228": {
+        "file_name": "000000367228.jpg",
+        "objects": [
+            "kite",
+            "person"
+        ],
+        "chosen": "kite"
+    },
+    "124442": {
+        "file_name": "000000124442.jpg",
+        "objects": [
+            "kite",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "411774": {
+        "file_name": "000000411774.jpg",
+        "objects": [
+            "tennis racket",
+            "person"
+        ],
+        "chosen": "tennis racket"
+    },
+    "449579": {
+        "file_name": "000000449579.jpg",
+        "objects": [
+            "tennis racket",
+            "person"
+        ],
+        "chosen": "tennis racket"
+    },
+    "138856": {
+        "file_name": "000000138856.jpg",
+        "objects": [
+            "bowl",
+            "oven"
+        ],
+        "chosen": "oven"
+    },
+    "236412": {
+        "file_name": "000000236412.jpg",
+        "objects": [
+            "pizza",
+            "spoon"
+        ],
+        "chosen": "pizza"
+    },
+    "172396": {
+        "file_name": "000000172396.jpg",
+        "objects": [
+            "pizza",
+            "oven"
+        ],
+        "chosen": "pizza"
+    },
+    "192191": {
+        "file_name": "000000192191.jpg",
+        "objects": [
+            "pizza",
+            "oven"
+        ],
+        "chosen": "pizza"
+    },
+    "206218": {
+        "file_name": "000000206218.jpg",
+        "objects": [
+            "laptop",
+            "keyboard"
+        ],
+        "chosen": "keyboard"
+    },
+    "494427": {
+        "file_name": "000000494427.jpg",
+        "objects": [
+            "laptop",
+            "keyboard"
+        ],
+        "chosen": "keyboard"
+    },
+    "294162": {
+        "file_name": "000000294162.jpg",
+        "objects": [
+            "laptop",
+            "mouse"
+        ],
+        "chosen": "laptop"
+    },
+    "248631": {
+        "file_name": "000000248631.jpg",
+        "objects": [
+            "laptop",
+            "mouse"
+        ],
+        "chosen": "laptop"
+    },
+    "16439": {
+        "file_name": "000000016439.jpg",
+        "objects": [
+            "laptop",
+            "wine glass"
+        ],
+        "chosen": "wine glass"
+    },
+    "482970": {
+        "file_name": "000000482970.jpg",
+        "objects": [
+            "laptop",
+            "mouse"
+        ],
+        "chosen": "mouse"
+    },
+    "176446": {
+        "file_name": "000000176446.jpg",
+        "objects": [
+            "laptop",
+            "book"
+        ],
+        "chosen": "book"
+    },
+    "335658": {
+        "file_name": "000000335658.jpg",
+        "objects": [
+            "mouse",
+            "keyboard"
+        ],
+        "chosen": "mouse"
+    },
+    "378099": {
+        "file_name": "000000378099.jpg",
+        "objects": [
+            "mouse",
+            "keyboard"
+        ],
+        "chosen": "keyboard"
+    },
+    "42889": {
+        "file_name": "000000042889.jpg",
+        "objects": [
+            "keyboard",
+            "teddy bear"
+        ],
+        "chosen": "keyboard"
+    },
+    "68765": {
+        "file_name": "000000068765.jpg",
+        "objects": [
+            "keyboard",
+            "mouse"
+        ],
+        "chosen": "keyboard"
+    },
+    "362434": {
+        "file_name": "000000362434.jpg",
+        "objects": [
+            "book",
+            "teddy bear"
+        ],
+        "chosen": "teddy bear"
+    },
+    "207306": {
+        "file_name": "000000207306.jpg",
+        "objects": [
+            "person",
+            "teddy bear"
+        ],
+        "chosen": "teddy bear"
+    },
+    "231237": {
+        "file_name": "000000231237.jpg",
+        "objects": [
+            "potted plant",
+            "vase"
+        ],
+        "chosen": "vase"
+    },
+    "14007": {
+        "file_name": "000000014007.jpg",
+        "objects": [
+            "cat",
+            "refrigerator"
+        ],
+        "chosen": "cat"
+    },
+    "28452": {
+        "file_name": "000000028452.jpg",
+        "objects": [
+            "bottle",
+            "refrigerator"
+        ],
+        "chosen": "refrigerator"
+    },
+    "426253": {
+        "file_name": "000000426253.jpg",
+        "objects": [
+            "bottle",
+            "microwave"
+        ],
+        "chosen": "bottle"
+    },
+    "218249": {
+        "file_name": "000000218249.jpg",
+        "objects": [
+            "sandwich",
+            "dining table"
+        ],
+        "chosen": "sandwich"
+    },
+    "170595": {
+        "file_name": "000000170595.jpg",
+        "objects": [
+            "dining table",
+            "sandwich"
+        ],
+        "chosen": "dining table"
+    },
+    "48564": {
+        "file_name": "000000048564.jpg",
+        "objects": [
+            "cell phone",
+            "person"
+        ],
+        "chosen": "cell phone"
+    },
+    "179112": {
+        "file_name": "000000179112.jpg",
+        "objects": [
+            "cell phone",
+            "person"
+        ],
+        "chosen": "cell phone"
+    },
+    "365886": {
+        "file_name": "000000365886.jpg",
+        "objects": [
+            "cell phone",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "462643": {
+        "file_name": "000000462643.jpg",
+        "objects": [
+            "cell phone",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "561366": {
+        "file_name": "000000561366.jpg",
+        "objects": [
+            "cell phone",
+            "keyboard"
+        ],
+        "chosen": "keyboard"
+    },
+    "5060": {
+        "file_name": "000000005060.jpg",
+        "objects": [
+            "cell phone",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "112997": {
+        "file_name": "000000112997.jpg",
+        "objects": [
+            "cell phone",
+            "person"
+        ],
+        "chosen": "cell phone"
+    },
+    "332570": {
+        "file_name": "000000332570.jpg",
+        "objects": [
+            "cell phone",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "53909": {
+        "file_name": "000000053909.jpg",
+        "objects": [
+            "cell phone",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "117197": {
+        "file_name": "000000117197.jpg",
+        "objects": [
+            "cell phone",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "302882": {
+        "file_name": "000000302882.jpg",
+        "objects": [
+            "cell phone",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "433980": {
+        "file_name": "000000433980.jpg",
+        "objects": [
+            "cell phone",
+            "person"
+        ],
+        "chosen": "cell phone"
+    },
+    "581317": {
+        "file_name": "000000581317.jpg",
+        "objects": [
+            "cell phone",
+            "person"
+        ],
+        "chosen": "cell phone"
+    },
+    "286523": {
+        "file_name": "000000286523.jpg",
+        "objects": [
+            "cell phone",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "73153": {
+        "file_name": "000000073153.jpg",
+        "objects": [
+            "cell phone",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "292488": {
+        "file_name": "000000292488.jpg",
+        "objects": [
+            "cell phone",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "456662": {
+        "file_name": "000000456662.jpg",
+        "objects": [
+            "refrigerator",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "537672": {
+        "file_name": "000000537672.jpg",
+        "objects": [
+            "refrigerator",
+            "chair"
+        ],
+        "chosen": "refrigerator"
+    },
+    "802": {
+        "file_name": "000000000802.jpg",
+        "objects": [
+            "refrigerator",
+            "oven"
+        ],
+        "chosen": "refrigerator"
+    },
+    "498463": {
+        "file_name": "000000498463.jpg",
+        "objects": [
+            "refrigerator",
+            "microwave"
+        ],
+        "chosen": "refrigerator"
+    },
+    "243344": {
+        "file_name": "000000243344.jpg",
+        "objects": [
+            "refrigerator",
+            "cat"
+        ],
+        "chosen": "cat"
+    },
+    "216419": {
+        "file_name": "000000216419.jpg",
+        "objects": [
+            "clock",
+            "traffic light"
+        ],
+        "chosen": "traffic light"
+    },
+    "11813": {
+        "file_name": "000000011813.jpg",
+        "objects": [
+            "chair",
+            "laptop"
+        ],
+        "chosen": "chair"
+    },
+    "147205": {
+        "file_name": "000000147205.jpg",
+        "objects": [
+            "dining table",
+            "cake"
+        ],
+        "chosen": "cake"
+    },
+    "286660": {
+        "file_name": "000000286660.jpg",
+        "objects": [
+            "person",
+            "teddy bear"
+        ],
+        "chosen": "teddy bear"
+    },
+    "368294": {
+        "file_name": "000000368294.jpg",
+        "objects": [
+            "person",
+            "scissors"
+        ],
+        "chosen": "person"
+    },
+    "369503": {
+        "file_name": "000000369503.jpg",
+        "objects": [
+            "person",
+            "sink"
+        ],
+        "chosen": "sink"
+    },
+    "350002": {
+        "file_name": "000000350002.jpg",
+        "objects": [
+            "person",
+            "hair drier"
+        ],
+        "chosen": "person"
+    },
+    "384136": {
+        "file_name": "000000384136.jpg",
+        "objects": [
+            "person",
+            "hair drier"
+        ],
+        "chosen": "person"
+    },
+    "120572": {
+        "file_name": "000000120572.jpg",
+        "objects": [
+            "bench",
+            "clock"
+        ],
+        "chosen": "bench"
+    },
+    "322844": {
+        "file_name": "000000322844.jpg",
+        "objects": [
+            "bench",
+            "teddy bear"
+        ],
+        "chosen": "bench"
+    },
+    "243626": {
+        "file_name": "000000243626.jpg",
+        "objects": [
+            "cup",
+            "fork"
+        ],
+        "chosen": "fork"
+    },
+    "321118": {
+        "file_name": "000000321118.jpg",
+        "objects": [
+            "laptop",
+            "mouse"
+        ],
+        "chosen": "mouse"
+    },
+    "577584": {
+        "file_name": "000000577584.jpg",
+        "objects": [
+            "microwave",
+            "bowl"
+        ],
+        "chosen": "microwave"
+    },
+    "199681": {
+        "file_name": "000000199681.jpg",
+        "objects": [
+            "microwave",
+            "teddy bear"
+        ],
+        "chosen": "microwave"
+    },
+    "222455": {
+        "file_name": "000000222455.jpg",
+        "objects": [
+            "oven",
+            "microwave"
+        ],
+        "chosen": "oven"
+    },
+    "136466": {
+        "file_name": "000000136466.jpg",
+        "objects": [
+            "oven",
+            "clock"
+        ],
+        "chosen": "clock"
+    },
+    "111036": {
+        "file_name": "000000111036.jpg",
+        "objects": [
+            "oven",
+            "car"
+        ],
+        "chosen": "car"
+    },
+    "21465": {
+        "file_name": "000000021465.jpg",
+        "objects": [
+            "vase",
+            "chair"
+        ],
+        "chosen": "chair"
+    },
+    "176232": {
+        "file_name": "000000176232.jpg",
+        "objects": [
+            "vase",
+            "book"
+        ],
+        "chosen": "vase"
+    },
+    "569700": {
+        "file_name": "000000569700.jpg",
+        "objects": [
+            "vase",
+            "potted plant"
+        ],
+        "chosen": "vase"
+    },
+    "375078": {
+        "file_name": "000000375078.jpg",
+        "objects": [
+            "vase",
+            "bottle"
+        ],
+        "chosen": "bottle"
+    },
+    "159282": {
+        "file_name": "000000159282.jpg",
+        "objects": [
+            "vase",
+            "potted plant"
+        ],
+        "chosen": "potted plant"
+    },
+    "351096": {
+        "file_name": "000000351096.jpg",
+        "objects": [
+            "scissors",
+            "person"
+        ],
+        "chosen": "scissors"
+    },
+    "311180": {
+        "file_name": "000000311180.jpg",
+        "objects": [
+            "scissors",
+            "person"
+        ],
+        "chosen": "scissors"
+    },
+    "435205": {
+        "file_name": "000000435205.jpg",
+        "objects": [
+            "teddy bear",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "528705": {
+        "file_name": "000000528705.jpg",
+        "objects": [
+            "teddy bear",
+            "person"
+        ],
+        "chosen": "person"
+    },
+    "175443": {
+        "file_name": "000000175443.jpg",
+        "objects": [
+            "teddy bear",
+            "potted plant"
+        ],
+        "chosen": "potted plant"
+    },
+    "500716": {
+        "file_name": "000000500716.jpg",
+        "objects": [
+            "person",
+            "scissors"
+        ],
+        "chosen": "scissors"
+    }
+}
