@@ -368,7 +368,14 @@ def compute_chefercam(model, image, text_emb_1x):
                 B, _, C = x.shape
                 
             if model.visual.trunk.pos_embed is not None:
-                x = x + model.visual.trunk.pos_embed
+                pe = model.visual.trunk.pos_embed
+                if pe.shape[1] != x.shape[1]:
+                    pe_orig_size = int(pe.shape[1] ** 0.5)
+                    pe_new_size = int(x.shape[1] ** 0.5)
+                    pe = pe.reshape(1, pe_orig_size, pe_orig_size, -1).permute(0, 3, 1, 2)
+                    pe = F.interpolate(pe, size=(pe_new_size, pe_new_size), mode='bicubic', align_corners=False)
+                    pe = pe.permute(0, 2, 3, 1).reshape(1, pe_new_size * pe_new_size, -1)
+                x = x + pe
             
             for block in blocks:
                 x = block(x)
@@ -589,7 +596,14 @@ def compute_transformer_attribution(model, image, text_emb_1x, start_layer=1):
                 x = x.reshape(B, H*W, C)
                 
             if model.visual.trunk.pos_embed is not None:
-                x = x + model.visual.trunk.pos_embed
+                pe = model.visual.trunk.pos_embed
+                if pe.shape[1] != x.shape[1]:
+                    pe_orig_size = int(pe.shape[1] ** 0.5)
+                    pe_new_size = int(x.shape[1] ** 0.5)
+                    pe = pe.reshape(1, pe_orig_size, pe_orig_size, -1).permute(0, 3, 1, 2)
+                    pe = F.interpolate(pe, size=(pe_new_size, pe_new_size), mode='bicubic', align_corners=False)
+                    pe = pe.permute(0, 2, 3, 1).reshape(1, pe_new_size * pe_new_size, -1)
+                x = x + pe
                 
             pooler = model.visual.trunk.attn_pool
             
