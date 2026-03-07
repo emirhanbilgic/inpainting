@@ -592,17 +592,19 @@ class CocoAntiHallucinationObjective:
             trial.set_user_attr('gap_improvement_auroc', gap_imprv_auroc)
 
             # Default logic is direct gap
-            comp_miou, comp_acc, comp_map = gap_imprv_miou, gap_imprv_acc, gap_imprv_map
+            comp_miou, comp_acc, comp_map, comp_auroc = gap_imprv_miou, gap_imprv_acc, gap_imprv_map, gap_imprv_auroc
             if self.composite_lambda != 0.5:
                 comp_miou += self.composite_lambda * delta_c_miou
                 comp_acc += self.composite_lambda * delta_c_acc
                 comp_map += self.composite_lambda * delta_c_map
+                comp_auroc += self.composite_lambda * delta_c_auroc
         else:
             comp_miou = pos_m['miou'] - neg_m['miou']
             comp_acc = pos_m['acc'] - neg_m['acc']
             comp_map = pos_m['map'] - neg_m['map']
+            comp_auroc = 0.0
 
-        composite = comp_miou + comp_acc + comp_map
+        composite = comp_miou + comp_acc + comp_map + comp_auroc
         trial.set_user_attr('composite_score', composite)
         trial.report(composite, step=0)
         if trial.should_prune(): raise optuna.TrialPruned()
