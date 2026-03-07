@@ -333,9 +333,15 @@ class CocoAntiHallucinationObjective:
         # Dictionary
         self.llm_dictionary = None
         if use_llm_dictionary:
-            if llm_dictionary_path is None: llm_dictionary_path = os.path.join(scripts_dir, 'visual_concept_dictionary_445.json')
+            if llm_dictionary_path is None: 
+                llm_dictionary_path = os.path.join(scripts_dir, 'visual_concept_dictionary_coco.json')
+            
             if os.path.exists(llm_dictionary_path):
-                with open(llm_dictionary_path, 'r') as f: self.llm_dictionary = json.load(f)
+                print(f"[coco opt] Loading LLM dictionary from {llm_dictionary_path}...")
+                with open(llm_dictionary_path, 'r') as f: 
+                    self.llm_dictionary = json.load(f)
+            else:
+                print(f"[coco opt] Warning: LLM dictionary not found at {llm_dictionary_path}")
 
         # Text Embeddings
         all_objects = set()
