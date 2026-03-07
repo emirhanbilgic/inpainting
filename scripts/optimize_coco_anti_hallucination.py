@@ -292,7 +292,7 @@ class CocoAntiHallucinationObjective:
         method='legrad', gradcam_layer=8, chefercam_method='transformer_attribution',
         transformer_attribution_start_layer=1, threshold_mode='fixed', fixed_threshold=0.5,
         baseline_metrics=None, lrp_start_layer=1, use_daam_keyspace_omp=False, daam_model_id=None,
-        use_llm_dictionary=False, llm_dictionary_path=None, negative_strategy='dynamic'
+        use_llm_dictionary=False, llm_dictionary_path=None, use_gpt_dictionary=False, gpt_dictionary_path=None, negative_strategy='dynamic'
     ):
         self.model = model
         self.tokenizer = tokenizer
@@ -332,6 +332,8 @@ class CocoAntiHallucinationObjective:
 
         # Dictionary
         self.llm_dictionary = None
+        self.gpt_dictionary = None
+        
         if use_llm_dictionary:
             if llm_dictionary_path is None: 
                 llm_dictionary_path = os.path.join(scripts_dir, 'visual_concept_dictionary_coco.json')
@@ -342,6 +344,17 @@ class CocoAntiHallucinationObjective:
                     self.llm_dictionary = json.load(f)
             else:
                 print(f"[coco opt] Warning: LLM dictionary not found at {llm_dictionary_path}")
+
+        if use_gpt_dictionary:
+            if gpt_dictionary_path is None: 
+                gpt_dictionary_path = os.path.join(scripts_dir, 'visual_concept_dictionary_coco_gpt.json')
+            
+            if os.path.exists(gpt_dictionary_path):
+                print(f"[coco opt] Loading GPT dictionary from {gpt_dictionary_path}...")
+                with open(gpt_dictionary_path, 'r') as f: 
+                    self.gpt_dictionary = json.load(f)
+            else:
+                print(f"[coco opt] Warning: GPT dictionary not found at {gpt_dictionary_path}")
 
         # Text Embeddings
         all_objects = set()
@@ -435,6 +448,9 @@ class CocoAntiHallucinationObjective:
                 if self.method == 'daam':
                     if self.negative_strategy in ['fix_dictionary', 'fix_dictionary_prompts_only']:
                         competing_daam = [c for c in self.fixed_dictionary_words if c.lower() != target_obj.lower()]
+                    elif self.gpt_dictionary and target_obj in self.gpt_dictionary:
+                        gpt_dict = self.gpt_dictionary[target_obj]
+                        competing_daam = gpt_dict.get('visual_confusers', []) + gpt_dict.get('co_occurring_context', []) + gpt_dict.get('semantic_hierarchy', [])
                     elif self.llm_dictionary and target_obj in self.llm_dictionary:
                         llm = self.llm_dictionary[target_obj]
                         competing_daam = llm.get('visual_confusers', []) + llm.get('co_occurring_context', []) + llm.get('semantic_hierarchy', [])
@@ -453,6 +469,12 @@ class CocoAntiHallucinationObjective:
                     parts = []
                     if self.negative_strategy in ['fix_dictionary', 'fix_dictionary_prompts_only']:
                         parts.append(self.fixed_dictionary_embs)
+                    elif self.gpt_dictionary and target_obj in self.gpt_dictionary:
+                        gpt_dict = self.gpt_dictionary[target_obj]
+                        all_c = gpt_dict.get('visual_confusers', []) + gpt_dict.get('co_occurring_context', []) + gpt_dict.get('semantic_hierarchy', [])
+                        if all_c:
+                            c_tok = self.tokenizer([f"a photo of a {c}." for c in all_c]).to(self.device)
+                            with torch.no_grad(): parts.append(F.normalize(self.model.encode_text(c_tok), dim=-1))
                     elif self.llm_dictionary and target_obj in self.llm_dictionary:
                         llm = self.llm_dictionary[target_obj]
                         all_c = llm.get('visual_confusers', []) + llm.get('co_occurring_context', []) + llm.get('semantic_hierarchy', [])
@@ -532,9 +554,12 @@ class CocoAntiHallucinationObjective:
         return _metrics(pos), _metrics(neg)
 
     def __call__(self, trial: optuna.Trial):
-        if self.llm_dictionary or self.negative_strategy in ['fix_dictionary', 'fix_dictionary_prompts_only']:
-            wn_flags = {'use_synonyms':False, 'use_hypernyms':False, 'use_hyponyms':False, 'use_siblings':False}
+        if self.use_llm_dictionary or self.gpt_dictionary:
+            wn_flags = {'use_synonyms': False, 'use_hypernyms': False, 'use_hyponyms': False, 'use_siblings': False}
             dict_include_prompts = False
+        elif self.negative_strategy == 'fix_dictionary':
+            wn_flags = {'use_synonyms': True, 'use_hypernyms': True, 'use_hyponyms': True, 'use_siblings': False}
+            dict_include_prompts = True
         else:
             wn_flags = {
                 'use_synonyms': trial.suggest_categorical('use_synonyms', [True, False]),
@@ -655,6 +680,8 @@ def main():
     parser.add_argument('--composite_lambda', type=float, default=0.5)
     parser.add_argument('--use_llm_dictionary', action='store_true')
     parser.add_argument('--llm_dictionary_path', type=str, default=None)
+    parser.add_argument('--use_gpt_dictionary', action='store_true')
+    parser.add_argument('--gpt_dictionary_path', type=str, default=None)
     parser.add_argument('--negative_strategy', type=str, default='dynamic', choices=['dynamic', 'fix_dictionary', 'fix_dictionary_prompts_only'])
     parser.add_argument('--output_json', type=str, default='coco_anti_hallucination_results.json')
     args = parser.parse_args()
@@ -697,6 +724,7 @@ def main():
         baseline_metrics=baseline_metrics, lrp_start_layer=args.lrp_start_layer,
         use_daam_keyspace_omp=args.use_daam_keyspace_omp, daam_model_id=args.daam_model_id,
         use_llm_dictionary=args.use_llm_dictionary, llm_dictionary_path=args.llm_dictionary_path,
+        use_gpt_dictionary=args.use_gpt_dictionary, gpt_dictionary_path=args.gpt_dictionary_path,
         negative_strategy=args.negative_strategy
     )
 
