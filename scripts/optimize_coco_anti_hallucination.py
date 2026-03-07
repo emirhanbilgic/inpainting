@@ -312,6 +312,8 @@ class CocoAntiHallucinationObjective:
         self.lrp_start_layer = lrp_start_layer
         self.use_daam_keyspace_omp = use_daam_keyspace_omp
         self.negative_strategy = negative_strategy
+        self.use_llm_dictionary = use_llm_dictionary
+        self.use_gpt_dictionary = use_gpt_dictionary
         
         self.coco_dir = coco_dir
         self.image_dir = os.path.join(coco_dir, 'val2017')
