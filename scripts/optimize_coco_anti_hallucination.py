@@ -77,6 +77,19 @@ except ImportError:
 # ==============================================================================
 # Helper functions for datasets
 # ==============================================================================
+COCO_CLASSES = [
+    "airplane", "apple", "backpack", "banana", "baseball bat", "baseball glove", "bear",
+    "bed", "bench", "bicycle", "bird", "boat", "book", "bottle", "bowl", "broccoli", "bus",
+    "cake", "car", "carrot", "cat", "cell phone", "chair", "clock", "couch", "cow", "cup",
+    "dining table", "dog", "donut", "elephant", "fire hydrant", "fork", "frisbee", "giraffe",
+    "hair drier", "handbag", "horse", "hot dog", "keyboard", "kite", "knife", "laptop",
+    "microwave", "motorcycle", "mouse", "orange", "oven", "parking meter", "person", "pizza",
+    "potted plant", "refrigerator", "remote", "sandwich", "scissors", "sheep", "sink",
+    "skateboard", "skis", "snowboard", "spoon", "sports ball", "stop sign", "suitcase",
+    "surfboard", "teddy bear", "tennis racket", "tie", "toilet", "toothbrush", "traffic light",
+    "train", "truck", "tv", "umbrella", "vase", "wine glass", "zebra"
+]
+
 def load_coco_metadata(json_path):
     with open(json_path, 'r') as f:
         return json.load(f)
@@ -279,7 +292,7 @@ class CocoAntiHallucinationObjective:
         method='legrad', gradcam_layer=8, chefercam_method='transformer_attribution',
         transformer_attribution_start_layer=1, threshold_mode='fixed', fixed_threshold=0.5,
         baseline_metrics=None, lrp_start_layer=1, use_daam_keyspace_omp=False, daam_model_id=None,
-        use_llm_dictionary=False, llm_dictionary_path=None
+        use_llm_dictionary=False, llm_dictionary_path=None, negative_strategy='dynamic'
     ):
         self.model = model
         self.tokenizer = tokenizer
@@ -298,6 +311,7 @@ class CocoAntiHallucinationObjective:
         self.baseline_metrics = baseline_metrics
         self.lrp_start_layer = lrp_start_layer
         self.use_daam_keyspace_omp = use_daam_keyspace_omp
+        self.negative_strategy = negative_strategy
         
         self.coco_dir = coco_dir
         self.image_dir = os.path.join(coco_dir, 'val2017')
@@ -333,6 +347,39 @@ class CocoAntiHallucinationObjective:
         tok = self.tokenizer(prompts).to(self.device)
         with torch.no_grad():
             self.all_text_embs = self.model.encode_text(tok, normalize=True)
+
+        # Fixed Dictionary Embs
+        self.fixed_dictionary_embs = None
+        self.fixed_dictionary_words = None
+
+        if self.negative_strategy in ['fix_dictionary', 'fix_dictionary_prompts_only']:
+            all_words = list(COCO_CLASSES)
+            if self.negative_strategy == 'fix_dictionary':
+                print("[coco opt] Building fixed wordnet dictionary based on COCO classes...")
+                seen_words = set(all_words)
+                for c in COCO_CLASSES:
+                    nbs = wordnet_neighbors_configured(
+                        c, use_synonyms=False, use_hypernyms=True, use_hyponyms=True, use_siblings=True, limit_per_relation=8
+                    )
+                    for n in nbs:
+                        if n not in seen_words:
+                            all_words.append(n)
+                            seen_words.add(n)
+            
+            print(f"[coco opt] Fixed dictionary size: {len(all_words)} words")
+            self.fixed_dictionary_words = all_words
+
+            # If not DAAM, compute CLIP embeddings
+            if self.method != 'daam':
+                all_tok = self.tokenizer([f"a photo of a {w}." for w in all_words]).to(self.device)
+                with torch.no_grad():
+                    embs = []
+                    bs = 256
+                    for i in range(0, len(all_tok), bs):
+                        b_tok = all_tok[i:i+bs]
+                        embs.append(self.model.encode_text(b_tok, normalize=True))
+                    self.fixed_dictionary_embs = torch.cat(embs, dim=0)
+
             
     def _compute_heatmap(self, img_t, text_emb, base_img=None, target_concept=None, competing_concepts=None, omp_beta=1.0):
         if self.method == 'daam':
@@ -380,7 +427,9 @@ class CocoAntiHallucinationObjective:
                 # Dictionary Builder
                 competing_daam, sparse_emb = [], orig_emb
                 if self.method == 'daam':
-                    if self.llm_dictionary and target_obj in self.llm_dictionary:
+                    if self.negative_strategy in ['fix_dictionary', 'fix_dictionary_prompts_only']:
+                        competing_daam = [c for c in self.fixed_dictionary_words if c.lower() != target_obj.lower()]
+                    elif self.llm_dictionary and target_obj in self.llm_dictionary:
                         llm = self.llm_dictionary[target_obj]
                         competing_daam = llm.get('visual_confusers', []) + llm.get('co_occurring_context', []) + llm.get('semantic_hierarchy', [])
                     else:
@@ -396,7 +445,9 @@ class CocoAntiHallucinationObjective:
                     competing_daam = uniq
                 else:
                     parts = []
-                    if self.llm_dictionary and target_obj in self.llm_dictionary:
+                    if self.negative_strategy in ['fix_dictionary', 'fix_dictionary_prompts_only']:
+                        parts.append(self.fixed_dictionary_embs)
+                    elif self.llm_dictionary and target_obj in self.llm_dictionary:
                         llm = self.llm_dictionary[target_obj]
                         all_c = llm.get('visual_confusers', []) + llm.get('co_occurring_context', []) + llm.get('semantic_hierarchy', [])
                         if all_c:
@@ -475,7 +526,7 @@ class CocoAntiHallucinationObjective:
         return _metrics(pos), _metrics(neg)
 
     def __call__(self, trial: optuna.Trial):
-        if self.llm_dictionary:
+        if self.llm_dictionary or self.negative_strategy in ['fix_dictionary', 'fix_dictionary_prompts_only']:
             wn_flags = {'use_synonyms':False, 'use_hypernyms':False, 'use_hyponyms':False, 'use_siblings':False}
             dict_include_prompts = False
         else:
@@ -507,14 +558,22 @@ class CocoAntiHallucinationObjective:
             delta_c_map = pos_m['map'] - bc['map']
             delta_c_auroc = pos_m['auroc'] - bc['auroc']
             
-            delta_w_miou = pos_m['miou'] - bw['miou']
-            delta_w_acc = pos_m['acc'] - bw['acc']
-            delta_w_map = pos_m['map'] - bw['map']
-            delta_w_auroc = pos_m['auroc'] - bw['auroc']
+            delta_w_miou = bw['miou'] - neg_m['miou']
+            delta_w_acc = bw['acc'] - neg_m['acc']
+            delta_w_map = bw['map'] - neg_m['map']
+            delta_w_auroc = bw['auroc'] - neg_m['auroc']
 
-            gap_imprv_miou = (pos_m['miou'] - neg_m['miou']) - (bc['miou'] - bw['miou'])
-            gap_imprv_acc = (pos_m['acc'] - neg_m['acc']) - (bc['acc'] - bw['acc'])
-            gap_imprv_map = (pos_m['map'] - neg_m['map']) - (bc['map'] - bw['map'])
+            gap_baseline_miou = bc['miou'] - bw['miou']
+            gap_baseline_acc = bc['acc'] - bw['acc']
+            gap_baseline_map = bc['map'] - bw['map']
+
+            gap_current_miou = pos_m['miou'] - neg_m['miou']
+            gap_current_acc = pos_m['acc'] - neg_m['acc']
+            gap_current_map = pos_m['map'] - neg_m['map']
+
+            gap_imprv_miou = gap_current_miou - gap_baseline_miou
+            gap_imprv_acc = gap_current_acc - gap_baseline_acc
+            gap_imprv_map = gap_current_map - gap_baseline_map
             gap_imprv_auroc = pos_m['auroc'] - bc['auroc']
             
             trial.set_user_attr('delta_correct_miou', delta_c_miou)
@@ -522,17 +581,22 @@ class CocoAntiHallucinationObjective:
             trial.set_user_attr('delta_correct_map', delta_c_map)
             trial.set_user_attr('delta_correct_auroc', delta_c_auroc)
 
-            trial.set_user_attr('delta_wrong_miou', delta_w_miou - (pos_m['miou'] - neg_m['miou'])) # This fixes delta w
-            trial.set_user_attr('delta_wrong_acc', delta_w_acc - (pos_m['acc'] - neg_m['acc']))
-            trial.set_user_attr('delta_wrong_map', delta_w_map - (pos_m['map'] - neg_m['map']))
-            trial.set_user_attr('delta_wrong_auroc', delta_w_auroc - (pos_m['auroc'] - neg_m['auroc']))
+            trial.set_user_attr('delta_wrong_miou', delta_w_miou)
+            trial.set_user_attr('delta_wrong_acc', delta_w_acc)
+            trial.set_user_attr('delta_wrong_map', delta_w_map)
+            trial.set_user_attr('delta_wrong_auroc', delta_w_auroc)
+
+            trial.set_user_attr('gap_improvement_miou', gap_imprv_miou)
+            trial.set_user_attr('gap_improvement_acc', gap_imprv_acc)
+            trial.set_user_attr('gap_improvement_map', gap_imprv_map)
+            trial.set_user_attr('gap_improvement_auroc', gap_imprv_auroc)
 
             # Default logic is direct gap
             comp_miou, comp_acc, comp_map = gap_imprv_miou, gap_imprv_acc, gap_imprv_map
             if self.composite_lambda != 0.5:
-                comp_miou += self.composite_lambda * (bw['miou'] - neg_m['miou'])
-                comp_acc += self.composite_lambda * (bw['acc'] - neg_m['acc'])
-                comp_map += self.composite_lambda * (bw['map'] - neg_m['map'])
+                comp_miou += self.composite_lambda * delta_c_miou
+                comp_acc += self.composite_lambda * delta_c_acc
+                comp_map += self.composite_lambda * delta_c_map
         else:
             comp_miou = pos_m['miou'] - neg_m['miou']
             comp_acc = pos_m['acc'] - neg_m['acc']
@@ -583,6 +647,7 @@ def main():
     parser.add_argument('--composite_lambda', type=float, default=0.5)
     parser.add_argument('--use_llm_dictionary', action='store_true')
     parser.add_argument('--llm_dictionary_path', type=str, default=None)
+    parser.add_argument('--negative_strategy', type=str, default='dynamic', choices=['dynamic', 'fix_dictionary', 'fix_dictionary_prompts_only'])
     parser.add_argument('--output_json', type=str, default='coco_anti_hallucination_results.json')
     args = parser.parse_args()
 
@@ -623,7 +688,8 @@ def main():
         threshold_mode=args.threshold_mode, fixed_threshold=args.fixed_threshold,
         baseline_metrics=baseline_metrics, lrp_start_layer=args.lrp_start_layer,
         use_daam_keyspace_omp=args.use_daam_keyspace_omp, daam_model_id=args.daam_model_id,
-        use_llm_dictionary=args.use_llm_dictionary, llm_dictionary_path=args.llm_dictionary_path
+        use_llm_dictionary=args.use_llm_dictionary, llm_dictionary_path=args.llm_dictionary_path,
+        negative_strategy=args.negative_strategy
     )
 
     if args.use_daam and args.n_jobs > 1:
